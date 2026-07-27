@@ -585,10 +585,12 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
             f"fps={payload['video']['fps']},format=yuv420p",
             "-c:v",
             "libx264",
+            "-threads",
+            "2",
             "-preset",
-            "veryfast",
+            "ultrafast",
             "-crf",
-            "21",
+            "24",
         ]
     )
     if audio_url:
