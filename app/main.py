@@ -169,6 +169,7 @@ def create_single_test_video(payload: RenderRequest) -> dict[str, Any]:
     try:
         return render_single_test_video(payload.model_dump())
     except Exception as exc:
+        print(f"TEST_VIDEO_ERROR: {type(exc).__name__}: {exc}", flush=True)
         raise HTTPException(
             status_code=500,
             detail={
