@@ -5,7 +5,7 @@ import subprocess
 import threading
 import uuid
 from datetime import datetime, timezone
-from pathlib import Pathsubtitle_cues = payload["narration"]
+from pathlib import Path
 from typing import Any, Literal
 
 import httpx
