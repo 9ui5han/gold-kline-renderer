@@ -1,3 +1,4 @@
+import base64
 import json
 import math
 import os
@@ -21,6 +22,7 @@ WORK_DIR = DATA_DIR / "work"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 TOKEN = os.getenv("RENDER_SERVICE_TOKEN", "change-me")
+AI302_API_KEY = os.getenv("AI302_API_KEY", "")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 FONT_PATHS = [
@@ -125,6 +127,96 @@ def update_job(job_id: str, **changes: Any) -> None:
 def health() -> dict[str, str]:
     return {"status": "ok", "time": now_iso()}
 
+class TTSProxyRequest(BaseModel):
+    request_id: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=5000)
+    voice_type: str = "zh_male_M392_conversation_wvae_bigtts"
+    speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
+@app.post("/v1/tts", dependencies=[Depends(require_token)])
+def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
+    if not AI302_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="服务器尚未设置AI302_API_KEY",
+        )
+
+    request_body = {
+        "audio": {
+            "voice_type": payload.voice_type,
+            "encoding": "mp3",
+            "speed_ratio": payload.speed_ratio,
+        },
+        "request": {
+            "reqid": uuid.uuid4().hex,
+            "text": payload.text,
+            "operation": "query",
+        },
+    }
+
+    try:
+        response = httpx.post(
+            "https://api.302.ai/doubao/tts_hd",
+            headers={
+                "Authorization": f"Bearer {AI302_API_KEY}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+            json=request_body,
+            timeout=180,
+        )
+        response.raise_for_status()
+        result = response.json()
+
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"302_TTS_REQUEST_FAILED: {exc}",
+        ) from exc
+
+    if result.get("code") != 3000:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_TTS_FAILED",
+                "upstream": result,
+            },
+        )
+
+    audio_base64 = str(result.get("data") or "")
+
+    if not audio_base64:
+        raise HTTPException(
+            status_code=502,
+            detail="302返回的音频data为空",
+        )
+
+    try:
+        padding = "=" * (-len(audio_base64) % 4)
+        audio_bytes = base64.b64decode(
+            audio_base64 + padding
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"音频Base64解析失败: {exc}",
+        ) from exc
+
+    audio_name = f"tts-{uuid.uuid4()}.mp3"
+    audio_path = MEDIA_DIR / audio_name
+    audio_path.write_bytes(audio_bytes)
+
+    duration_sec = round(probe_duration(audio_path), 3)
+
+    return {
+        "status": "completed",
+        "audio_url": f"{PUBLIC_BASE_URL}/media/{audio_name}",
+        "duration_sec": duration_sec,
+        "format": "mp3",
+        "error_code": "",
+        "error_message": "",
+    }
 
 @app.post("/v1/render-jobs", status_code=202, dependencies=[Depends(require_token)])
 def create_render_job(payload: RenderRequest) -> dict[str, Any]:
