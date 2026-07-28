@@ -380,12 +380,41 @@ def render_scene(
     for line_no, line in enumerate(summary_lines):
         draw.text((85, 1380 + line_no * 36), line, font=label_font, fill="#e7edf7")
 
-    segments = sorted(payload["narration"].get("segments") or [], key=lambda item: item.get("order", 0))
+subtitle_cues = payload["narration"].get("subtitle_cues") or []
+
+if payload.get("audio_url"):
+    timeline_duration = float(payload.get("duration_target_sec") or 90)
+else:
+    timeline_duration = float(payload.get("test_duration_sec") or 10)
+
+current_time = (
+    scene_index
+    / max(total_scenes - 1, 1)
+    * timeline_duration
+)
+
+subtitle = ""
+
+for cue in subtitle_cues:
+    start_sec = float(cue.get("start_sec") or 0)
+    end_sec = float(cue.get("end_sec") or 0)
+
+    if start_sec <= current_time < end_sec:
+        subtitle = str(cue.get("text") or "")
+        break
+
+if not subtitle:
+    segments = sorted(
+        payload["narration"].get("segments") or [],
+        key=lambda item: item.get("order", 0)
+    )
+
     if segments:
         segment = segments[min(scene_index, len(segments) - 1)]
         subtitle = str(segment.get("text") or "")
     else:
         subtitle = str(payload["narration"].get("full_text") or "")
+        
     subtitle_lines = text_lines(draw, subtitle, subtitle_font, 900)[:5]
     panel_top = 1540
     draw.rounded_rectangle((60, panel_top, 1020, 1810), 24, fill="#111827", outline="#293449")
