@@ -2,6 +2,7 @@ import base64
 import json
 import math
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -148,17 +149,33 @@ def build_subtitle_cues(
     if not original_text:
         raise RuntimeError("原始旁白为空")
 
+    # 数字、小数和英文作为完整单元，避免把4051.09拆成两条字幕。
+    tokens = re.findall(
+        r"\d+(?:\.\d+)*|[A-Za-z]+|[\u4e00-\u9fff]|[^\s]",
+        original_text,
+    )
+
     chunks: list[str] = []
     current = ""
 
-    for char in original_text:
-        current += char
-
-        punctuation_end = char in (
+    for token in tokens:
+        punctuation_end = token in (
             "。", "！", "？", "；",
             ".", "!", "?", ";",
         )
-        comma_end = char in ("，", "、", ",")
+        comma_end = token in ("，", "、", ",")
+
+        # 达到一行上限时先换行，但不拆开数字或小数。
+        if (
+            current
+            and len(current) + len(token) > 16
+            and not punctuation_end
+            and not comma_end
+        ):
+            chunks.append(current)
+            current = ""
+
+        current += token
 
         if (
             len(current) >= 16
@@ -174,30 +191,25 @@ def build_subtitle_cues(
     if not chunks:
         raise RuntimeError("没有生成有效字幕文本")
 
-    recognized_words: list[dict[str, Any]] = []
+    recognized_starts: list[float] = []
+    recognized_ends: list[float] = []
 
     for segment in alignment_result.get("segments") or []:
         for word in segment.get("words") or []:
             start = word.get("start")
             end = word.get("end")
-            text = str(word.get("word") or "").strip()
 
-            if start is None or end is None or not text:
+            if start is None or end is None:
                 continue
 
-            recognized_words.append(
-                {
-                    "text": text,
-                    "start": float(start),
-                    "end": float(end),
-                }
-            )
+            recognized_starts.append(float(start))
+            recognized_ends.append(float(end))
 
-    if recognized_words:
-        speech_start = max(0.0, recognized_words[0]["start"])
+    if recognized_starts and recognized_ends:
+        speech_start = max(0.0, min(recognized_starts))
         speech_end = min(
             float(audio_duration_sec),
-            recognized_words[-1]["end"],
+            max(recognized_ends),
         )
     else:
         speech_start = 0.0
@@ -207,66 +219,47 @@ def build_subtitle_cues(
         speech_start = 0.0
         speech_end = float(audio_duration_sec)
 
-    anchors: list[tuple[float, float]] = [(0.0, speech_start)]
-    recognized_lengths = [
-        max(1, len("".join(word["text"].split())))
-        for word in recognized_words
-    ]
-    recognized_total = sum(recognized_lengths)
-    recognized_cursor = 0
+    def speech_weight(text: str) -> float:
+        """
+        按大致朗读耗时分配字幕：
+        数字比普通汉字稍慢，标点只计算短暂停顿。
+        """
+        weight = 0.0
 
-    if recognized_total > 0:
-        for word, length in zip(recognized_words, recognized_lengths):
-            recognized_cursor += length
-            anchors.append(
-                (
-                    recognized_cursor / recognized_total,
-                    min(float(audio_duration_sec), word["end"]),
-                )
-            )
-    else:
-        anchors.append((1.0, speech_end))
+        for char in text:
+            if char.isdigit():
+                weight += 1.25
+            elif char in ".．":
+                weight += 0.8
+            elif char in "，、,":
+                weight += 0.45
+            elif char in "。！？；.!?;":
+                weight += 0.9
+            elif char.isascii() and char.isalpha():
+                weight += 0.75
+            else:
+                weight += 1.0
 
-    if anchors[-1][0] < 1.0:
-        anchors.append((1.0, speech_end))
+        return max(1.0, weight)
 
-    def time_at_fraction(fraction: float) -> float:
-        fraction = max(0.0, min(1.0, fraction))
-        previous_fraction, previous_time = anchors[0]
-
-        for next_fraction, next_time in anchors[1:]:
-            if fraction <= next_fraction:
-                span = next_fraction - previous_fraction
-
-                if span <= 0:
-                    return next_time
-
-                position = (
-                    fraction - previous_fraction
-                ) / span
-
-                return previous_time + (
-                    next_time - previous_time
-                ) * position
-
-            previous_fraction = next_fraction
-            previous_time = next_time
-
-        return speech_end
-
-    total_chars = sum(len(chunk) for chunk in chunks)
-    consumed_chars = 0
+    weights = [speech_weight(chunk) for chunk in chunks]
+    total_weight = sum(weights)
+    speech_duration = speech_end - speech_start
     cue_start = speech_start
     cues: list[dict[str, Any]] = []
+    consumed_weight = 0.0
 
-    for index, chunk in enumerate(chunks):
-        consumed_chars += len(chunk)
-        fraction = consumed_chars / total_chars
+    for index, (chunk, weight) in enumerate(zip(chunks, weights)):
+        consumed_weight += weight
 
         if index == len(chunks) - 1:
             cue_end = speech_end
         else:
-            cue_end = time_at_fraction(fraction)
+            cue_end = speech_start + (
+                speech_duration
+                * consumed_weight
+                / total_weight
+            )
 
         cue_end = max(cue_start + 0.2, cue_end)
         cue_end = min(cue_end, float(audio_duration_sec))
@@ -438,7 +431,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": duration_sec,
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
-        "alignment_method": "302_whisperx",
+        "alignment_method": "whisperx_bounds_original_text",
         "format": "mp3",
         "error_code": "",
         "error_message": "",
