@@ -269,7 +269,11 @@ def render_tradingview_scene(
         forecast_count = 0
 
     visible_forecast = forecast_all[:forecast_count]
-    visible_history = history[-min(len(history), 90) :]
+    # During prediction the camera tracks the latest section. Older candles are
+    # deliberately allowed to move beyond the left edge so the forecast owns
+    # the centre of the vertical frame.
+    history_limit = 42 if prediction_phase else 90
+    visible_history = history[-min(len(history), history_limit) :]
     candles = visible_history + visible_forecast
 
     image = Image.new("RGB", (width, height), "#ffffff")
@@ -351,19 +355,48 @@ def render_tradingview_scene(
         )
 
     count = max(len(candles), 1)
-    slot = (chart_right - chart_left - 24) / count
+    normal_slot = (chart_right - chart_left - 24) / count
+    camera_progress = 0.0
+    if prediction_phase:
+        raw_camera_progress = max(
+            0.0,
+            min(1.0, (progress - 0.62) / 0.10),
+        )
+        camera_progress = raw_camera_progress * raw_camera_progress * (
+            3 - 2 * raw_camera_progress
+        )
+    focus_slot = (chart_right - chart_left) / 22
+    slot = normal_slot + (focus_slot - normal_slot) * camera_progress
     body_width = max(4, min(14, int(slot * 0.62)))
 
     def px(index: int) -> float:
-        return chart_left + 12 + slot * (index + 0.5)
+        normal_x = chart_left + 12 + normal_slot * (index + 0.5)
+        forecast_centre_x = chart_left + (
+            chart_right - chart_left
+        ) * 0.44
+        focused_x = forecast_centre_x + focus_slot * (
+            index - len(visible_history) + 0.5
+        )
+        return normal_x + (focused_x - normal_x) * camera_progress
 
     # Vertical time grid.
     time_marks = 6
+    if prediction_phase and camera_progress > 0.5:
+        first_time_index = max(len(visible_history) - 10, 0)
+        last_time_index = max(len(candles) - 1, first_time_index)
+    else:
+        first_time_index = 0
+        last_time_index = max(len(candles) - 1, 0)
     for mark_index in range(time_marks):
         candle_index = round(
-            mark_index * max(len(candles) - 1, 0) / max(time_marks - 1, 1)
+            first_time_index
+            + mark_index
+            * (last_time_index - first_time_index)
+            / max(time_marks - 1, 1)
         )
         x = px(candle_index)
+        if x < chart_left or x > chart_right:
+            continue
         draw.line(
             (x, chart_top, x, chart_bottom),
             fill="#f2f3f5",
@@ -443,9 +476,12 @@ def render_tradingview_scene(
         prediction_phase
         and payload["style"].get("show_observation_zones", True)
     ):
-        zone_start_index = max(len(visible_history) - 12, 0)
+        zone_start_index = max(len(visible_history) - 4, 0)
         zone_x1 = px(zone_start_index)
-        zone_x2 = chart_right - 6
+        zone_x2 = min(
+            chart_right - 6,
+            px(len(visible_history) + max(len(forecast_all), 6)),
+        )
         zone_specs = (
             (
                 "potential_buy_zones",
@@ -505,6 +541,8 @@ def render_tradingview_scene(
     # Candles are drawn after zones so they remain readable.
     for index, candle in enumerate(candles):
         x = px(index)
+        if x < chart_left - body_width or x > chart_right + body_width:
+            continue
         is_forecast = index >= len(visible_history)
         rising = float(candle["close"]) >= float(candle["open"])
         color = "#089981" if rising else "#f23645"
