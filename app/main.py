@@ -137,23 +137,55 @@ class TTSProxyRequest(BaseModel):
 def build_subtitle_cues(
     alignment_result: dict[str, Any],
     audio_duration_sec: float,
+    original_text: str,
 ) -> list[dict[str, Any]]:
     """
-    把 WhisperX 返回的单词时间转换成适合短视频显示的字幕。
-    每条字幕约7～16个汉字，最长约4秒。
+    WhisperX只负责提供真实语速和时间，字幕文字始终使用原始旁白。
+    这样可以避免日期、K线数量和价格数字被语音识别遗漏。
     """
-    words: list[dict[str, Any]] = []
+    original_text = "".join(str(original_text or "").split())
+
+    if not original_text:
+        raise RuntimeError("原始旁白为空")
+
+    chunks: list[str] = []
+    current = ""
+
+    for char in original_text:
+        current += char
+
+        punctuation_end = char in (
+            "。", "！", "？", "；",
+            ".", "!", "?", ";",
+        )
+        comma_end = char in ("，", "、", ",")
+
+        if (
+            len(current) >= 16
+            or (punctuation_end and len(current) >= 6)
+            or (comma_end and len(current) >= 10)
+        ):
+            chunks.append(current)
+            current = ""
+
+    if current:
+        chunks.append(current)
+
+    if not chunks:
+        raise RuntimeError("没有生成有效字幕文本")
+
+    recognized_words: list[dict[str, Any]] = []
 
     for segment in alignment_result.get("segments") or []:
         for word in segment.get("words") or []:
-            text = str(word.get("word") or "").strip().replace(" ", "")
             start = word.get("start")
             end = word.get("end")
+            text = str(word.get("word") or "").strip()
 
-            if not text or start is None or end is None:
+            if start is None or end is None or not text:
                 continue
 
-            words.append(
+            recognized_words.append(
                 {
                     "text": text,
                     "start": float(start),
@@ -161,58 +193,93 @@ def build_subtitle_cues(
                 }
             )
 
-    cues: list[dict[str, Any]] = []
-    current_words: list[str] = []
-    current_start: float | None = None
-    current_end: float | None = None
+    if recognized_words:
+        speech_start = max(0.0, recognized_words[0]["start"])
+        speech_end = min(
+            float(audio_duration_sec),
+            recognized_words[-1]["end"],
+        )
+    else:
+        speech_start = 0.0
+        speech_end = float(audio_duration_sec)
 
-    def flush() -> None:
-        nonlocal current_words, current_start, current_end
+    if speech_end <= speech_start:
+        speech_start = 0.0
+        speech_end = float(audio_duration_sec)
 
-        if not current_words or current_start is None or current_end is None:
-            return
+    anchors: list[tuple[float, float]] = [(0.0, speech_start)]
+    recognized_lengths = [
+        max(1, len("".join(word["text"].split())))
+        for word in recognized_words
+    ]
+    recognized_total = sum(recognized_lengths)
+    recognized_cursor = 0
 
-        text = "".join(current_words).strip()
-
-        if text:
-            cues.append(
-                {
-                    "start_sec": round(max(0, current_start), 3),
-                    "end_sec": round(
-                        min(float(audio_duration_sec), current_end),
-                        3,
-                    ),
-                    "text": text,
-                }
+    if recognized_total > 0:
+        for word, length in zip(recognized_words, recognized_lengths):
+            recognized_cursor += length
+            anchors.append(
+                (
+                    recognized_cursor / recognized_total,
+                    min(float(audio_duration_sec), word["end"]),
+                )
             )
+    else:
+        anchors.append((1.0, speech_end))
 
-        current_words = []
-        current_start = None
-        current_end = None
+    if anchors[-1][0] < 1.0:
+        anchors.append((1.0, speech_end))
 
-    for word in words:
-        if current_start is None:
-            current_start = word["start"]
+    def time_at_fraction(fraction: float) -> float:
+        fraction = max(0.0, min(1.0, fraction))
+        previous_fraction, previous_time = anchors[0]
 
-        current_words.append(word["text"])
-        current_end = word["end"]
+        for next_fraction, next_time in anchors[1:]:
+            if fraction <= next_fraction:
+                span = next_fraction - previous_fraction
 
-        current_text = "".join(current_words)
-        current_duration = current_end - current_start
-        ends_with_punctuation = current_text.endswith(
-            ("。", "！", "？", "；", "，", "、", ".", "!", "?", ";")
+                if span <= 0:
+                    return next_time
+
+                position = (
+                    fraction - previous_fraction
+                ) / span
+
+                return previous_time + (
+                    next_time - previous_time
+                ) * position
+
+            previous_fraction = next_fraction
+            previous_time = next_time
+
+        return speech_end
+
+    total_chars = sum(len(chunk) for chunk in chunks)
+    consumed_chars = 0
+    cue_start = speech_start
+    cues: list[dict[str, Any]] = []
+
+    for index, chunk in enumerate(chunks):
+        consumed_chars += len(chunk)
+        fraction = consumed_chars / total_chars
+
+        if index == len(chunks) - 1:
+            cue_end = speech_end
+        else:
+            cue_end = time_at_fraction(fraction)
+
+        cue_end = max(cue_start + 0.2, cue_end)
+        cue_end = min(cue_end, float(audio_duration_sec))
+
+        cues.append(
+            {
+                "start_sec": round(cue_start, 3),
+                "end_sec": round(cue_end, 3),
+                "text": chunk,
+            }
         )
 
-        should_flush = (
-            len(current_text) >= 16
-            or current_duration >= 4.0
-            or (ends_with_punctuation and len(current_text) >= 7)
-        )
-
-        if should_flush:
-            flush()
-
-    flush()
+        cue_start = cue_end
 
     return cues
 
@@ -220,6 +287,7 @@ def build_subtitle_cues(
 def align_audio_with_whisperx(
     audio_path: Path,
     audio_duration_sec: float,
+    original_text: str,
 ) -> list[dict[str, Any]]:
     """
     上传已经生成的MP3，让302.AI WhisperX返回真实语音时间戳。
@@ -264,6 +332,7 @@ def align_audio_with_whisperx(
     subtitle_cues = build_subtitle_cues(
         result,
         audio_duration_sec,
+        original_text,
     )
 
     if not subtitle_cues:
@@ -355,6 +424,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         subtitle_cues = align_audio_with_whisperx(
             audio_path,
             duration_sec,
+            payload.text,
         )
     except Exception as exc:
         raise HTTPException(
@@ -483,6 +553,7 @@ def render_scene(
     payload: dict[str, Any],
     scene_index: int,
     total_scenes: int,
+    current_time_sec: float | None = None,
 ) -> None:
     width = int(payload["video"]["width"])
     height = int(payload["video"]["height"])
@@ -630,20 +701,20 @@ def render_scene(
 
     subtitle_cues = payload["narration"].get("subtitle_cues") or []
 
-    if payload.get("audio_url"):
+    if current_time_sec is None:
         timeline_duration = float(
-            payload.get("duration_target_sec") or 90
+            payload.get("render_duration_sec")
+            or payload.get("duration_target_sec")
+            or payload.get("test_duration_sec")
+            or 10
+        )
+        current_time = (
+            scene_index
+            / max(total_scenes - 1, 1)
+            * timeline_duration
         )
     else:
-        timeline_duration = float(
-            payload.get("test_duration_sec") or 10
-        )
-
-    current_time = (
-        scene_index
-        / max(total_scenes - 1, 1)
-        * timeline_duration
-    )
+        current_time = float(current_time_sec)
 
     subtitle = ""
 
@@ -730,6 +801,57 @@ def download_audio(url: str, target: Path) -> None:
                 output.write(chunk)
 
 
+def build_scene_intervals(
+    payload: dict[str, Any],
+    duration: float,
+) -> list[tuple[float, float]]:
+    """
+    按字幕真实起止时间生成画面区间。
+    每条字幕对应一个画面区间，避免固定10张画面造成字幕切换滞后。
+    """
+    duration = max(0.1, float(duration))
+    raw_cues = payload.get("narration", {}).get("subtitle_cues") or []
+    cues: list[tuple[float, float]] = []
+
+    for cue in raw_cues:
+        start = max(0.0, float(cue.get("start_sec") or 0))
+        end = min(duration, float(cue.get("end_sec") or 0))
+
+        if end > start:
+            cues.append((start, end))
+
+    cues.sort(key=lambda item: item[0])
+
+    if not cues:
+        scene_count = 10
+        seconds_per_scene = duration / scene_count
+        return [
+            (
+                index * seconds_per_scene,
+                (index + 1) * seconds_per_scene,
+            )
+            for index in range(scene_count)
+        ]
+
+    intervals: list[tuple[float, float]] = []
+    cursor = 0.0
+
+    for start, end in cues:
+        start = max(cursor, start)
+
+        if start > cursor:
+            intervals.append((cursor, start))
+
+        if end > start:
+            intervals.append((start, end))
+            cursor = end
+
+    if cursor < duration:
+        intervals.append((cursor, duration))
+
+    return intervals
+
+
 def render_job(job_id: str, payload: dict[str, Any]) -> None:
     job_dir = WORK_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -740,13 +862,21 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         duration = probe_duration(audio_path)
         if duration < 20 or duration > 150:
             raise RuntimeError(f"音频时长{duration:.1f}秒，不在20到150秒安全范围")
+        payload["render_duration_sec"] = duration
         update_job(job_id, progress=15)
 
-        scene_count = 10
+        scene_intervals = build_scene_intervals(payload, duration)
+        scene_count = len(scene_intervals)
         scene_paths = []
-        for index in range(scene_count):
+        for index, (start_sec, end_sec) in enumerate(scene_intervals):
             scene_path = job_dir / f"scene-{index:02}.png"
-            render_scene(scene_path, payload, index, scene_count)
+            render_scene(
+                scene_path,
+                payload,
+                index,
+                scene_count,
+                current_time_sec=(start_sec + end_sec) / 2,
+            )
             scene_paths.append(scene_path)
             update_job(job_id, progress=15 + int((index + 1) / scene_count * 50))
 
@@ -754,12 +884,16 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         thumbnail_path = MEDIA_DIR / thumbnail_name
         thumbnail_path.write_bytes(scene_paths[-1].read_bytes())
 
-        seconds_per_scene = duration / scene_count
         concat_path = job_dir / "scenes.txt"
         rows = []
-        for scene_path in scene_paths:
+        for scene_path, (start_sec, end_sec) in zip(
+            scene_paths,
+            scene_intervals,
+        ):
             rows.append(f"file '{scene_path.resolve()}'")
-            rows.append(f"duration {seconds_per_scene:.6f}")
+            rows.append(
+                f"duration {max(0.001, end_sec - start_sec):.6f}"
+            )
         rows.append(f"file '{scene_paths[-1].resolve()}'")
         concat_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
@@ -839,15 +973,17 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
         duration = min(duration, audio_duration)
         if duration < 5:
             raise RuntimeError(f"语音只有{audio_duration:.1f}秒，测试视频至少需要5秒")
+    payload["render_duration_sec"] = duration
 
-    # 每秒一个新的K线画面，FFmpeg直接把帧序列编码成一条视频。
-    frame_count = max(5, math.ceil(duration))
-    for index in range(frame_count):
+    scene_intervals = build_scene_intervals(payload, duration)
+    frame_count = len(scene_intervals)
+    for index, (start_sec, end_sec) in enumerate(scene_intervals):
         render_scene(
             work_dir / f"frame-{index:03}.png",
             payload,
-            round(index / max(frame_count - 1, 1) * 9),
-            10,
+            index,
+            frame_count,
+            current_time_sec=(start_sec + end_sec) / 2,
         )
 
     thumbnail_name = f"test-{render_id}-thumbnail.png"
@@ -855,14 +991,31 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
     thumbnail_path.write_bytes((work_dir / f"frame-{frame_count - 1:03}.png").read_bytes())
     output_name = f"test-{render_id}.mp4"
     output_path = MEDIA_DIR / output_name
-    input_fps = frame_count / duration
+    concat_path = work_dir / "scenes.txt"
+    rows = []
+    for index, (start_sec, end_sec) in enumerate(scene_intervals):
+        frame_path = work_dir / f"frame-{index:03}.png"
+        rows.append(f"file '{frame_path.resolve()}'")
+        rows.append(
+            f"duration {max(0.001, end_sec - start_sec):.6f}"
+        )
+    rows.append(
+        f"file '{(work_dir / f'frame-{frame_count - 1:03}.png').resolve()}'"
+    )
+    concat_path.write_text(
+        "\n".join(rows) + "\n",
+        encoding="utf-8",
+    )
+
     command = [
         "ffmpeg",
         "-y",
-        "-framerate",
-        f"{input_fps:.6f}",
+        "-f",
+        "concat",
+        "-safe",
+        "0",
         "-i",
-        str(work_dir / "frame-%03d.png"),
+        str(concat_path),
     ]
     if audio_url:
         command.extend(["-i", str(audio_path)])
