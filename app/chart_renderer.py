@@ -248,6 +248,19 @@ def _subtitle_at(
     return str(narration.get("full_text") or "")
 
 
+def _cue_start(
+    narration: dict[str, Any],
+    keywords: tuple[str, ...],
+    fallback_sec: float,
+) -> float:
+    """Find when narration first mentions a visual concept."""
+    for cue in narration.get("subtitle_cues") or []:
+        text = str(cue.get("text") or "")
+        if any(keyword in text for keyword in keywords):
+            return max(0.0, float(cue.get("start_sec") or 0))
+    return max(0.0, float(fallback_sec))
+
+
 def render_tradingview_scene(
     path: Path,
     payload: dict[str, Any],
@@ -278,8 +291,27 @@ def render_tradingview_scene(
     selected = _scenario(analysis, payload["style"]["scenario"])
     forecast_all = selected.get("candles") or []
 
-    # The history is narrated first, then the forecast takes over the centre.
-    prediction_start = 0.62
+    narration = payload["narration"]
+    support_start_sec = _cue_start(
+        narration,
+        ("支撑关注", "支撑位"),
+        duration * 0.34,
+    )
+    resistance_start_sec = _cue_start(
+        narration,
+        ("压力关注", "压力位"),
+        duration * 0.40,
+    )
+    level_start_sec = min(support_start_sec, resistance_start_sec)
+    prediction_start_sec = _cue_start(
+        narration,
+        ("基础情景", "预测阶段", "未来走势"),
+        duration * 0.62,
+    )
+    prediction_start = max(
+        0.05,
+        min(0.90, prediction_start_sec / max(duration, 0.1)),
+    )
     prediction_phase = progress >= prediction_start
     if prediction_phase:
         reveal_progress = max(
@@ -313,9 +345,10 @@ def render_tradingview_scene(
     else:
         # Reveal the real market chronologically with the narration.
         initial_history_count = min(8, len(history))
+        history_reveal_end_sec = max(1.0, level_start_sec - 0.5)
         history_reveal = max(
             0.0,
-            min(1.0, progress / prediction_start),
+            min(1.0, current_time / history_reveal_end_sec),
         )
         history_position = min(
             float(len(history)),
@@ -488,14 +521,17 @@ def render_tradingview_scene(
             )
 
     # Key level lines appear only after the historical overview.
-    if payload["style"].get("show_support_resistance", True) and progress >= 0.34:
+    if (
+        payload["style"].get("show_support_resistance", True)
+        and current_time >= level_start_sec
+    ):
         level_start_x = chart_left + (chart_right - chart_left) * 0.50
         levels_to_show = []
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
-        if supports:
+        if supports and current_time >= support_start_sec:
             levels_to_show.append((supports[0], "#7e57c2", "支撑"))
-        if resistances:
+        if resistances and current_time >= resistance_start_sec:
             levels_to_show.append((resistances[0], "#9c4dcc", "压力"))
 
         for level, color, name in levels_to_show:
@@ -646,7 +682,7 @@ def render_tradingview_scene(
     )
 
     # Compact subtitle area; narration and timing are preserved unchanged.
-    subtitle = _subtitle_at(payload["narration"], current_time, progress)
+    subtitle = _subtitle_at(narration, current_time, progress)
     subtitle_lines = _wrap_text(
         draw,
         subtitle,
