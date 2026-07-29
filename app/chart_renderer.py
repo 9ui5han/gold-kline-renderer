@@ -70,6 +70,27 @@ def _scenario(analysis: dict[str, Any], name: str) -> dict[str, Any]:
     return scenarios[0] if scenarios else {"candles": [], "probability": 0}
 
 
+def _partial_candle(candle: dict[str, Any], progress: float) -> dict[str, Any]:
+    """Grow one candle from its open price for smoother narration animation."""
+    fraction = max(0.0, min(1.0, float(progress)))
+    open_price = float(candle["open"])
+    close_price = open_price + (
+        float(candle["close"]) - open_price
+    ) * fraction
+    high_price = open_price + (
+        float(candle["high"]) - open_price
+    ) * fraction
+    low_price = open_price + (
+        float(candle["low"]) - open_price
+    ) * fraction
+
+    result = dict(candle)
+    result["close"] = close_price
+    result["high"] = max(open_price, close_price, high_price)
+    result["low"] = min(open_price, close_price, low_price)
+    return result
+
+
 def _price(value: float) -> str:
     return f"{float(value):,.2f}"
 
@@ -265,14 +286,26 @@ def render_tradingview_scene(
             0.0,
             min(1.0, (progress - prediction_start) / 0.28),
         )
-        forecast_count = min(
-            len(forecast_all),
-            max(0, math.ceil(reveal_progress * len(forecast_all))),
+        forecast_position = min(
+            float(len(forecast_all)),
+            reveal_progress * len(forecast_all),
         )
     else:
-        forecast_count = 0
+        forecast_position = 0.0
 
-    visible_forecast = forecast_all[:forecast_count]
+    forecast_count = min(
+        len(forecast_all),
+        int(math.floor(forecast_position)),
+    )
+    visible_forecast = list(forecast_all[:forecast_count])
+    forecast_fraction = forecast_position - forecast_count
+    if forecast_count < len(forecast_all) and forecast_fraction > 0:
+        visible_forecast.append(
+            _partial_candle(
+                forecast_all[forecast_count],
+                forecast_fraction,
+            )
+        )
     if prediction_phase:
         # Older candles move beyond the left edge so the forecast owns the
         # centre of the vertical frame.
@@ -284,15 +317,22 @@ def render_tradingview_scene(
             0.0,
             min(1.0, progress / prediction_start),
         )
-        history_count = min(
-            len(history),
+        history_position = min(
+            float(len(history)),
             initial_history_count
-            + math.floor(
-                history_reveal
-                * max(len(history) - initial_history_count, 0)
-            ),
+            + history_reveal
+            * max(len(history) - initial_history_count, 0),
         )
-        visible_history = history[:history_count]
+        history_count = int(math.floor(history_position))
+        visible_history = list(history[:history_count])
+        history_fraction = history_position - history_count
+        if history_count < len(history) and history_fraction > 0:
+            visible_history.append(
+                _partial_candle(
+                    history[history_count],
+                    history_fraction,
+                )
+            )
     candles = visible_history + visible_forecast
 
     image = Image.new("RGB", (width, height), "#ffffff")
@@ -446,29 +486,6 @@ def render_tradingview_scene(
                 font=axis_face,
                 fill="#787b86",
             )
-
-    # Show one reliable trendline during analysis; it is not a large zone.
-    trend = _trendline(visible_history)
-    if progress >= 0.18 and trend:
-        trend_label, first, second = trend
-        start_index = first[0]
-        end_index = second[0]
-        x1, y1 = px(start_index), py(first[1])
-        x2 = px(min(len(visible_history) + 4, count - 1))
-        slope = (second[1] - first[1]) / max(second[0] - first[0], 1)
-        projected_price = first[1] + slope * (
-            min(len(visible_history) + 4, count - 1) - start_index
-        )
-        y2 = py(projected_price)
-        draw.line((x1, y1, x2, y2), fill="#296b5f", width=3)
-        _round_rect_label(
-            draw,
-            min(x2 - 150, chart_right - 170),
-            y2 - 22,
-            trend_label,
-            label_face,
-            "#296b5f",
-        )
 
     # Key level lines appear only after the historical overview.
     if payload["style"].get("show_support_resistance", True) and progress >= 0.34:
