@@ -16,6 +16,8 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
 
+from .chart_renderer import render_tradingview_scene
+
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/gold-video"))
 MEDIA_DIR = DATA_DIR / "media"
@@ -860,10 +862,15 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
 
         scene_intervals = build_scene_intervals(payload, duration)
         scene_count = len(scene_intervals)
+        scene_renderer = (
+            render_tradingview_scene
+            if payload["style"].get("theme") == "light_tradingview"
+            else render_scene
+        )
         scene_paths = []
         for index, (start_sec, end_sec) in enumerate(scene_intervals):
             scene_path = job_dir / f"scene-{index:02}.png"
-            render_scene(
+            scene_renderer(
                 scene_path,
                 payload,
                 index,
@@ -970,8 +977,13 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
 
     scene_intervals = build_scene_intervals(payload, duration)
     frame_count = len(scene_intervals)
+    scene_renderer = (
+        render_tradingview_scene
+        if payload["style"].get("theme") == "light_tradingview"
+        else render_scene
+    )
     for index, (start_sec, end_sec) in enumerate(scene_intervals):
-        render_scene(
+        scene_renderer(
             work_dir / f"frame-{index:03}.png",
             payload,
             index,
