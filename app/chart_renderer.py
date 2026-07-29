@@ -14,12 +14,14 @@ SC_FONT_CANDIDATES = (
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 2),
     ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
     ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
 )
 SC_BOLD_FONT_CANDIDATES = (
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", 2),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2),
     ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
+    ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
 )
 FONT_SMOKE_TEXT = "关注关键支撑区，观察压力变化，黄金K线预测"
 _FONT_VERIFIED = False
