@@ -257,23 +257,42 @@ def render_tradingview_scene(
     selected = _scenario(analysis, payload["style"]["scenario"])
     forecast_all = selected.get("candles") or []
 
-    # Observation/support rectangles belong to the forecast discussion.
-    prediction_phase = progress >= 0.62
+    # The history is narrated first, then the forecast takes over the centre.
+    prediction_start = 0.62
+    prediction_phase = progress >= prediction_start
     if prediction_phase:
-        reveal_progress = (progress - 0.62) / 0.25
+        reveal_progress = max(
+            0.0,
+            min(1.0, (progress - prediction_start) / 0.28),
+        )
         forecast_count = min(
             len(forecast_all),
-            max(0, math.ceil(reveal_progress * 6)),
+            max(0, math.ceil(reveal_progress * len(forecast_all))),
         )
     else:
         forecast_count = 0
 
     visible_forecast = forecast_all[:forecast_count]
-    # During prediction the camera tracks the latest section. Older candles are
-    # deliberately allowed to move beyond the left edge so the forecast owns
-    # the centre of the vertical frame.
-    history_limit = 42 if prediction_phase else 90
-    visible_history = history[-min(len(history), history_limit) :]
+    if prediction_phase:
+        # Older candles move beyond the left edge so the forecast owns the
+        # centre of the vertical frame.
+        visible_history = history[-min(len(history), 42) :]
+    else:
+        # Reveal the real market chronologically with the narration.
+        initial_history_count = min(8, len(history))
+        history_reveal = max(
+            0.0,
+            min(1.0, progress / prediction_start),
+        )
+        history_count = min(
+            len(history),
+            initial_history_count
+            + math.floor(
+                history_reveal
+                * max(len(history) - initial_history_count, 0)
+            ),
+        )
+        visible_history = history[:history_count]
     candles = visible_history + visible_forecast
 
     image = Image.new("RGB", (width, height), "#ffffff")
@@ -284,7 +303,6 @@ def render_tradingview_scene(
     axis_face = _font(20)
     label_face = _font(21, True)
     subtitle_face = _font(34, True)
-    risk_face = _font(19)
 
     # Compact TradingView-like header.
     draw.text(
@@ -303,7 +321,7 @@ def render_tradingview_scene(
     chart_left = 48
     chart_top = 145
     chart_right = width - 84
-    chart_bottom = height - 330
+    chart_bottom = height - 280
     price_axis_x = chart_right
     time_axis_y = chart_bottom
     draw.rectangle(
@@ -313,9 +331,14 @@ def render_tradingview_scene(
         width=1,
     )
 
+    scale_candles = (
+        history
+        if not prediction_phase
+        else visible_history + forecast_all
+    )
     prices = [
         float(candle[key])
-        for candle in candles
+        for candle in scale_candles
         for key in ("high", "low")
     ]
     if prediction_phase:
@@ -355,12 +378,19 @@ def render_tradingview_scene(
         )
 
     count = max(len(candles), 1)
-    normal_slot = (chart_right - chart_left - 24) / count
+    normal_capacity = (
+        max(len(history), 1)
+        if not prediction_phase
+        else max(len(visible_history) + len(forecast_all), 1)
+    )
+    normal_slot = (
+        chart_right - chart_left - 24
+    ) / normal_capacity
     camera_progress = 0.0
     if prediction_phase:
         raw_camera_progress = max(
             0.0,
-            min(1.0, (progress - 0.62) / 0.10),
+            min(1.0, (progress - prediction_start) / 0.10),
         )
         camera_progress = raw_camera_progress * raw_camera_progress * (
             3 - 2 * raw_camera_progress
@@ -380,7 +410,14 @@ def render_tradingview_scene(
         return normal_x + (focused_x - normal_x) * camera_progress
 
     # Vertical time grid.
-    time_marks = 6
+    visible_width = max(
+        px(max(len(candles) - 1, 0)) - chart_left,
+        0,
+    )
+    time_marks = max(
+        2,
+        min(6, int(visible_width / 180) + 1),
+    )
     if prediction_phase and camera_progress > 0.5:
         first_time_index = max(len(visible_history) - 10, 0)
         last_time_index = max(len(candles) - 1, first_time_index)
@@ -600,9 +637,9 @@ def render_tradingview_scene(
         width - 150,
         max_lines=2,
     )
-    subtitle_top = height - 245
+    subtitle_top = height - 215
     draw.rounded_rectangle(
-        (48, subtitle_top, width - 48, height - 92),
+        (48, subtitle_top, width - 48, height - 38),
         radius=20,
         fill="#f4f4f6",
         outline="#d9dce3",
@@ -618,10 +655,4 @@ def render_tradingview_scene(
             fill="#131722",
         )
 
-    draw.text(
-        (52, height - 61),
-        "AI辅助分析 · 预测可能完全错误 · 仅供研究教育 · 不构成投资建议",
-        font=risk_face,
-        fill="#787b86",
-    )
     image.save(path, "PNG")
