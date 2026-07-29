@@ -134,6 +134,145 @@ class TTSProxyRequest(BaseModel):
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
+def build_subtitle_cues(
+    alignment_result: dict[str, Any],
+    audio_duration_sec: float,
+) -> list[dict[str, Any]]:
+    """
+    把 WhisperX 返回的单词时间转换成适合短视频显示的字幕。
+    每条字幕约7～16个汉字，最长约4秒。
+    """
+    words: list[dict[str, Any]] = []
+
+    for segment in alignment_result.get("segments") or []:
+        for word in segment.get("words") or []:
+            text = str(word.get("word") or "").strip().replace(" ", "")
+            start = word.get("start")
+            end = word.get("end")
+
+            if not text or start is None or end is None:
+                continue
+
+            words.append(
+                {
+                    "text": text,
+                    "start": float(start),
+                    "end": float(end),
+                }
+            )
+
+    cues: list[dict[str, Any]] = []
+    current_words: list[str] = []
+    current_start: float | None = None
+    current_end: float | None = None
+
+    def flush() -> None:
+        nonlocal current_words, current_start, current_end
+
+        if not current_words or current_start is None or current_end is None:
+            return
+
+        text = "".join(current_words).strip()
+
+        if text:
+            cues.append(
+                {
+                    "start_sec": round(max(0, current_start), 3),
+                    "end_sec": round(
+                        min(float(audio_duration_sec), current_end),
+                        3,
+                    ),
+                    "text": text,
+                }
+            )
+
+        current_words = []
+        current_start = None
+        current_end = None
+
+    for word in words:
+        if current_start is None:
+            current_start = word["start"]
+
+        current_words.append(word["text"])
+        current_end = word["end"]
+
+        current_text = "".join(current_words)
+        current_duration = current_end - current_start
+        ends_with_punctuation = current_text.endswith(
+            ("。", "！", "？", "；", "，", "、", ".", "!", "?", ";")
+        )
+
+        should_flush = (
+            len(current_text) >= 16
+            or current_duration >= 4.0
+            or (ends_with_punctuation and len(current_text) >= 7)
+        )
+
+        if should_flush:
+            flush()
+
+    flush()
+
+    return cues
+
+
+def align_audio_with_whisperx(
+    audio_path: Path,
+    audio_duration_sec: float,
+) -> list[dict[str, Any]]:
+    """
+    上传已经生成的MP3，让302.AI WhisperX返回真实语音时间戳。
+    """
+    try:
+        with audio_path.open("rb") as audio_file:
+            response = httpx.post(
+                "https://api.302.ai/302/whisperx",
+                headers={
+                    "Authorization": f"Bearer {AI302_API_KEY}",
+                    "Accept": "application/json",
+                },
+                files={
+                    "audio_input": (
+                        audio_path.name,
+                        audio_file,
+                        "audio/mpeg",
+                    )
+                },
+                data={
+                    "language": "zh",
+                    "processing_type": "align",
+                    "translate": "false",
+                    "output": "text",
+                },
+                timeout=300,
+            )
+
+        response.raise_for_status()
+        result = response.json()
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"WHISPERX_REQUEST_FAILED: {exc}"
+        ) from exc
+
+    if result.get("error"):
+        raise RuntimeError(
+            f"WHISPERX_ALIGNMENT_FAILED: {result['error']}"
+        )
+
+    subtitle_cues = build_subtitle_cues(
+        result,
+        audio_duration_sec,
+    )
+
+    if not subtitle_cues:
+        raise RuntimeError(
+            "WHISPERX_NO_SUBTITLE_CUES: 没有识别到有效字幕时间"
+        )
+
+    return subtitle_cues
+    
 @app.post("/v1/tts", dependencies=[Depends(require_token)])
 def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     if not AI302_API_KEY:
@@ -207,12 +346,29 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     audio_path = MEDIA_DIR / audio_name
     audio_path.write_bytes(audio_bytes)
 
-    duration_sec = round(probe_duration(audio_path), 3)
+    duration_sec = round(
+        probe_duration(audio_path),
+        3,
+    )
+
+    try:
+        subtitle_cues = align_audio_with_whisperx(
+            audio_path,
+            duration_sec,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=str(exc),
+        ) from exc
 
     return {
         "status": "completed",
         "audio_url": f"{PUBLIC_BASE_URL}/media/{audio_name}",
         "duration_sec": duration_sec,
+        "subtitle_cues": subtitle_cues,
+        "subtitle_count": len(subtitle_cues),
+        "alignment_method": "302_whisperx",
         "format": "mp3",
         "error_code": "",
         "error_message": "",
