@@ -846,10 +846,10 @@ def build_scene_intervals(
 
     # The TradingView theme animates candles against narration. Subdivide long
     # subtitle intervals so the renderer receives a new visual state every
-    # half-second instead of holding one still image for an entire sentence.
+    # fifth-second instead of holding one still image for an entire sentence.
     if payload.get("style", {}).get("theme") == "light_tradingview":
         animated_intervals: list[tuple[float, float]] = []
-        step_seconds = 0.5
+        step_seconds = 0.2
 
         for start, end in intervals:
             frame_start = start
