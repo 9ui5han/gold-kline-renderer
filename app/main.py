@@ -74,6 +74,7 @@ class RenderRequest(BaseModel):
     test_duration_sec: int = Field(default=10, ge=5, le=20)
     historical_candles: list[Candle] = Field(min_length=20, max_length=500)
     analysis_forecast: dict[str, Any]
+    forecast_paths: dict[str, Any] = Field(default_factory=dict)
     narration: dict[str, Any]
     audio_url: str = ""
     video: VideoOptions = Field(default_factory=VideoOptions)
