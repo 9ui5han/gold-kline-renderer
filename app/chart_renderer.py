@@ -647,6 +647,7 @@ def render_tradingview_scene(
     # Key level lines appear only after the historical overview. Their exact
     # price tags are drawn again near the end so zones/arrows cannot cover them.
     levels_to_show = []
+    structure_levels_to_show = []
     if (
         payload["style"].get("show_support_resistance", True)
         and current_time >= level_start_sec
@@ -656,9 +657,9 @@ def render_tradingview_scene(
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
-            levels_to_show.append((supports[0], "#7e57c2", "支撑"))
+            levels_to_show.append((supports[0], "#2962ff", "支撑"))
         if resistances and current_time >= resistance_start_sec:
-            levels_to_show.append((resistances[0], "#9c4dcc", "压力"))
+            levels_to_show.append((resistances[0], "#f59e0b", "压力"))
 
         for level, color, name in levels_to_show:
             y = py(float(level))
@@ -669,6 +670,28 @@ def render_tradingview_scene(
                 width=2,
                 dash=10,
             )
+
+        if prediction_phase:
+            swing_highs = _pivot_points(visible_history, "high")
+            swing_lows = _pivot_points(visible_history, "low")
+            if swing_highs:
+                structure_levels_to_show.append(
+                    (swing_highs[-1][1], "#089981", "BOS")
+                )
+            if swing_lows:
+                structure_levels_to_show.append(
+                    (swing_lows[-1][1], "#f23645", "CHOCH")
+                )
+
+            for level, color, _ in structure_levels_to_show:
+                y = py(float(level))
+                _dashed_line(
+                    draw,
+                    (chart_left, y, chart_right, y),
+                    fill=color,
+                    width=3,
+                    dash=5,
+                )
 
     # Local rectangles are intentionally restricted to the prediction section.
     if (
@@ -895,16 +918,41 @@ def render_tradingview_scene(
                     fill="#787b86",
                 )
 
-    # Exact historical support/resistance values belong to the foreground.
-    # Draw them after zones and the forecast arrow to prevent any overlap.
+    # Support/resistance and market structure are separate concepts and use
+    # separate colours. Nearby right-side tags are offset with connector lines.
     for level, color, name in levels_to_show:
         y = py(float(level))
-        structure_name = "CHOCH" if name == "支撑" else "BOS"
         _round_rect_label(
             draw,
             width - 8,
             y,
-            f"{structure_name} · {name} {_price(level)}",
+            f"{name} {_price(level)}",
+            axis_face,
+            color,
+            anchor="rm",
+        )
+
+    for level, color, name in structure_levels_to_show:
+        true_y = py(float(level))
+        display_y = true_y
+        for zone_level, _, zone_name in levels_to_show:
+            zone_y = py(float(zone_level))
+            if abs(display_y - zone_y) < 48:
+                display_y = (
+                    zone_y - 52
+                    if name == "BOS"
+                    else zone_y + 52
+                )
+        draw.line(
+            (chart_right, true_y, chart_right + 22, display_y),
+            fill=color,
+            width=3,
+        )
+        _round_rect_label(
+            draw,
+            width - 8,
+            display_y,
+            f"{name} {_price(level)}",
             axis_face,
             color,
             anchor="rm",
