@@ -395,6 +395,66 @@ def _arrow_head(
     )
     return [end, left, right]
 
+def _rank_structure_scenarios(
+    forecast_paths: dict[str, Any],
+) -> list[dict[str, Any]]:
+    scenarios = [
+        item
+        for item in forecast_paths.get("scenarios") or []
+        if isinstance(item, dict)
+        and isinstance(item.get("path_points"), list)
+    ]
+    if not scenarios:
+        return []
+
+    by_id = {
+        str(item.get("scenario_id") or ""): item
+        for item in scenarios
+    }
+    ordered: list[dict[str, Any]] = []
+    for key in (
+        forecast_paths.get("primary_scenario"),
+        forecast_paths.get("alternate_scenario"),
+    ):
+        item = by_id.get(str(key or ""))
+        if item is not None and item not in ordered:
+            ordered.append(item)
+
+    for item in sorted(
+        scenarios,
+        key=lambda value: float(
+            value.get("probability_prior") or 0
+        ),
+        reverse=True,
+    ):
+        if item not in ordered:
+            ordered.append(item)
+    return ordered
+
+
+def _structure_path_values(
+    scenario: dict[str, Any],
+) -> list[tuple[float, float]]:
+    values = []
+    for point in scenario.get("path_points") or []:
+        try:
+            ratio = float(point["time_ratio"])
+            value = float(point["resolved_value"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(ratio) and math.isfinite(value):
+            values.append((max(0.0, min(1.0, ratio)), value))
+    values.sort(key=lambda item: item[0])
+    return values
+
+
+def _scenario_text(value: str) -> str:
+    return {
+        "sideways": "区间震荡",
+        "up": "向上情景",
+        "down": "向下情景",
+    }.get(str(value or ""), "条件情景")
+
 
 def _pivot_points(
     candles: list[dict[str, Any]],
@@ -500,6 +560,20 @@ def render_tradingview_scene(
     history = payload["historical_candles"]
     selected = _scenario(analysis, payload["style"]["scenario"])
     forecast_all = selected.get("candles") or []
+    forecast_paths = payload.get("forecast_paths") or {}
+    ranked_structure_scenarios = _rank_structure_scenarios(
+        forecast_paths
+    )
+    primary_structure_values = (
+        _structure_path_values(ranked_structure_scenarios[0])
+        if ranked_structure_scenarios
+        else []
+    )
+    alternate_structure_values = (
+        _structure_path_values(ranked_structure_scenarios[1])
+        if len(ranked_structure_scenarios) > 1
+        else []
+    )
 
     narration = payload["narration"]
     support_start_sec = _cue_start(
@@ -522,6 +596,8 @@ def render_tradingview_scene(
             "接下来展示",
             "预测K线",
             "预测前段",
+            "结构路径",
+            "未来5小时",
         ),
         duration * 0.62,
     )
@@ -601,7 +677,7 @@ def render_tradingview_scene(
 
     scale_candles = (
         history
-        if not prediction_phase
+        if not prediction_phase or primary_structure_values
         else visible_history + forecast_all
     )
     prices = [
@@ -613,6 +689,10 @@ def render_tradingview_scene(
         for zone_key in ("potential_buy_zones", "potential_sell_zones"):
             for zone in analysis.get(zone_key) or []:
                 prices.extend((float(zone["low"]), float(zone["high"])))
+        for _, value in (
+            primary_structure_values + alternate_structure_values
+        ):
+            prices.append(float(value))
     if not prices:
         prices = [0.0, 1.0]
 
@@ -857,9 +937,120 @@ def render_tradingview_scene(
                 anchor="rm",
             )
 
-    # Reference-style scenario paths: a few thin angular moves connect decision
-    # regions. The 12 candles choose the primary direction, not exact corners.
-    if prediction_phase and forecast_all and reveal_progress > 0:
+    # New structure-path contract: Dify sends 4-6 validated decision nodes.
+    # The highest ranked scenario is dark gray and the runner-up is light gray.
+    structured_path_rendered = False
+    if (
+        prediction_phase
+        and len(primary_structure_values) >= 2
+        and reveal_progress > 0
+    ):
+        forecast_left = history_end_x + 4
+        forecast_right = chart_right - 18
+
+        def structure_points(
+            values: list[tuple[float, float]],
+        ) -> list[tuple[float, float]]:
+            return [
+                (
+                    forecast_left
+                    + ratio * (forecast_right - forecast_left),
+                    py(value),
+                )
+                for ratio, value in values
+            ]
+
+        primary_points = structure_points(primary_structure_values)
+        alternate_points = structure_points(
+            alternate_structure_values
+        )
+        visible_primary = _partial_polyline(
+            primary_points,
+            reveal_progress,
+        )
+        alternate_progress = max(
+            0.0,
+            min(1.0, (reveal_progress - 0.18) / 0.82),
+        )
+        visible_alternate = _partial_polyline(
+            alternate_points,
+            alternate_progress,
+        )
+
+        if len(visible_alternate) >= 2:
+            draw.line(
+                visible_alternate,
+                fill="#c5c9cf",
+                width=2,
+            )
+            draw.polygon(
+                _arrow_head(
+                    visible_alternate[-1],
+                    visible_alternate[-2],
+                    size=11,
+                ),
+                fill="#c5c9cf",
+            )
+
+        if len(visible_primary) >= 2:
+            primary_color = "#565b63"
+            draw.line(
+                visible_primary,
+                fill=primary_color,
+                width=3,
+            )
+            draw.polygon(
+                _arrow_head(
+                    visible_primary[-1],
+                    visible_primary[-2],
+                    size=14,
+                ),
+                fill=primary_color,
+            )
+            primary_name = _scenario_text(
+                ranked_structure_scenarios[0].get("scenario_id")
+            )
+            alternate_name = (
+                _scenario_text(
+                    ranked_structure_scenarios[1].get("scenario_id")
+                )
+                if len(ranked_structure_scenarios) > 1
+                else "暂无"
+            )
+            _round_rect_label(
+                draw,
+                chart_left + (chart_right - chart_left) * 0.61,
+                chart_top + 70,
+                f"主路径 {primary_name} · 备选 {alternate_name}",
+                label_face,
+                primary_color,
+            )
+
+        for label, fraction in (
+            ("近期", 0.12),
+            ("中段", 0.50),
+            ("后段", 0.88),
+        ):
+            x = (
+                forecast_left
+                + (forecast_right - forecast_left) * fraction
+            )
+            draw.text(
+                (x - 22, chart_bottom - 48),
+                label,
+                font=axis_face,
+                fill="#787b86",
+            )
+        structured_path_rendered = True
+
+    # Backward-compatible fallback: old requests still derive the path from
+    # forecast candles until every Dify environment has migrated.
+    if (
+        prediction_phase
+        and not structured_path_rendered
+        and forecast_all
+        and reveal_progress > 0
+    ):
         last_close = float(visible_history[-1]["close"])
         use_range_path = (
             selected.get("name") == "base"
