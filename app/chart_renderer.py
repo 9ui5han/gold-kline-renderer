@@ -647,12 +647,11 @@ def render_tradingview_scene(
     # Key level lines appear only after the historical overview. Their exact
     # price tags are drawn again near the end so zones/arrows cannot cover them.
     levels_to_show = []
-    structure_levels_to_show = []
     if (
         payload["style"].get("show_support_resistance", True)
         and current_time >= level_start_sec
     ):
-        # BOS/CHOCH observation levels run through the full chart.
+        # Support and resistance run through the full chart.
         level_start_x = chart_left
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
@@ -670,28 +669,6 @@ def render_tradingview_scene(
                 width=2,
                 dash=10,
             )
-
-        if prediction_phase:
-            swing_highs = _pivot_points(visible_history, "high")
-            swing_lows = _pivot_points(visible_history, "low")
-            if swing_highs:
-                structure_levels_to_show.append(
-                    (swing_highs[-1][1], "#089981", "BOS")
-                )
-            if swing_lows:
-                structure_levels_to_show.append(
-                    (swing_lows[-1][1], "#f23645", "CHOCH")
-                )
-
-            for level, color, _ in structure_levels_to_show:
-                y = py(float(level))
-                _dashed_line(
-                    draw,
-                    (chart_left, y, chart_right, y),
-                    fill=color,
-                    width=3,
-                    dash=5,
-                )
 
     # Local rectangles are intentionally restricted to the prediction section.
     if (
@@ -853,42 +830,21 @@ def render_tradingview_scene(
             neutral_threshold = max((pmax - pmin) * 0.025, 0.01)
             if end_value > start_value + neutral_threshold:
                 trend_color = "#089981"
-                band_fill = (8, 153, 129, 42)
                 trend_text = "震荡偏多"
             elif end_value < start_value - neutral_threshold:
                 trend_color = "#f23645"
-                band_fill = (242, 54, 69, 40)
                 trend_text = "震荡偏空"
             else:
                 trend_color = "#6f4aa8"
-                band_fill = (111, 74, 168, 42)
                 trend_text = "区间整理"
 
-            upper = []
-            lower = []
-            denominator = max(len(visible_trend) - 1, 1)
-            for index, point in enumerate(visible_trend):
-                uncertainty = 10 + 35 * index / denominator
-                upper.append((point[0], point[1] - uncertainty))
-                lower.append((point[0], point[1] + uncertainty))
-
-            band = Image.new("RGBA", image.size, (0, 0, 0, 0))
-            band_draw = ImageDraw.Draw(band)
-            band_draw.polygon(
-                upper + list(reversed(lower)),
-                fill=band_fill,
-            )
-            image.paste(band, (0, 0), band)
-            draw = ImageDraw.Draw(image)
-
-            # White halo separates the angular path from the other overlays.
-            draw.line(visible_trend, fill="#ffffff", width=15)
-            draw.line(visible_trend, fill=trend_color, width=7)
+            # Thin, clean and angular: no glow and no uncertainty shadow.
+            draw.line(visible_trend, fill=trend_color, width=3)
             draw.polygon(
                 _arrow_head(
                     visible_trend[-1],
                     visible_trend[-2],
-                    size=25,
+                    size=14,
                 ),
                 fill=trend_color,
             )
@@ -918,40 +874,14 @@ def render_tradingview_scene(
                     fill="#787b86",
                 )
 
-    # Support/resistance and market structure are separate concepts and use
-    # separate colours. Nearby right-side tags are offset with connector lines.
+    # Support and resistance keep their own colours. BOS/CHOCH are intentionally
+    # hidden until the project has a complete confirmation engine.
     for level, color, name in levels_to_show:
         y = py(float(level))
         _round_rect_label(
             draw,
             width - 8,
             y,
-            f"{name} {_price(level)}",
-            axis_face,
-            color,
-            anchor="rm",
-        )
-
-    for level, color, name in structure_levels_to_show:
-        true_y = py(float(level))
-        display_y = true_y
-        for zone_level, _, zone_name in levels_to_show:
-            zone_y = py(float(zone_level))
-            if abs(display_y - zone_y) < 48:
-                display_y = (
-                    zone_y - 52
-                    if name == "BOS"
-                    else zone_y + 52
-                )
-        draw.line(
-            (chart_right, true_y, chart_right + 22, display_y),
-            fill=color,
-            width=3,
-        )
-        _round_rect_label(
-            draw,
-            width - 8,
-            display_y,
             f"{name} {_price(level)}",
             axis_face,
             color,
