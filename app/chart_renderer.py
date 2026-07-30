@@ -460,7 +460,9 @@ def render_tradingview_scene(
 
     chart_left = 48
     chart_top = 188
-    chart_right = width - 84
+    # Reserve a dedicated lane on the right for exact price tags. Candles,
+    # zones and the trend arrow never enter this lane.
+    chart_right = width - 150
     chart_bottom = height - 280
     price_axis_x = chart_right
     time_axis_y = chart_bottom
@@ -800,20 +802,12 @@ def render_tradingview_scene(
         y = py(float(level))
         _round_rect_label(
             draw,
-            chart_right,
+            width - 8,
             y,
-            _price(level),
+            f"{name} {_price(level)}",
             axis_face,
             color,
             anchor="rm",
-        )
-        _round_rect_label(
-            draw,
-            chart_left + (chart_right - chart_left) * 0.50 + 12,
-            y - 22,
-            name,
-            label_face,
-            color,
         )
 
     # Current real price line and label.
@@ -865,7 +859,15 @@ def render_tradingview_scene(
 
     # Draw the real-data header last on an opaque layer so no chart, label or
     # subtitle can cover exact historical values.
-    latest = history[-1]
+    # During the historical reveal, OHLC follows the latest candle currently
+    # visible on screen. Once prediction begins, it freezes at the last real
+    # candle because the trend arrow has no precise forecast OHLC.
+    latest = (
+        history[-1]
+        if prediction_phase
+        else visible_history[-1]
+    )
+    header_state = "最后真实K线" if prediction_phase else "当前显示"
     draw.rectangle(
         (0, 0, width, 168),
         fill="#ffffff",
@@ -883,7 +885,7 @@ def render_tradingview_scene(
     )
     draw.text(
         (52, 72),
-        f"数据截止 {_time_label(payload['data_as_of'])}",
+        f"K线时间 {_time_label(latest.get('time', ''))}",
         font=meta_face,
         fill="#787b86",
     )
@@ -903,7 +905,7 @@ def render_tradingview_scene(
         draw,
         width - 44,
         48,
-        "真实数据",
+        header_state,
         axis_face,
         "#089981",
         anchor="rm",
