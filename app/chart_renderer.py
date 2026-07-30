@@ -588,13 +588,14 @@ def render_tradingview_scene(
                 fill="#787b86",
             )
 
-    # Key level lines appear only after the historical overview.
+    # Key level lines appear only after the historical overview. Their exact
+    # price tags are drawn again near the end so zones/arrows cannot cover them.
+    levels_to_show = []
     if (
         payload["style"].get("show_support_resistance", True)
         and current_time >= level_start_sec
     ):
         level_start_x = chart_left + (chart_right - chart_left) * 0.50
-        levels_to_show = []
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
@@ -610,23 +611,6 @@ def render_tradingview_scene(
                 fill=color,
                 width=2,
                 dash=10,
-            )
-            _round_rect_label(
-                draw,
-                chart_right,
-                y,
-                _price(level),
-                axis_face,
-                color,
-                anchor="rm",
-            )
-            _round_rect_label(
-                draw,
-                level_start_x + 12,
-                y - 22,
-                name,
-                label_face,
-                color,
             )
 
     # Local rectangles are intentionally restricted to the prediction section.
@@ -809,6 +793,28 @@ def render_tradingview_scene(
                     font=axis_face,
                     fill="#787b86",
                 )
+
+    # Exact historical support/resistance values belong to the foreground.
+    # Draw them after zones and the forecast arrow to prevent any overlap.
+    for level, color, name in levels_to_show:
+        y = py(float(level))
+        _round_rect_label(
+            draw,
+            chart_right,
+            y,
+            _price(level),
+            axis_face,
+            color,
+            anchor="rm",
+        )
+        _round_rect_label(
+            draw,
+            chart_left + (chart_right - chart_left) * 0.50 + 12,
+            y - 22,
+            name,
+            label_face,
+            color,
+        )
 
     # Current real price line and label.
     last_close = float(visible_history[-1]["close"])
