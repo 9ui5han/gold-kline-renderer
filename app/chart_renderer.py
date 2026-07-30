@@ -186,6 +186,91 @@ def _dashed_line(
         draw.line((sx, sy, ex, ey), fill=fill, width=width)
 
 
+def _partial_polyline(
+    points: list[tuple[float, float]],
+    progress: float,
+) -> list[tuple[float, float]]:
+    """Reveal a bent line by travelled distance for smooth frame animation."""
+    if len(points) < 2:
+        return points
+
+    fraction = max(0.0, min(1.0, float(progress)))
+    lengths = [
+        math.hypot(
+            points[index][0] - points[index - 1][0],
+            points[index][1] - points[index - 1][1],
+        )
+        for index in range(1, len(points))
+    ]
+    total = sum(lengths)
+    if total <= 0:
+        return points[:1]
+
+    remaining = total * fraction
+    visible = [points[0]]
+    for index, length in enumerate(lengths, start=1):
+        if remaining >= length:
+            visible.append(points[index])
+            remaining -= length
+            continue
+        if length > 0 and remaining > 0:
+            ratio = remaining / length
+            x1, y1 = points[index - 1]
+            x2, y2 = points[index]
+            visible.append((
+                x1 + (x2 - x1) * ratio,
+                y1 + (y2 - y1) * ratio,
+            ))
+        break
+    return visible
+
+
+def _forecast_anchor_values(
+    forecast: list[dict[str, Any]],
+    last_close: float,
+) -> list[tuple[int, float]]:
+    """Compress precise forecast candles into a few smooth trend anchors."""
+    closes = [float(last_close)] + [
+        float(item["close"]) for item in forecast
+    ]
+    if len(closes) <= 2:
+        return list(enumerate(closes))
+
+    smoothed = [closes[0]]
+    for index in range(1, len(closes) - 1):
+        smoothed.append(
+            (
+                closes[index - 1]
+                + closes[index]
+                + closes[index + 1]
+            )
+            / 3
+        )
+    smoothed.append(closes[-1])
+
+    indices = list(range(0, len(smoothed), 2))
+    if indices[-1] != len(smoothed) - 1:
+        indices.append(len(smoothed) - 1)
+    return [(index, smoothed[index]) for index in indices]
+
+
+def _arrow_head(
+    end: tuple[float, float],
+    previous: tuple[float, float],
+    size: float = 18,
+) -> list[tuple[float, float]]:
+    angle = math.atan2(end[1] - previous[1], end[0] - previous[0])
+    left = (
+        end[0] - size * math.cos(angle - math.pi / 6),
+        end[1] - size * math.sin(angle - math.pi / 6),
+    )
+    right = (
+        end[0] - size * math.cos(angle + math.pi / 6),
+        end[1] - size * math.sin(angle + math.pi / 6),
+    )
+    return [end, left, right]
+
+
 def _pivot_points(
     candles: list[dict[str, Any]],
     key: str,
@@ -305,7 +390,14 @@ def render_tradingview_scene(
     level_start_sec = min(support_start_sec, resistance_start_sec)
     prediction_start_sec = _cue_start(
         narration,
-        ("基础情景", "预测阶段", "未来走势"),
+        (
+            "基础情景",
+            "预测阶段",
+            "未来走势",
+            "接下来展示",
+            "预测K线",
+            "预测前段",
+        ),
         duration * 0.62,
     )
     prediction_start = max(
@@ -325,19 +417,6 @@ def render_tradingview_scene(
     else:
         forecast_position = 0.0
 
-    forecast_count = min(
-        len(forecast_all),
-        int(math.floor(forecast_position)),
-    )
-    visible_forecast = list(forecast_all[:forecast_count])
-    forecast_fraction = forecast_position - forecast_count
-    if forecast_count < len(forecast_all) and forecast_fraction > 0:
-        visible_forecast.append(
-            _partial_candle(
-                forecast_all[forecast_count],
-                forecast_fraction,
-            )
-        )
     if prediction_phase:
         # Older candles move beyond the left edge so the forecast owns the
         # centre of the vertical frame.
@@ -366,7 +445,9 @@ def render_tradingview_scene(
                     history_fraction,
                 )
             )
-    candles = visible_history + visible_forecast
+    # Forecast OHLC values stay internal. The screen only shows an abstract
+    # bent trend arrow, never precise future candles, prices or timestamps.
+    candles = visible_history
 
     image = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(image)
@@ -377,22 +458,8 @@ def render_tradingview_scene(
     label_face = _font(21, True)
     subtitle_face = _font(34, True)
 
-    # Compact TradingView-like header.
-    draw.text(
-        (52, 36),
-        f"{payload['symbol']} · {payload['timeframe']}",
-        font=title_face,
-        fill="#131722",
-    )
-    draw.text(
-        (52, 88),
-        f"数据截止 {_time_label(payload['data_as_of'])}",
-        font=meta_face,
-        fill="#787b86",
-    )
-
     chart_left = 48
-    chart_top = 145
+    chart_top = 188
     chart_right = width - 84
     chart_bottom = height - 280
     price_axis_x = chart_right
@@ -493,7 +560,8 @@ def render_tradingview_scene(
     )
     if prediction_phase and camera_progress > 0.5:
         first_time_index = max(len(visible_history) - 10, 0)
-        last_time_index = max(len(candles) - 1, first_time_index)
+        # Future timestamps are intentionally hidden.
+        last_time_index = max(len(visible_history) - 1, first_time_index)
     else:
         first_time_index = 0
         last_time_index = max(len(candles) - 1, 0)
@@ -610,7 +678,7 @@ def render_tradingview_scene(
             )
 
     # Divider between real and forecast bars.
-    if prediction_phase and visible_forecast:
+    if prediction_phase and forecast_all and reveal_progress > 0:
         divider_x = px(len(visible_history)) - slot / 2
         _dashed_line(
             draw,
@@ -623,7 +691,7 @@ def render_tradingview_scene(
             draw,
             divider_x + 10,
             chart_top + 24,
-            "预测开始",
+            "趋势推演",
             label_face,
             "#2962ff",
         )
@@ -633,11 +701,8 @@ def render_tradingview_scene(
         x = px(index)
         if x < chart_left - body_width or x > chart_right + body_width:
             continue
-        is_forecast = index >= len(visible_history)
         rising = float(candle["close"]) >= float(candle["open"])
         color = "#089981" if rising else "#f23645"
-        if is_forecast:
-            color = "#2962ff"
 
         draw.line(
             (x, py(candle["high"]), x, py(candle["low"])),
@@ -649,17 +714,101 @@ def render_tradingview_scene(
         y1, y2 = min(open_y, close_y), max(open_y, close_y)
         y2 = max(y2, y1 + 3)
 
-        if is_forecast:
-            draw.rectangle(
-                (x - body_width / 2, y1, x + body_width / 2, y2),
-                outline=color,
-                width=2,
+        draw.rectangle(
+            (x - body_width / 2, y1, x + body_width / 2, y2),
+            fill=color,
+        )
+
+    # Bent forecast arrow with a widening uncertainty band. Exact future
+    # prices and timestamps are deliberately not labelled.
+    if prediction_phase and forecast_all and reveal_progress > 0:
+        last_close = float(visible_history[-1]["close"])
+        anchors = _forecast_anchor_values(forecast_all, last_close)
+        trend_points = [
+            (
+                px(len(visible_history) - 1 + offset),
+                py(value),
             )
-        else:
-            draw.rectangle(
-                (x - body_width / 2, y1, x + body_width / 2, y2),
-                fill=color,
+            for offset, value in anchors
+        ]
+        visible_trend = _partial_polyline(
+            trend_points,
+            reveal_progress,
+        )
+
+        if len(visible_trend) >= 2:
+            start_value = anchors[0][1]
+            end_value = anchors[-1][1]
+            neutral_threshold = max((pmax - pmin) * 0.025, 0.01)
+            if end_value > start_value + neutral_threshold:
+                trend_color = "#089981"
+                band_fill = (8, 153, 129, 42)
+                trend_text = "震荡偏多"
+            elif end_value < start_value - neutral_threshold:
+                trend_color = "#f23645"
+                band_fill = (242, 54, 69, 40)
+                trend_text = "震荡偏空"
+            else:
+                trend_color = "#6f4aa8"
+                band_fill = (111, 74, 168, 42)
+                trend_text = "区间整理"
+
+            upper = []
+            lower = []
+            denominator = max(len(trend_points) - 1, 1)
+            for index, point in enumerate(visible_trend):
+                uncertainty = 8 + 42 * index / denominator
+                upper.append((point[0], point[1] - uncertainty))
+                lower.append((point[0], point[1] + uncertainty))
+
+            band = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            band_draw = ImageDraw.Draw(band)
+            band_draw.polygon(
+                upper + list(reversed(lower)),
+                fill=band_fill,
             )
+            image.paste(band, (0, 0), band)
+            draw = ImageDraw.Draw(image)
+
+            draw.line(
+                visible_trend,
+                fill=trend_color,
+                width=8,
+                joint="curve",
+            )
+            draw.polygon(
+                _arrow_head(
+                    visible_trend[-1],
+                    visible_trend[-2],
+                    size=22,
+                ),
+                fill=trend_color,
+            )
+            _round_rect_label(
+                draw,
+                chart_left + (chart_right - chart_left) * 0.61,
+                chart_top + 70,
+                f"趋势推演 · {trend_text}",
+                label_face,
+                trend_color,
+            )
+
+            forecast_x1 = px(len(visible_history))
+            forecast_x2 = px(
+                len(visible_history) + max(len(forecast_all) - 1, 1)
+            )
+            for label, fraction in (
+                ("近期", 0.12),
+                ("中段", 0.50),
+                ("后段", 0.88),
+            ):
+                x = forecast_x1 + (forecast_x2 - forecast_x1) * fraction
+                draw.text(
+                    (x - 22, chart_bottom - 48),
+                    label,
+                    font=axis_face,
+                    fill="#787b86",
+                )
 
     # Current real price line and label.
     last_close = float(visible_history[-1]["close"])
@@ -707,5 +856,51 @@ def render_tradingview_scene(
             font=subtitle_face,
             fill="#131722",
         )
+
+    # Draw the real-data header last on an opaque layer so no chart, label or
+    # subtitle can cover exact historical values.
+    latest = history[-1]
+    draw.rectangle(
+        (0, 0, width, 168),
+        fill="#ffffff",
+    )
+    draw.line(
+        (0, 167, width, 167),
+        fill="#d9dce3",
+        width=2,
+    )
+    draw.text(
+        (52, 24),
+        f"{payload['symbol']} · {payload['timeframe']}",
+        font=title_face,
+        fill="#131722",
+    )
+    draw.text(
+        (52, 72),
+        f"数据截止 {_time_label(payload['data_as_of'])}",
+        font=meta_face,
+        fill="#787b86",
+    )
+    real_ohlc = (
+        f"O {_price(latest['open'])}   "
+        f"H {_price(latest['high'])}   "
+        f"L {_price(latest['low'])}   "
+        f"C {_price(latest['close'])}"
+    )
+    draw.text(
+        (52, 112),
+        real_ohlc,
+        font=meta_face,
+        fill="#131722",
+    )
+    _round_rect_label(
+        draw,
+        width - 44,
+        48,
+        "真实数据",
+        axis_face,
+        "#089981",
+        anchor="rm",
+    )
 
     image.save(path, "PNG")
