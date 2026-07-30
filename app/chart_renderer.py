@@ -515,7 +515,8 @@ def render_tradingview_scene(
     chart_top = 188
     # Reserve a dedicated lane on the right for exact price tags. Candles,
     # zones and the trend arrow never enter this lane.
-    chart_right = width - 150
+    # Keep a wide right lane for price and market-structure names.
+    chart_right = width - 220
     chart_bottom = height - 280
     price_axis_x = chart_right
     time_axis_y = chart_bottom
@@ -650,7 +651,8 @@ def render_tradingview_scene(
         payload["style"].get("show_support_resistance", True)
         and current_time >= level_start_sec
     ):
-        level_start_x = chart_left + (chart_right - chart_left) * 0.50
+        # BOS/CHOCH observation levels run through the full chart.
+        level_start_x = chart_left
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
@@ -758,39 +760,34 @@ def render_tradingview_scene(
             fill=color,
         )
 
-    # Mark only the newest recent FVG so market-structure information stays
-    # useful without turning the vertical video into a crowded terminal.
+    # Mark only the newest recent FVG. The zone runs through the whole chart
+    # and its name belongs to the dedicated right-side indicator lane.
     if prediction_phase:
         fvg = _recent_fvg(visible_history)
         if fvg:
             fvg_name, fvg_low, fvg_high, fvg_index = fvg
-            fvg_x1 = max(chart_left, px(max(fvg_index - 2, 0)))
-            fvg_x2 = min(
-                chart_right,
-                px(len(visible_history) + 2),
-            )
+            fvg_x1 = chart_left
+            fvg_x2 = chart_right
             fvg_y1 = py(fvg_high)
             fvg_y2 = py(fvg_low)
             fvg_color = "#089981" if fvg_name == "多头FVG" else "#f23645"
-            fvg_fill = "#e2f3ef" if fvg_name == "多头FVG" else "#fde7ea"
             draw.rectangle(
                 (fvg_x1, fvg_y1, fvg_x2, fvg_y2),
-                fill=fvg_fill,
                 outline=fvg_color,
                 width=2,
             )
             _round_rect_label(
                 draw,
-                fvg_x1 + 8,
+                width - 8,
                 (fvg_y1 + fvg_y2) / 2,
                 fvg_name,
                 axis_face,
                 fvg_color,
+                anchor="rm",
             )
 
-    # Smooth forecast path with a visual-amplitude floor. It remains derived
-    # from all 12 forecast closes; only the screen-space deviation is enlarged
-    # so a narrow consolidation is still readable on a phone.
+    # Angular forecast path with a visual-amplitude floor. It remains derived
+    # from all 12 forecast closes and deliberately keeps every visible corner.
     if prediction_phase and forecast_all and reveal_progress > 0:
         last_close = float(visible_history[-1]["close"])
         anchors = _forecast_anchor_values(forecast_all, last_close)
@@ -822,7 +819,6 @@ def render_tradingview_scene(
             )
             for x, y in raw_trend_points
         ]
-        trend_points = _smooth_curve(trend_points)
         visible_trend = _partial_polyline(
             trend_points,
             reveal_progress,
@@ -862,9 +858,9 @@ def render_tradingview_scene(
             image.paste(band, (0, 0), band)
             draw = ImageDraw.Draw(image)
 
-            # White halo separates the path from zones, candles and the FVG.
-            draw.line(visible_trend, fill="#ffffff", width=16, joint="curve")
-            draw.line(visible_trend, fill=trend_color, width=8, joint="curve")
+            # White halo separates the angular path from the other overlays.
+            draw.line(visible_trend, fill="#ffffff", width=15)
+            draw.line(visible_trend, fill=trend_color, width=7)
             draw.polygon(
                 _arrow_head(
                     visible_trend[-1],
@@ -881,32 +877,6 @@ def render_tradingview_scene(
                 label_face,
                 trend_color,
             )
-
-            # Structure triggers connect the projected path to the two zones.
-            supports = analysis.get("support_levels") or []
-            resistances = analysis.get("resistance_levels") or []
-            trigger_x = min(
-                chart_right - 260,
-                px(len(visible_history) + len(forecast_all) - 2),
-            )
-            if resistances:
-                _round_rect_label(
-                    draw,
-                    trigger_x,
-                    py(float(resistances[0])) - 72,
-                    "上破压力 → BOS确认",
-                    axis_face,
-                    "#089981",
-                )
-            if supports:
-                _round_rect_label(
-                    draw,
-                    trigger_x,
-                    py(float(supports[0])) + 70,
-                    "下破支撑 → CHOCH警报",
-                    axis_face,
-                    "#f23645",
-                )
 
             forecast_x1 = px(len(visible_history))
             forecast_x2 = px(
@@ -929,11 +899,12 @@ def render_tradingview_scene(
     # Draw them after zones and the forecast arrow to prevent any overlap.
     for level, color, name in levels_to_show:
         y = py(float(level))
+        structure_name = "CHOCH" if name == "支撑" else "BOS"
         _round_rect_label(
             draw,
             width - 8,
             y,
-            f"{name} {_price(level)}",
+            f"{structure_name} · {name} {_price(level)}",
             axis_face,
             color,
             anchor="rm",
