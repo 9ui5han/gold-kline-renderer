@@ -250,6 +250,57 @@ def _forecast_anchor_values(
     return list(enumerate(smoothed))
 
 
+def _qualitative_range_path(
+    analysis: dict[str, Any],
+    forecast: list[dict[str, Any]],
+    last_close: float,
+) -> list[tuple[int, float]] | None:
+    """Build a low-certainty range path from bias and key boundaries."""
+    supports = analysis.get("support_levels") or []
+    resistances = analysis.get("resistance_levels") or []
+    if not supports or not resistances or not forecast:
+        return None
+
+    support = float(supports[0])
+    resistance = float(resistances[0])
+    if resistance <= support:
+        return None
+
+    span = resistance - support
+    low_inner = support + span * 0.18
+    high_inner = resistance - span * 0.18
+    centre = (support + resistance) / 2
+    start = max(low_inner, min(high_inner, float(last_close)))
+    end_close = float(forecast[-1]["close"])
+    offsets = [
+        0,
+        max(1, round(len(forecast) * 0.25)),
+        max(2, round(len(forecast) * 0.50)),
+        max(3, round(len(forecast) * 0.75)),
+        len(forecast),
+    ]
+
+    # The 12 candles decide only the first testing direction and slight final
+    # bias. They do not dictate a precise candle-by-candle future path.
+    if end_close >= last_close:
+        values = [
+            start,
+            high_inner,
+            centre,
+            low_inner,
+            centre + span * 0.08,
+        ]
+    else:
+        values = [
+            start,
+            low_inner,
+            centre,
+            high_inner,
+            centre - span * 0.08,
+        ]
+    return list(zip(offsets, values))
+
+
 def _smooth_curve(
     points: list[tuple[float, float]],
     samples_per_segment: int = 8,
@@ -789,7 +840,19 @@ def render_tradingview_scene(
     # from all 12 forecast closes and deliberately keeps every visible corner.
     if prediction_phase and forecast_all and reveal_progress > 0:
         last_close = float(visible_history[-1]["close"])
-        anchors = _forecast_anchor_values(forecast_all, last_close)
+        use_range_path = (
+            selected.get("name") == "base"
+            and analysis.get("trend") in ("sideways", "mixed")
+        )
+        anchors = (
+            _qualitative_range_path(
+                analysis,
+                forecast_all,
+                last_close,
+            )
+            if use_range_path
+            else None
+        ) or _forecast_anchor_values(forecast_all, last_close)
         raw_trend_points = [
             (
                 px(len(visible_history) - 1 + offset),
@@ -801,9 +864,13 @@ def render_tradingview_scene(
         raw_span = max(
             point[1] for point in raw_trend_points
         ) - min(point[1] for point in raw_trend_points)
-        visual_boost = min(
-            3.8,
-            max(1.35, 135 / max(raw_span, 1)),
+        visual_boost = (
+            1.0
+            if use_range_path
+            else min(
+                3.8,
+                max(1.35, 135 / max(raw_span, 1)),
+            )
         )
         trend_points = [
             (
@@ -851,7 +918,11 @@ def render_tradingview_scene(
                 draw,
                 chart_left + (chart_right - chart_left) * 0.61,
                 chart_top + 70,
-                f"12根K线趋势示意 · {trend_text}",
+                (
+                    f"区间可能路径 · {trend_text}"
+                    if use_range_path
+                    else f"趋势可能路径 · {trend_text}"
+                ),
                 label_face,
                 trend_color,
             )
