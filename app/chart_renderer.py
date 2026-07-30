@@ -229,7 +229,7 @@ def _forecast_anchor_values(
     forecast: list[dict[str, Any]],
     last_close: float,
 ) -> list[tuple[int, float]]:
-    """Compress precise forecast candles into a few smooth trend anchors."""
+    """Keep the forecast turns while reducing one-frame candle noise."""
     closes = [float(last_close)] + [
         float(item["close"]) for item in forecast
     ]
@@ -240,18 +240,71 @@ def _forecast_anchor_values(
     for index in range(1, len(closes) - 1):
         smoothed.append(
             (
-                closes[index - 1]
-                + closes[index]
-                + closes[index + 1]
+                closes[index - 1] * 0.20
+                + closes[index] * 0.60
+                + closes[index + 1] * 0.20
             )
-            / 3
         )
     smoothed.append(closes[-1])
 
-    indices = list(range(0, len(smoothed), 2))
-    if indices[-1] != len(smoothed) - 1:
-        indices.append(len(smoothed) - 1)
-    return [(index, smoothed[index]) for index in indices]
+    return list(enumerate(smoothed))
+
+
+def _smooth_curve(
+    points: list[tuple[float, float]],
+    samples_per_segment: int = 8,
+) -> list[tuple[float, float]]:
+    """Create a rounded Catmull-Rom path through all forecast anchors."""
+    if len(points) < 3:
+        return points
+
+    padded = [points[0]] + points + [points[-1]]
+    result = [points[0]]
+    for index in range(1, len(padded) - 2):
+        p0, p1, p2, p3 = padded[index - 1 : index + 3]
+        for sample in range(1, samples_per_segment + 1):
+            t = sample / samples_per_segment
+            t2 = t * t
+            t3 = t2 * t
+            x = 0.5 * (
+                2 * p1[0]
+                + (-p0[0] + p2[0]) * t
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+            )
+            y = 0.5 * (
+                2 * p1[1]
+                + (-p0[1] + p2[1]) * t
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+            )
+            result.append((x, y))
+    return result
+
+
+def _recent_fvg(
+    candles: list[dict[str, Any]],
+) -> tuple[str, float, float, int] | None:
+    """Return the newest three-candle fair-value gap in recent history."""
+    start = max(2, len(candles) - 35)
+    for index in range(len(candles) - 1, start - 1, -1):
+        first = candles[index - 2]
+        third = candles[index]
+        if float(third["low"]) > float(first["high"]):
+            return (
+                "多头FVG",
+                float(first["high"]),
+                float(third["low"]),
+                index,
+            )
+        if float(third["high"]) < float(first["low"]):
+            return (
+                "空头FVG",
+                float(third["high"]),
+                float(first["low"]),
+                index,
+            )
+    return None
 
 
 def _arrow_head(
@@ -705,18 +758,71 @@ def render_tradingview_scene(
             fill=color,
         )
 
-    # Bent forecast arrow with a widening uncertainty band. Exact future
-    # prices and timestamps are deliberately not labelled.
+    # Mark only the newest recent FVG so market-structure information stays
+    # useful without turning the vertical video into a crowded terminal.
+    if prediction_phase:
+        fvg = _recent_fvg(visible_history)
+        if fvg:
+            fvg_name, fvg_low, fvg_high, fvg_index = fvg
+            fvg_x1 = max(chart_left, px(max(fvg_index - 2, 0)))
+            fvg_x2 = min(
+                chart_right,
+                px(len(visible_history) + 2),
+            )
+            fvg_y1 = py(fvg_high)
+            fvg_y2 = py(fvg_low)
+            fvg_color = "#089981" if fvg_name == "多头FVG" else "#f23645"
+            fvg_fill = "#e2f3ef" if fvg_name == "多头FVG" else "#fde7ea"
+            draw.rectangle(
+                (fvg_x1, fvg_y1, fvg_x2, fvg_y2),
+                fill=fvg_fill,
+                outline=fvg_color,
+                width=2,
+            )
+            _round_rect_label(
+                draw,
+                fvg_x1 + 8,
+                (fvg_y1 + fvg_y2) / 2,
+                fvg_name,
+                axis_face,
+                fvg_color,
+            )
+
+    # Smooth forecast path with a visual-amplitude floor. It remains derived
+    # from all 12 forecast closes; only the screen-space deviation is enlarged
+    # so a narrow consolidation is still readable on a phone.
     if prediction_phase and forecast_all and reveal_progress > 0:
         last_close = float(visible_history[-1]["close"])
         anchors = _forecast_anchor_values(forecast_all, last_close)
-        trend_points = [
+        raw_trend_points = [
             (
                 px(len(visible_history) - 1 + offset),
                 py(value),
             )
             for offset, value in anchors
         ]
+        base_y = raw_trend_points[0][1]
+        raw_span = max(
+            point[1] for point in raw_trend_points
+        ) - min(point[1] for point in raw_trend_points)
+        visual_boost = min(
+            3.8,
+            max(1.35, 135 / max(raw_span, 1)),
+        )
+        trend_points = [
+            (
+                x,
+                max(
+                    chart_top + 160,
+                    min(
+                        chart_bottom - 125,
+                        base_y + (y - base_y) * visual_boost,
+                    ),
+                ),
+            )
+            for x, y in raw_trend_points
+        ]
+        trend_points = _smooth_curve(trend_points)
         visible_trend = _partial_polyline(
             trend_points,
             reveal_progress,
@@ -741,9 +847,9 @@ def render_tradingview_scene(
 
             upper = []
             lower = []
-            denominator = max(len(trend_points) - 1, 1)
+            denominator = max(len(visible_trend) - 1, 1)
             for index, point in enumerate(visible_trend):
-                uncertainty = 8 + 42 * index / denominator
+                uncertainty = 10 + 35 * index / denominator
                 upper.append((point[0], point[1] - uncertainty))
                 lower.append((point[0], point[1] + uncertainty))
 
@@ -756,17 +862,14 @@ def render_tradingview_scene(
             image.paste(band, (0, 0), band)
             draw = ImageDraw.Draw(image)
 
-            draw.line(
-                visible_trend,
-                fill=trend_color,
-                width=8,
-                joint="curve",
-            )
+            # White halo separates the path from zones, candles and the FVG.
+            draw.line(visible_trend, fill="#ffffff", width=16, joint="curve")
+            draw.line(visible_trend, fill=trend_color, width=8, joint="curve")
             draw.polygon(
                 _arrow_head(
                     visible_trend[-1],
                     visible_trend[-2],
-                    size=22,
+                    size=25,
                 ),
                 fill=trend_color,
             )
@@ -774,10 +877,36 @@ def render_tradingview_scene(
                 draw,
                 chart_left + (chart_right - chart_left) * 0.61,
                 chart_top + 70,
-                f"趋势推演 · {trend_text}",
+                f"12根K线趋势示意 · {trend_text}",
                 label_face,
                 trend_color,
             )
+
+            # Structure triggers connect the projected path to the two zones.
+            supports = analysis.get("support_levels") or []
+            resistances = analysis.get("resistance_levels") or []
+            trigger_x = min(
+                chart_right - 260,
+                px(len(visible_history) + len(forecast_all) - 2),
+            )
+            if resistances:
+                _round_rect_label(
+                    draw,
+                    trigger_x,
+                    py(float(resistances[0])) - 72,
+                    "上破压力 → BOS确认",
+                    axis_face,
+                    "#089981",
+                )
+            if supports:
+                _round_rect_label(
+                    draw,
+                    trigger_x,
+                    py(float(supports[0])) + 70,
+                    "下破支撑 → CHOCH警报",
+                    axis_face,
+                    "#f23645",
+                )
 
             forecast_x1 = px(len(visible_history))
             forecast_x2 = px(
