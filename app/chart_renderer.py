@@ -250,12 +250,15 @@ def _forecast_anchor_values(
     return list(enumerate(smoothed))
 
 
-def _qualitative_range_path(
+def _qualitative_range_paths(
     analysis: dict[str, Any],
     forecast: list[dict[str, Any]],
     last_close: float,
-) -> list[tuple[int, float]] | None:
-    """Build a low-certainty range path from bias and key boundaries."""
+) -> tuple[
+    list[tuple[int, float]],
+    list[tuple[int, float]],
+] | None:
+    """Build primary and alternate paths between structural regions."""
     supports = analysis.get("support_levels") or []
     resistances = analysis.get("resistance_levels") or []
     if not supports or not resistances or not forecast:
@@ -267,38 +270,56 @@ def _qualitative_range_path(
         return None
 
     span = resistance - support
-    low_inner = support + span * 0.18
-    high_inner = resistance - span * 0.18
+    low_inner = support + span * 0.10
+    high_inner = resistance - span * 0.10
     centre = (support + resistance) / 2
     start = max(low_inner, min(high_inner, float(last_close)))
     end_close = float(forecast[-1]["close"])
-    offsets = [
+    primary_offsets = [
         0,
-        max(1, round(len(forecast) * 0.25)),
-        max(2, round(len(forecast) * 0.50)),
-        max(3, round(len(forecast) * 0.75)),
+        max(1, round(len(forecast) * 0.35)),
+        max(2, round(len(forecast) * 0.68)),
+        len(forecast),
+    ]
+    alternate_offsets = [
+        0,
+        max(1, round(len(forecast) * 0.28)),
+        max(2, round(len(forecast) * 0.62)),
         len(forecast),
     ]
 
-    # The 12 candles decide only the first testing direction and slight final
-    # bias. They do not dictate a precise candle-by-candle future path.
+    # The 12 candles decide which path is primary. Each path connects decision
+    # regions instead of pretending to know every future candle.
     if end_close >= last_close:
-        values = [
+        primary_values = [
+            start,
+            low_inner,
+            centre,
+            high_inner,
+        ]
+        alternate_values = [
             start,
             high_inner,
             centre,
             low_inner,
-            centre + span * 0.08,
         ]
     else:
-        values = [
+        primary_values = [
+            start,
+            high_inner,
+            centre,
+            low_inner,
+        ]
+        alternate_values = [
             start,
             low_inner,
             centre,
             high_inner,
-            centre - span * 0.08,
         ]
-    return list(zip(offsets, values))
+    return (
+        list(zip(primary_offsets, primary_values)),
+        list(zip(alternate_offsets, alternate_values)),
+    )
 
 
 def _smooth_curve(
@@ -836,23 +857,28 @@ def render_tradingview_scene(
                 anchor="rm",
             )
 
-    # Angular forecast path with a visual-amplitude floor. It remains derived
-    # from all 12 forecast closes and deliberately keeps every visible corner.
+    # Reference-style scenario paths: a few thin angular moves connect decision
+    # regions. The 12 candles choose the primary direction, not exact corners.
     if prediction_phase and forecast_all and reveal_progress > 0:
         last_close = float(visible_history[-1]["close"])
         use_range_path = (
             selected.get("name") == "base"
             and analysis.get("trend") in ("sideways", "mixed")
         )
-        anchors = (
-            _qualitative_range_path(
+        range_paths = (
+            _qualitative_range_paths(
                 analysis,
                 forecast_all,
                 last_close,
             )
             if use_range_path
             else None
-        ) or _forecast_anchor_values(forecast_all, last_close)
+        )
+        if range_paths:
+            anchors, alternate_anchors = range_paths
+        else:
+            anchors = _forecast_anchor_values(forecast_all, last_close)
+            alternate_anchors = []
         raw_trend_points = [
             (
                 px(len(visible_history) - 1 + offset),
@@ -889,12 +915,30 @@ def render_tradingview_scene(
             trend_points,
             reveal_progress,
         )
+        alternate_points = [
+            (
+                px(len(visible_history) - 1 + offset),
+                py(value),
+            )
+            for offset, value in alternate_anchors
+        ]
+        alternate_progress = max(
+            0.0,
+            min(1.0, (reveal_progress - 0.18) / 0.82),
+        )
+        visible_alternate = _partial_polyline(
+            alternate_points,
+            alternate_progress,
+        )
 
         if len(visible_trend) >= 2:
             start_value = anchors[0][1]
             end_value = anchors[-1][1]
             neutral_threshold = max((pmax - pmin) * 0.025, 0.01)
-            if end_value > start_value + neutral_threshold:
+            if use_range_path:
+                trend_color = "#8b9099"
+                trend_text = "双向情景"
+            elif end_value > start_value + neutral_threshold:
                 trend_color = "#089981"
                 trend_text = "震荡偏多"
             elif end_value < start_value - neutral_threshold:
@@ -903,6 +947,22 @@ def render_tradingview_scene(
             else:
                 trend_color = "#6f4aa8"
                 trend_text = "区间整理"
+
+            # The alternate path is lighter and appears just after the primary.
+            if len(visible_alternate) >= 2:
+                draw.line(
+                    visible_alternate,
+                    fill="#c5c9cf",
+                    width=2,
+                )
+                draw.polygon(
+                    _arrow_head(
+                        visible_alternate[-1],
+                        visible_alternate[-2],
+                        size=11,
+                    ),
+                    fill="#c5c9cf",
+                )
 
             # Thin, clean and angular: no glow and no uncertainty shadow.
             draw.line(visible_trend, fill=trend_color, width=3)
@@ -919,7 +979,7 @@ def render_tradingview_scene(
                 chart_left + (chart_right - chart_left) * 0.61,
                 chart_top + 70,
                 (
-                    f"区间可能路径 · {trend_text}"
+                    f"主要与备选路径 · {trend_text}"
                     if use_range_path
                     else f"趋势可能路径 · {trend_text}"
                 ),
