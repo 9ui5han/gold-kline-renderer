@@ -471,9 +471,9 @@ def render_tradingview_scene(
         forecast_position = 0.0
 
     if prediction_phase:
-        # Older candles move beyond the left edge so the forecast owns the
-        # centre of the vertical frame.
-        visible_history = history[-min(len(history), 42) :]
+        # Keep every real candle in its original slot. The forecast uses a
+        # right-side area reserved from the beginning of the video.
+        visible_history = list(history)
     else:
         # Reveal the real market chronologically with the narration.
         initial_history_count = min(8, len(history))
@@ -574,36 +574,35 @@ def render_tradingview_scene(
         )
 
     count = max(len(candles), 1)
-    normal_capacity = (
-        max(len(history), 1)
-        if not prediction_phase
-        else max(len(visible_history) + len(forecast_all), 1)
-    )
-    normal_slot = (
-        chart_right - chart_left - 24
-    ) / normal_capacity
+    chart_width = chart_right - chart_left
+    history_end_x = chart_left + chart_width * 0.76
+    history_slot = (
+        history_end_x - chart_left - 18
+    ) / max(len(history), 1)
+    forecast_slot = (
+        chart_right - history_end_x - 14
+    ) / max(len(forecast_all), 1)
+    # No forecast camera push: historical candles stay in place while the
+    # prediction occupies the remaining right-side slots.
     camera_progress = 0.0
-    if prediction_phase:
-        raw_camera_progress = max(
-            0.0,
-            min(1.0, (progress - prediction_start) / 0.10),
-        )
-        camera_progress = raw_camera_progress * raw_camera_progress * (
-            3 - 2 * raw_camera_progress
-        )
-    focus_slot = (chart_right - chart_left) / 22
-    slot = normal_slot + (focus_slot - normal_slot) * camera_progress
-    body_width = max(4, min(14, int(slot * 0.62)))
+    slot = forecast_slot if prediction_phase else history_slot
+    body_width = max(3, min(10, int(history_slot * 0.68)))
 
     def px(index: int) -> float:
-        normal_x = chart_left + 12 + normal_slot * (index + 0.5)
-        forecast_centre_x = chart_left + (
-            chart_right - chart_left
-        ) * 0.44
-        focused_x = forecast_centre_x + focus_slot * (
-            index - len(visible_history) + 0.5
+        history_last_index = max(len(history) - 1, 1)
+        if index <= len(history) - 1:
+            return (
+                chart_left
+                + 10
+                + (history_end_x - chart_left - 20)
+                * index
+                / history_last_index
+            )
+        forecast_offset = index - (len(history) - 1)
+        return min(
+            chart_right - 8,
+            history_end_x + forecast_slot * forecast_offset,
         )
-        return normal_x + (focused_x - normal_x) * camera_progress
 
     # Vertical time grid.
     visible_width = max(
