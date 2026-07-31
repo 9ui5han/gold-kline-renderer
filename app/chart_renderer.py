@@ -395,6 +395,7 @@ def _arrow_head(
     )
     return [end, left, right]
 
+
 def _rank_structure_scenarios(
     forecast_paths: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -434,7 +435,7 @@ def _rank_structure_scenarios(
 
 def _structure_path_values(
     scenario: dict[str, Any],
-) -> list[tuple[float, float]]:
+) -> list[tuple[float, float, str]]:
     values = []
     for point in scenario.get("path_points") or []:
         try:
@@ -443,9 +444,89 @@ def _structure_path_values(
         except (KeyError, TypeError, ValueError):
             continue
         if math.isfinite(ratio) and math.isfinite(value):
-            values.append((max(0.0, min(1.0, ratio)), value))
+            values.append(
+                (
+                    max(0.0, min(1.0, ratio)),
+                    value,
+                    str(point.get("target_type") or ""),
+                )
+            )
     values.sort(key=lambda item: item[0])
     return values
+
+
+def _first_level_touch_index(
+    values: list[tuple[float, float, str]],
+) -> int | None:
+    """Return the first support/resistance decision point after the start."""
+    for index, (_, _, target_type) in enumerate(values[1:], start=1):
+        if target_type in {"support", "resistance"}:
+            return index
+    return None
+
+
+def _distance_to_segment(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+    if dx == 0 and dy == 0:
+        return math.hypot(point[0] - start[0], point[1] - start[1])
+    ratio = (
+        (point[0] - start[0]) * dx + (point[1] - start[1]) * dy
+    ) / (dx * dx + dy * dy)
+    ratio = max(0.0, min(1.0, ratio))
+    nearest = (start[0] + ratio * dx, start[1] + ratio * dy)
+    return math.hypot(point[0] - nearest[0], point[1] - nearest[1])
+
+
+def _segment_overlaps_polyline(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    polyline: list[tuple[float, float]],
+    tolerance: float = 10.0,
+) -> bool:
+    """Hide an alternate segment when it occupies the dashed main branch."""
+    if len(polyline) < 2:
+        return False
+    midpoint = ((start[0] + end[0]) / 2, (start[1] + end[1]) / 2)
+    samples = (start, midpoint, end)
+    return all(
+        min(
+            _distance_to_segment(sample, line_start, line_end)
+            for line_start, line_end in zip(polyline, polyline[1:])
+        )
+        <= tolerance
+        for sample in samples
+    )
+
+
+def _spread_label_positions(
+    desired_positions: list[float],
+    top: float,
+    bottom: float,
+    minimum_gap: float = 46.0,
+) -> list[float]:
+    """Keep adjacent right-axis labels readable without changing prices."""
+    if not desired_positions:
+        return []
+    indexed = sorted(enumerate(desired_positions), key=lambda item: item[1])
+    placed = [0.0] * len(desired_positions)
+    cursor = top
+    for original_index, desired in indexed:
+        value = max(desired, cursor)
+        placed[original_index] = value
+        cursor = value + minimum_gap
+    overflow = max(0.0, cursor - minimum_gap - bottom)
+    if overflow:
+        for original_index, _ in indexed:
+            placed[original_index] -= overflow
+    underflow = max(0.0, top - min(placed))
+    if underflow:
+        placed = [value + underflow for value in placed]
+    return placed
 
 
 def _scenario_text(value: str) -> str:
@@ -559,12 +640,11 @@ def render_tradingview_scene(
     analysis = payload["analysis_forecast"]
     history = payload["historical_candles"]
     selected = _scenario(analysis, payload["style"]["scenario"])
+    show_alternate_path = bool(
+        payload["style"].get("show_alternate_path", True)
+    )
     forecast_all = selected.get("candles") or []
     forecast_paths = payload.get("forecast_paths") or {}
-    # Dify decides whether the runner-up is useful enough to show.
-    show_alternate_path = bool(
-        (payload.get("style") or {}).get("show_alternate_path", True)
-    )
     ranked_structure_scenarios = _rank_structure_scenarios(
         forecast_paths
     )
@@ -575,9 +655,16 @@ def render_tradingview_scene(
     )
     alternate_structure_values = (
         _structure_path_values(ranked_structure_scenarios[1])
-        if show_alternate_path
-        and len(ranked_structure_scenarios) > 1
+        if (
+            show_alternate_path
+            and len(ranked_structure_scenarios) > 1
+        )
         else []
+    )
+    primary_touch_branch = (
+        ranked_structure_scenarios[0].get("touch_branch")
+        if ranked_structure_scenarios
+        else None
     )
 
     narration = payload["narration"]
@@ -694,7 +781,7 @@ def render_tradingview_scene(
         for zone_key in ("potential_buy_zones", "potential_sell_zones"):
             for zone in analysis.get(zone_key) or []:
                 prices.extend((float(zone["low"]), float(zone["high"])))
-        for _, value in (
+        for _, value, _ in (
             primary_structure_values + alternate_structure_values
         ):
             prices.append(float(value))
@@ -713,6 +800,28 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 68)
         )
 
+    # The grey axis numbers share the same right-side lane as support,
+    # resistance and current-price tags. Reserve space for every coloured
+    # numeric tag before drawing the grey scale numbers.
+    protected_price_values = [
+        float(visible_history[-1]["close"]),
+    ]
+    if payload["style"].get("show_support_resistance", True):
+        supports = analysis.get("support_levels") or []
+        resistances = analysis.get("resistance_levels") or []
+        if supports and current_time >= support_start_sec:
+            protected_price_values.append(float(supports[0]))
+        if resistances and current_time >= resistance_start_sec:
+            protected_price_values.append(float(resistances[0]))
+    protected_true_positions = [
+        py(value) for value in protected_price_values
+    ]
+    protected_label_positions = _spread_label_positions(
+        protected_true_positions,
+        chart_top + 28,
+        chart_bottom - 28,
+    )
+
     # TradingView-like grid and right price scale.
     for grid_index in range(7):
         fraction = grid_index / 6
@@ -723,12 +832,20 @@ def render_tradingview_scene(
             fill="#eef0f3",
             width=1,
         )
-        draw.text(
-            (price_axis_x + 8, y - 11),
-            _price(value),
-            font=axis_face,
-            fill="#787b86",
-        )
+        # Never place a grey numeric scale label underneath or immediately
+        # beside a coloured numeric tag.
+        if not any(
+            abs(y - protected_y) < 30
+            for protected_y in (
+                protected_true_positions + protected_label_positions
+            )
+        ):
+            draw.text(
+                (price_axis_x + 8, y - 11),
+                _price(value),
+                font=axis_face,
+                fill="#787b86",
+            )
 
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
@@ -867,11 +984,12 @@ def render_tradingview_scene(
             )
             _round_rect_label(
                 draw,
-                zone_x1 + 12,
+                history_end_x - 14,
                 (y1 + y2) / 2,
                 label,
                 label_face,
                 outline,
+                anchor="rm",
             )
 
     # Divider between real and forecast bars.
@@ -916,6 +1034,10 @@ def render_tradingview_scene(
             fill=color,
         )
 
+    # Collect every extra right-lane label first. It will be positioned
+    # together with support, resistance and current price near the end.
+    extra_right_labels: list[tuple[float, str, str]] = []
+
     # Mark only the newest recent FVG. The zone runs through the whole chart
     # and its name belongs to the dedicated right-side indicator lane.
     if prediction_phase:
@@ -932,18 +1054,16 @@ def render_tradingview_scene(
                 outline=fvg_color,
                 width=2,
             )
-            _round_rect_label(
-                draw,
-                width - 8,
-                (fvg_y1 + fvg_y2) / 2,
-                fvg_name,
-                axis_face,
-                fvg_color,
-                anchor="rm",
+            extra_right_labels.append(
+                (
+                    (fvg_y1 + fvg_y2) / 2,
+                    fvg_color,
+                    fvg_name,
+                )
             )
 
-    # New structure-path contract: Dify sends 4-6 validated decision nodes.
-    # The highest ranked scenario is dark gray and the runner-up is light gray.
+    # New structure-path contract: Dify sends 3-4 validated decision nodes.
+    # The highest ranked scenario is green and the runner-up is red.
     structured_path_rendered = False
     if (
         prediction_phase
@@ -954,7 +1074,7 @@ def render_tradingview_scene(
         forecast_right = chart_right - 18
 
         def structure_points(
-            values: list[tuple[float, float]],
+            values: list[tuple[float, float, str]],
         ) -> list[tuple[float, float]]:
             return [
                 (
@@ -962,72 +1082,135 @@ def render_tradingview_scene(
                     + ratio * (forecast_right - forecast_left),
                     py(value),
                 )
-                for ratio, value in values
+                for ratio, value, _ in values
             ]
 
         primary_points = structure_points(primary_structure_values)
         alternate_points = structure_points(
             alternate_structure_values
         )
-        visible_primary = _partial_polyline(
-            primary_points,
-            reveal_progress,
-        )
-        alternate_progress = max(
-            0.0,
-            min(1.0, (reveal_progress - 0.18) / 0.82),
-        )
-        visible_alternate = _partial_polyline(
-            alternate_points,
-            alternate_progress,
-        )
+        # A structural prediction is a single conclusion, so show the whole
+        # line as soon as the prediction phase begins instead of drawing it
+        # slowly segment by segment.
+        visible_primary = primary_points
+        visible_alternate = alternate_points
 
-        if len(visible_alternate) >= 2:
+        branch_points: list[tuple[float, float]] = []
+        branch_direction = ""
+        if isinstance(primary_touch_branch, dict):
+            try:
+                origin_order = int(
+                    primary_touch_branch["origin_order"]
+                )
+                end_ratio = float(
+                    primary_touch_branch["end_time_ratio"]
+                )
+                end_value = float(
+                    primary_touch_branch["resolved_value"]
+                )
+                origin = primary_points[origin_order - 1]
+                branch_end = (
+                    forecast_left
+                    + end_ratio * (forecast_right - forecast_left),
+                    py(end_value),
+                )
+                branch_points = [origin, branch_end]
+                branch_direction = str(
+                    primary_touch_branch.get("direction") or ""
+                )
+            except (KeyError, IndexError, TypeError, ValueError):
+                branch_points = []
+                branch_direction = ""
+
+        # If the runner-up starts from the same turning point and moves in the
+        # same direction as the dashed condition branch, it adds no new visual
+        # information. Hide the whole runner-up in that case.
+        alternate_duplicates_branch = False
+        if len(branch_points) == 2 and len(visible_alternate) >= 2:
+            branch_origin = branch_points[0]
+            for index, point in enumerate(visible_alternate[:-1]):
+                if math.hypot(
+                    point[0] - branch_origin[0],
+                    point[1] - branch_origin[1],
+                ) > 14:
+                    continue
+                next_point = visible_alternate[index + 1]
+                alternate_direction = (
+                    "up"
+                    if next_point[1] < point[1] - 2
+                    else "down"
+                    if next_point[1] > point[1] + 2
+                    else "flat"
+                )
+                if alternate_direction == branch_direction:
+                    alternate_duplicates_branch = True
+                    break
+
+        if (
+            len(visible_alternate) >= 2
+            and not alternate_duplicates_branch
+        ):
+            alternate_color = "#e53935"
             draw.line(
                 visible_alternate,
-                fill="#c5c9cf",
-                width=2,
-            )
-            draw.polygon(
-                _arrow_head(
-                    visible_alternate[-1],
-                    visible_alternate[-2],
-                    size=11,
-                ),
-                fill="#c5c9cf",
-            )
-
-        if len(visible_primary) >= 2:
-            primary_color = "#565b63"
-            draw.line(
-                visible_primary,
-                fill=primary_color,
+                fill=alternate_color,
                 width=3,
             )
+            if len(visible_alternate) >= 2:
+                draw.polygon(
+                    _arrow_head(
+                        visible_alternate[-1],
+                        visible_alternate[-2],
+                        size=14,
+                    ),
+                    fill=alternate_color,
+                )
+
+        if len(visible_primary) >= 2:
+            primary_color = "#00a86b"
+            # The main forecast never changes style. The dashed line is a
+            # separate conditional outcome generated from its level touch.
+            draw.line(visible_primary, fill=primary_color, width=5)
             draw.polygon(
                 _arrow_head(
                     visible_primary[-1],
                     visible_primary[-2],
-                    size=14,
+                    size=19,
                 ),
                 fill=primary_color,
             )
+            if len(branch_points) == 2:
+                _dashed_line(
+                    draw,
+                    (*branch_points[0], *branch_points[1]),
+                    fill=primary_color,
+                    width=3,
+                    dash=8,
+                )
+                draw.polygon(
+                    _arrow_head(
+                        branch_points[1],
+                        branch_points[0],
+                        size=11,
+                    ),
+                    fill=primary_color,
+                )
             primary_name = _scenario_text(
                 ranked_structure_scenarios[0].get("scenario_id")
             )
-            alternate_name = (
-                _scenario_text(
+            if (
+                show_alternate_path
+                and len(ranked_structure_scenarios) > 1
+                and not alternate_duplicates_branch
+            ):
+                alternate_name = _scenario_text(
                     ranked_structure_scenarios[1].get("scenario_id")
                 )
-                if len(ranked_structure_scenarios) > 1
-                else "暂无"
-            )
-            path_label = (
-                f"主路径 {primary_name} · 备选 {alternate_name}"
-                if show_alternate_path
-                and len(ranked_structure_scenarios) > 1
-                else f"主路径 {primary_name}"
-            )
+                path_label = (
+                    f"主路径 {primary_name} · 备选 {alternate_name}"
+                )
+            else:
+                path_label = f"主路径 {primary_name}"
             _round_rect_label(
                 draw,
                 chart_left + (chart_right - chart_left) * 0.61,
@@ -1113,70 +1296,55 @@ def render_tradingview_scene(
             )
             for x, y in raw_trend_points
         ]
-        visible_trend = _partial_polyline(
-            trend_points,
-            reveal_progress,
-        )
-        alternate_points = (
-            [
-                (
-                    px(len(visible_history) - 1 + offset),
-                    py(value),
-                )
-                for offset, value in alternate_anchors
-            ]
-            if show_alternate_path
-            else []
-        )
-        alternate_progress = max(
-            0.0,
-            min(1.0, (reveal_progress - 0.18) / 0.82),
-        )
-        visible_alternate = _partial_polyline(
-            alternate_points,
-            alternate_progress,
-        )
+        visible_trend = trend_points
+        alternate_points = [
+            (
+                px(len(visible_history) - 1 + offset),
+                py(value),
+            )
+            for offset, value in alternate_anchors
+        ]
+        visible_alternate = alternate_points
 
         if len(visible_trend) >= 2:
             start_value = anchors[0][1]
             end_value = anchors[-1][1]
             neutral_threshold = max((pmax - pmin) * 0.025, 0.01)
             if use_range_path:
-                trend_color = "#8b9099"
+                trend_color = "#00a86b"
                 trend_text = "双向情景"
             elif end_value > start_value + neutral_threshold:
-                trend_color = "#089981"
+                trend_color = "#00a86b"
                 trend_text = "震荡偏多"
             elif end_value < start_value - neutral_threshold:
-                trend_color = "#f23645"
+                trend_color = "#00a86b"
                 trend_text = "震荡偏空"
             else:
-                trend_color = "#6f4aa8"
+                trend_color = "#00a86b"
                 trend_text = "区间整理"
 
             # The alternate path is lighter and appears just after the primary.
             if len(visible_alternate) >= 2:
                 draw.line(
                     visible_alternate,
-                    fill="#c5c9cf",
-                    width=2,
+                    fill="#e53935",
+                    width=3,
                 )
                 draw.polygon(
                     _arrow_head(
                         visible_alternate[-1],
                         visible_alternate[-2],
-                        size=11,
+                        size=14,
                     ),
-                    fill="#c5c9cf",
+                    fill="#e53935",
                 )
 
-            # Thin, clean and angular: no glow and no uncertainty shadow.
-            draw.line(visible_trend, fill=trend_color, width=3)
+            draw.line(visible_trend, fill=trend_color, width=5)
             draw.polygon(
                 _arrow_head(
                     visible_trend[-1],
                     visible_trend[-2],
-                    size=14,
+                    size=19,
                 ),
                 fill=trend_color,
             )
@@ -1212,20 +1380,30 @@ def render_tradingview_scene(
 
     # Support and resistance keep their own colours. BOS/CHOCH are intentionally
     # hidden until the project has a complete confirmation engine.
-    for level, color, name in levels_to_show:
-        y = py(float(level))
+    right_labels = [
+        (py(float(level)), color, f"{name} {_price(level)}")
+        for level, color, name in levels_to_show
+    ]
+    last_close = float(visible_history[-1]["close"])
+    right_labels.append((py(last_close), "#787b86", _price(last_close)))
+    right_labels.extend(extra_right_labels)
+    label_positions = _spread_label_positions(
+        [desired_y for desired_y, _, _ in right_labels],
+        chart_top + 28,
+        chart_bottom - 28,
+    )
+    for (_, color, text), y in zip(right_labels, label_positions):
         _round_rect_label(
             draw,
             width - 8,
             y,
-            f"{name} {_price(level)}",
+            text,
             axis_face,
             color,
             anchor="rm",
         )
 
     # Current real price line and label.
-    last_close = float(visible_history[-1]["close"])
     last_y = py(last_close)
     _dashed_line(
         draw,
@@ -1233,15 +1411,6 @@ def render_tradingview_scene(
         fill="#787b86",
         width=1,
         dash=7,
-    )
-    _round_rect_label(
-        draw,
-        width - 8,
-        last_y,
-        _price(last_close),
-        axis_face,
-        "#787b86",
-        anchor="rm",
     )
 
     # Compact subtitle area; narration and timing are preserved unchanged.
