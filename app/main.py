@@ -58,11 +58,26 @@ class VideoOptions(BaseModel):
 
 class StyleOptions(BaseModel):
     theme: str = "dark_gold"
+    # Dify uses the new direction names; the legacy analysis package still
+    # stores its candle scenarios as base/bull/bear.
     scenario: Literal["base", "bull", "bear"] = "base"
     show_volume: bool = True
     show_support_resistance: bool = True
     show_observation_zones: bool = True
     show_subtitles: bool = True
+    show_path_shadow: bool = False
+    show_alternate_path: bool = True
+    show_exact_forecast_prices: bool = False
+    show_exact_forecast_times: bool = False
+
+    @field_validator("scenario", mode="before")
+    @classmethod
+    def normalize_scenario(cls, value: Any) -> str:
+        return {
+            "sideways": "base",
+            "up": "bull",
+            "down": "bear",
+        }.get(str(value or "").strip().lower(), str(value or "base"))
 
 
 class RenderRequest(BaseModel):
