@@ -984,7 +984,7 @@ def render_tradingview_scene(
             )
             _round_rect_label(
                 draw,
-                history_end_x - 14,
+                zone_x2 - 12,
                 (y1 + y2) / 2,
                 label,
                 label_face,
