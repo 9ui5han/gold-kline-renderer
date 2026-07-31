@@ -455,6 +455,34 @@ def _structure_path_values(
     return values
 
 
+def _limit_structure_points(
+    values: list[tuple[float, float, str]],
+    preserve_index: int | None = None,
+) -> list[tuple[float, float, str]]:
+    """Render no more than three segments while preserving key endpoints."""
+    if len(values) <= 4:
+        return values
+
+    selected = {0, len(values) - 1}
+    if preserve_index is not None and 0 < preserve_index < len(values) - 1:
+        selected.add(preserve_index)
+
+    candidates = [index for index in range(1, len(values) - 1)]
+    while len(selected) < 4:
+        remaining = [index for index in candidates if index not in selected]
+        if not remaining:
+            break
+        # Keep the point furthest from already retained points so the reduced
+        # line still represents the full early/middle/late structure.
+        chosen = max(
+            remaining,
+            key=lambda index: min(abs(index - kept) for kept in selected),
+        )
+        selected.add(chosen)
+
+    return [values[index] for index in sorted(selected)]
+
+
 def _first_level_touch_index(
     values: list[tuple[float, float, str]],
 ) -> int | None:
@@ -507,25 +535,39 @@ def _spread_label_positions(
     desired_positions: list[float],
     top: float,
     bottom: float,
-    minimum_gap: float = 46.0,
+    minimum_gap: float = 42.0,
 ) -> list[float]:
-    """Keep adjacent right-axis labels readable without changing prices."""
+    """Avoid overlap while keeping labels centred near their real lines."""
     if not desired_positions:
         return []
     indexed = sorted(enumerate(desired_positions), key=lambda item: item[1])
+    sorted_desired = [value for _, value in indexed]
+    sorted_placed = list(sorted_desired)
+
+    for index in range(1, len(sorted_placed)):
+        sorted_placed[index] = max(
+            sorted_placed[index],
+            sorted_placed[index - 1] + minimum_gap,
+        )
+
+    # Re-centre the whole compact group around its original positions instead
+    # of pushing every close label downward.
+    average_shift = sum(
+        placed - desired
+        for placed, desired in zip(sorted_placed, sorted_desired)
+    ) / len(sorted_placed)
+    sorted_placed = [value - average_shift for value in sorted_placed]
+
+    if sorted_placed[0] < top:
+        shift = top - sorted_placed[0]
+        sorted_placed = [value + shift for value in sorted_placed]
+    if sorted_placed[-1] > bottom:
+        shift = sorted_placed[-1] - bottom
+        sorted_placed = [value - shift for value in sorted_placed]
+
     placed = [0.0] * len(desired_positions)
-    cursor = top
-    for original_index, desired in indexed:
-        value = max(desired, cursor)
+    for (original_index, _), value in zip(indexed, sorted_placed):
         placed[original_index] = value
-        cursor = value + minimum_gap
-    overflow = max(0.0, cursor - minimum_gap - bottom)
-    if overflow:
-        for original_index, _ in indexed:
-            placed[original_index] -= overflow
-    underflow = max(0.0, top - min(placed))
-    if underflow:
-        placed = [value + underflow for value in placed]
     return placed
 
 
@@ -582,10 +624,13 @@ def _subtitle_at(
     current_time: float,
     progress: float,
 ) -> str:
+    # Whisper alignment can land a few frames after the spoken syllable.
+    # Showing the cue slightly early feels synchronized without skipping text.
+    subtitle_time = current_time + 0.22
     for cue in narration.get("subtitle_cues") or []:
         start = float(cue.get("start_sec") or 0)
         end = float(cue.get("end_sec") or 0)
-        if start <= current_time < end:
+        if start <= subtitle_time < end:
             return str(cue.get("text") or "")
 
     segments = sorted(
@@ -648,23 +693,40 @@ def render_tradingview_scene(
     ranked_structure_scenarios = _rank_structure_scenarios(
         forecast_paths
     )
-    primary_structure_values = (
+    raw_primary_structure_values = (
         _structure_path_values(ranked_structure_scenarios[0])
         if ranked_structure_scenarios
-        else []
-    )
-    alternate_structure_values = (
-        _structure_path_values(ranked_structure_scenarios[1])
-        if (
-            show_alternate_path
-            and len(ranked_structure_scenarios) > 1
-        )
         else []
     )
     primary_touch_branch = (
         ranked_structure_scenarios[0].get("touch_branch")
         if ranked_structure_scenarios
         else None
+    )
+    primary_touch_origin = None
+    preserve_index = None
+    if isinstance(primary_touch_branch, dict):
+        try:
+            preserve_index = int(
+                primary_touch_branch["origin_order"]
+            ) - 1
+            primary_touch_origin = raw_primary_structure_values[
+                preserve_index
+            ]
+        except (KeyError, IndexError, TypeError, ValueError):
+            preserve_index = None
+            primary_touch_origin = None
+    primary_structure_values = _limit_structure_points(
+        raw_primary_structure_values,
+        preserve_index,
+    )
+    alternate_structure_values = _limit_structure_points(
+        _structure_path_values(ranked_structure_scenarios[1])
+        if (
+            show_alternate_path
+            and len(ranked_structure_scenarios) > 1
+        )
+        else [],
     )
 
     narration = payload["narration"]
@@ -939,7 +1001,7 @@ def render_tradingview_scene(
                 draw,
                 (level_start_x, y, chart_right, y),
                 fill=color,
-                width=2,
+                width=3,
                 dash=10,
             )
 
@@ -982,14 +1044,21 @@ def render_tradingview_scene(
                 outline=outline,
                 width=2,
             )
-            _round_rect_label(
-                draw,
-                zone_x2 - 12,
-                (y1 + y2) / 2,
+            label_bbox = draw.textbbox(
+                (0, 0),
                 label,
-                label_face,
-                outline,
-                anchor="rm",
+                font=label_face,
+            )
+            label_width = label_bbox[2] - label_bbox[0]
+            label_height = label_bbox[3] - label_bbox[1]
+            draw.text(
+                (
+                    zone_x2 - 18 - label_width,
+                    (y1 + y2 - label_height) / 2 - label_bbox[1],
+                ),
+                label,
+                font=label_face,
+                fill=outline,
             )
 
     # Divider between real and forecast bars.
@@ -1099,16 +1168,15 @@ def render_tradingview_scene(
         branch_direction = ""
         if isinstance(primary_touch_branch, dict):
             try:
-                origin_order = int(
-                    primary_touch_branch["origin_order"]
-                )
                 end_ratio = float(
                     primary_touch_branch["end_time_ratio"]
                 )
                 end_value = float(
                     primary_touch_branch["resolved_value"]
                 )
-                origin = primary_points[origin_order - 1]
+                if primary_touch_origin is None:
+                    raise ValueError("missing touch origin")
+                origin = structure_points([primary_touch_origin])[0]
                 branch_end = (
                     forecast_left
                     + end_ratio * (forecast_right - forecast_left),
@@ -1264,6 +1332,24 @@ def render_tradingview_scene(
         else:
             anchors = _forecast_anchor_values(forecast_all, last_close)
             alternate_anchors = []
+        anchors = [
+            (int(offset), value)
+            for offset, value, _ in _limit_structure_points(
+                [
+                    (float(offset), float(value), "")
+                    for offset, value in anchors
+                ]
+            )
+        ]
+        alternate_anchors = [
+            (int(offset), value)
+            for offset, value, _ in _limit_structure_points(
+                [
+                    (float(offset), float(value), "")
+                    for offset, value in alternate_anchors
+                ]
+            )
+        ]
         raw_trend_points = [
             (
                 px(len(visible_history) - 1 + offset),
@@ -1392,7 +1478,21 @@ def render_tradingview_scene(
         chart_top + 28,
         chart_bottom - 28,
     )
-    for (_, color, text), y in zip(right_labels, label_positions):
+    for (desired_y, color, text), y in zip(
+        right_labels,
+        label_positions,
+    ):
+        if abs(y - desired_y) > 3:
+            draw.line(
+                (
+                    chart_right + 2,
+                    desired_y,
+                    chart_right + 58,
+                    y,
+                ),
+                fill=color,
+                width=2,
+            )
         _round_rect_label(
             draw,
             width - 8,
