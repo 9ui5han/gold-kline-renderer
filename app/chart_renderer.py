@@ -561,6 +561,10 @@ def render_tradingview_scene(
     selected = _scenario(analysis, payload["style"]["scenario"])
     forecast_all = selected.get("candles") or []
     forecast_paths = payload.get("forecast_paths") or {}
+    # Dify decides whether the runner-up is useful enough to show.
+    show_alternate_path = bool(
+        (payload.get("style") or {}).get("show_alternate_path", True)
+    )
     ranked_structure_scenarios = _rank_structure_scenarios(
         forecast_paths
     )
@@ -571,7 +575,8 @@ def render_tradingview_scene(
     )
     alternate_structure_values = (
         _structure_path_values(ranked_structure_scenarios[1])
-        if len(ranked_structure_scenarios) > 1
+        if show_alternate_path
+        and len(ranked_structure_scenarios) > 1
         else []
     )
 
@@ -1017,11 +1022,17 @@ def render_tradingview_scene(
                 if len(ranked_structure_scenarios) > 1
                 else "暂无"
             )
+            path_label = (
+                f"主路径 {primary_name} · 备选 {alternate_name}"
+                if show_alternate_path
+                and len(ranked_structure_scenarios) > 1
+                else f"主路径 {primary_name}"
+            )
             _round_rect_label(
                 draw,
                 chart_left + (chart_right - chart_left) * 0.61,
                 chart_top + 70,
-                f"主路径 {primary_name} · 备选 {alternate_name}",
+                path_label,
                 label_face,
                 primary_color,
             )
@@ -1106,13 +1117,17 @@ def render_tradingview_scene(
             trend_points,
             reveal_progress,
         )
-        alternate_points = [
-            (
-                px(len(visible_history) - 1 + offset),
-                py(value),
-            )
-            for offset, value in alternate_anchors
-        ]
+        alternate_points = (
+            [
+                (
+                    px(len(visible_history) - 1 + offset),
+                    py(value),
+                )
+                for offset, value in alternate_anchors
+            ]
+            if show_alternate_path
+            else []
+        )
         alternate_progress = max(
             0.0,
             min(1.0, (reveal_progress - 0.18) / 0.82),
