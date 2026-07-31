@@ -510,6 +510,56 @@ def _distance_to_segment(
     return math.hypot(point[0] - nearest[0], point[1] - nearest[1])
 
 
+def _simplify_visual_polyline(
+    points: list[tuple[float, float]],
+    angle_threshold_deg: float = 12.0,
+    deviation_threshold_px: float = 8.0,
+) -> list[tuple[float, float]]:
+    """Remove short, visually insignificant bends from a forecast line."""
+    simplified = list(points)
+    changed = True
+    while changed and len(simplified) > 2:
+        changed = False
+        for index in range(1, len(simplified) - 1):
+            previous = simplified[index - 1]
+            current = simplified[index]
+            following = simplified[index + 1]
+            first_vector = (
+                current[0] - previous[0],
+                current[1] - previous[1],
+            )
+            second_vector = (
+                following[0] - current[0],
+                following[1] - current[1],
+            )
+            first_length = math.hypot(*first_vector)
+            second_length = math.hypot(*second_vector)
+            if first_length <= 0 or second_length <= 0:
+                simplified.pop(index)
+                changed = True
+                break
+            cosine = (
+                first_vector[0] * second_vector[0]
+                + first_vector[1] * second_vector[1]
+            ) / (first_length * second_length)
+            angle = math.degrees(
+                math.acos(max(-1.0, min(1.0, cosine)))
+            )
+            deviation = _distance_to_segment(
+                current,
+                previous,
+                following,
+            )
+            if (
+                angle < angle_threshold_deg
+                and deviation < deviation_threshold_px
+            ):
+                simplified.pop(index)
+                changed = True
+                break
+    return simplified
+
+
 def _segment_overlaps_polyline(
     start: tuple[float, float],
     end: tuple[float, float],
@@ -1158,6 +1208,8 @@ def render_tradingview_scene(
         alternate_points = structure_points(
             alternate_structure_values
         )
+        primary_points = _simplify_visual_polyline(primary_points)
+        alternate_points = _simplify_visual_polyline(alternate_points)
         # A structural prediction is a single conclusion, so show the whole
         # line as soon as the prediction phase begins instead of drawing it
         # slowly segment by segment.
@@ -1196,13 +1248,16 @@ def render_tradingview_scene(
         alternate_duplicates_branch = False
         if len(branch_points) == 2 and len(visible_alternate) >= 2:
             branch_origin = branch_points[0]
-            for index, point in enumerate(visible_alternate[:-1]):
-                if math.hypot(
-                    point[0] - branch_origin[0],
-                    point[1] - branch_origin[1],
+            for point, next_point in zip(
+                visible_alternate,
+                visible_alternate[1:],
+            ):
+                if _distance_to_segment(
+                    branch_origin,
+                    point,
+                    next_point,
                 ) > 14:
                     continue
-                next_point = visible_alternate[index + 1]
                 alternate_direction = (
                     "up"
                     if next_point[1] < point[1] - 2
@@ -1382,6 +1437,7 @@ def render_tradingview_scene(
             )
             for x, y in raw_trend_points
         ]
+        trend_points = _simplify_visual_polyline(trend_points)
         visible_trend = trend_points
         alternate_points = [
             (
@@ -1390,6 +1446,7 @@ def render_tradingview_scene(
             )
             for offset, value in alternate_anchors
         ]
+        alternate_points = _simplify_visual_polyline(alternate_points)
         visible_alternate = alternate_points
 
         if len(visible_trend) >= 2:
