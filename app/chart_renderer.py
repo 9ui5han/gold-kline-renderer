@@ -754,6 +754,7 @@ def render_tradingview_scene(
         else None
     )
     primary_touch_origin = None
+    primary_touch_next = None
     preserve_index = None
     if isinstance(primary_touch_branch, dict):
         try:
@@ -763,9 +764,14 @@ def render_tradingview_scene(
             primary_touch_origin = raw_primary_structure_values[
                 preserve_index
             ]
+            if preserve_index + 1 < len(raw_primary_structure_values):
+                primary_touch_next = raw_primary_structure_values[
+                    preserve_index + 1
+                ]
         except (KeyError, IndexError, TypeError, ValueError):
             preserve_index = None
             primary_touch_origin = None
+            primary_touch_next = None
     primary_structure_values = _limit_structure_points(
         raw_primary_structure_values,
         preserve_index,
@@ -1242,12 +1248,45 @@ def render_tradingview_scene(
                 branch_points = []
                 branch_direction = ""
 
+        # The model may independently produce a touch outcome that lands on
+        # the same geometry as the already selected main path. Keep the
+        # probability result in the payload, but do not paint a dashed copy on
+        # top of the solid main line because that makes the main path appear
+        # dashed.
+        branch_duplicates_primary = False
+        if len(branch_points) == 2:
+            branch_duplicates_primary = _segment_overlaps_polyline(
+                branch_points[0],
+                branch_points[1],
+                visible_primary,
+            )
+            if primary_touch_next is not None:
+                main_next = structure_points([primary_touch_next])[0]
+                origin = branch_points[0]
+                main_next_direction = (
+                    "up"
+                    if main_next[1] < origin[1] - 2
+                    else "down"
+                    if main_next[1] > origin[1] + 2
+                    else "flat"
+                )
+                # Arrival time can differ even when both outcomes point to
+                # the same price level. Treat that as the same visual result.
+                if (
+                    main_next_direction == branch_direction
+                    and abs(main_next[1] - branch_points[1][1]) <= 10
+                ):
+                    branch_duplicates_primary = True
+        visible_branch_points = (
+            [] if branch_duplicates_primary else branch_points
+        )
+
         # If the runner-up starts from the same turning point and moves in the
         # same direction as the dashed condition branch, it adds no new visual
         # information. Hide the whole runner-up in that case.
         alternate_duplicates_branch = False
-        if len(branch_points) == 2 and len(visible_alternate) >= 2:
-            branch_origin = branch_points[0]
+        if len(visible_branch_points) == 2 and len(visible_alternate) >= 2:
+            branch_origin = visible_branch_points[0]
             for point, next_point in zip(
                 visible_alternate,
                 visible_alternate[1:],
@@ -1302,18 +1341,21 @@ def render_tradingview_scene(
                 ),
                 fill=primary_color,
             )
-            if len(branch_points) == 2:
+            if len(visible_branch_points) == 2:
                 _dashed_line(
                     draw,
-                    (*branch_points[0], *branch_points[1]),
+                    (
+                        *visible_branch_points[0],
+                        *visible_branch_points[1],
+                    ),
                     fill=primary_color,
                     width=3,
                     dash=8,
                 )
                 draw.polygon(
                     _arrow_head(
-                        branch_points[1],
-                        branch_points[0],
+                        visible_branch_points[1],
+                        visible_branch_points[0],
                         size=11,
                     ),
                     fill=primary_color,
