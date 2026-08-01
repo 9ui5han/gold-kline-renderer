@@ -150,21 +150,22 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "Ethan"
+    voice_type: str = "tongtong"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
-def normalize_qwen_tts_voice(voice_type: str) -> str:
+def normalize_glm_tts_voice(voice_type: str) -> str:
     """
-    兼容Dify里旧的火山音色字段；Qwen-TTS不认识旧voice_type时使用男声。
+    兼容Dify里旧的火山音色字段；GLM-TTS默认使用更自然的中文音色。
     """
     voice = str(voice_type or "").strip()
 
     legacy_voice_map = {
-        "zh_male_M392_conversation_wvae_bigtts": "Ethan",
+        "zh_male_M392_conversation_wvae_bigtts": "tongtong",
+        "Ethan": "tongtong",
     }
 
-    return legacy_voice_map.get(voice, voice or "Ethan")
+    return legacy_voice_map.get(voice, voice or "tongtong")
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
@@ -387,18 +388,19 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    voice = normalize_qwen_tts_voice(payload.voice_type)
+    voice = normalize_glm_tts_voice(payload.voice_type)
     request_body = {
-        "model": "qwen-tts",
-        "input": {
-            "text": payload.text,
-            "voice": voice,
-        },
+        "model": "glm-tts",
+        "input": payload.text,
+        "voice": voice,
+        "response_format": "wav",
+        "speed": payload.speed_ratio,
+        "volume": 1,
     }
 
     try:
         response = httpx.post(
-            "https://api.302ai.cn/aliyun/api/v1/services/aigc/multimodal-generation/generation",
+            "https://api.302.ai/bigmodel/api/paas/v4/audio/speech?output_format=url",
             headers={
                 "Authorization": f"Bearer {AI302_API_KEY}",
                 "Content-Type": "application/json",
@@ -436,9 +438,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail=f"302_TTS_REQUEST_FAILED: {exc}",
         ) from exc
 
-    output = result.get("output") or {}
-    audio = output.get("audio") or {}
-    upstream_audio_url = str(audio.get("url") or "")
+    upstream_audio_url = str(result.get("url") or "")
 
     if not upstream_audio_url:
         logger.error(
@@ -447,14 +447,14 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             voice,
             {
                 "keys": sorted(result.keys()),
-                "output": output,
+                "result": result,
             },
         )
         raise HTTPException(
             status_code=502,
             detail={
                 "error_code": "302_TTS_FAILED",
-                "message": "302返回的output.audio.url为空",
+                "message": "302返回的url为空",
                 "upstream_keys": sorted(result.keys()),
             },
         )
