@@ -150,23 +150,19 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "Aria"
+    voice_type: str = "738d0cc1a3e9430a9de2b544a466a7fc"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
-def normalize_elevenlabs_tts_voice(voice_type: str) -> str:
+def normalize_fish_audio_reference_id(voice_type: str) -> str:
     """
-    兼容Dify里旧的音色字段；ElevenLabs同步接口默认使用文档示例音色。
+    兼容Dify里的旧音色名；Fish Audio需要传入声音模型的reference_id。
     """
     voice = str(voice_type or "").strip()
-
-    legacy_voice_map = {
-        "zh_male_M392_conversation_wvae_bigtts": "Aria",
-        "Ethan": "Aria",
-        "tongtong": "Aria",
-    }
-
-    return legacy_voice_map.get(voice, voice or "Aria")
+    default_reference_id = "738d0cc1a3e9430a9de2b544a466a7fc"
+    if len(voice) == 32 and all(char in "0123456789abcdefABCDEF" for char in voice):
+        return voice
+    return default_reference_id
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
@@ -389,24 +385,29 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    voice = normalize_elevenlabs_tts_voice(payload.voice_type)
+    voice = normalize_fish_audio_reference_id(payload.voice_type)
     request_body = {
         "text": payload.text,
-        "voice": voice,
-        "stability": 0.5,
-        "similarity_boost": 0.75,
+        "reference_id": voice,
+        "chunk_length": 200,
+        "normalize": True,
+        "format": "wav",
+        "mp3_bitrate": 64,
+        "opus_bitrate": 32,
+        "latency": "normal",
     }
 
     try:
         response = httpx.post(
-            "https://api.302.ai/302/submit/elevenlabs/tts-multilingual-v2-sync",
+            "https://api.302.ai/fish-audio/v1/tts?response_format=url",
             headers={
                 "Authorization": f"Bearer {AI302_API_KEY}",
+                "model": "s1",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
             json=request_body,
-            timeout=180,
+            timeout=100,
         )
         response.raise_for_status()
         result = response.json()
@@ -437,8 +438,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail=f"302_TTS_REQUEST_FAILED: {exc}",
         ) from exc
 
-    audio = result.get("audio") or {}
-    upstream_audio_url = str(audio.get("url") or result.get("url") or "")
+    upstream_audio_url = str(result.get("url") or "")
 
     if not upstream_audio_url:
         logger.error(
@@ -454,12 +454,12 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             status_code=502,
             detail={
                 "error_code": "302_TTS_FAILED",
-                "message": "302返回的audio.url为空",
+                "message": "302返回的url为空",
                 "upstream_keys": sorted(result.keys()),
             },
         )
 
-    audio_name = f"tts-{uuid.uuid4()}.mp3"
+    audio_name = f"tts-{uuid.uuid4()}.wav"
     audio_path = MEDIA_DIR / audio_name
     try:
         download_audio(upstream_audio_url, audio_path)
