@@ -1,10 +1,13 @@
 import json
+import html
 import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -158,26 +161,196 @@ class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
     voice_type: str = "Kore"
+    voice_id: str = Field(default="30065", pattern=r"^\d+$")
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
     style_prompt: str = Field(default="", max_length=2000)
+    emotion_mode: Literal["auto", "neutral"] = "auto"
+    narration_json: dict[str, Any] | str | None = None
 
 
-def normalize_gemini_tts_voice(voice_type: str) -> str:
-    """
-    兼容Dify里的旧音色值，默认使用302AI文档示例音色Kore。
-    """
-    voice = str(voice_type or "").strip()
-    supported_voices = {
-        "Charon",
-        "Gacrux",
-        "Kore",
-        "Rasalgethi",
-        "Sadaltager",
-        "Schedar",
+def ai302_headers() -> dict[str, str]:
+    return {
+        "Authorization": f"Bearer {AI302_API_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
-    if voice in supported_voices:
-        return voice
-    return "Kore"
+
+
+def parse_narration_segments(payload: TTSProxyRequest) -> list[str]:
+    """读取旁白定稿中的分段，并保证分段原文与完整旁白一致。"""
+    raw_narration = payload.narration_json
+    if isinstance(raw_narration, str):
+        raw_narration = json.loads(raw_narration or "{}")
+
+    if not isinstance(raw_narration, dict):
+        return [payload.text]
+
+    raw_segments = raw_narration.get("segments") or []
+    if not isinstance(raw_segments, list) or not raw_segments:
+        return [payload.text]
+
+    ordered_segments = sorted(
+        (item for item in raw_segments if isinstance(item, dict)),
+        key=lambda item: int(item.get("order") or 0),
+    )
+    segments = [
+        str(item.get("text") or "").strip()
+        for item in ordered_segments
+        if str(item.get("text") or "").strip()
+    ]
+    if not segments:
+        return [payload.text]
+
+    normalize = lambda value: re.sub(r"\s+", "", str(value or ""))
+    if normalize("".join(segments)) != normalize(payload.text):
+        raise ValueError("narration_json分段文字与完整旁白不一致")
+
+    return segments
+
+
+def post_dubbingx(path: str, body: dict[str, Any], timeout: float = 60) -> dict[str, Any]:
+    response = httpx.post(
+        f"https://api.302.ai{path}",
+        headers=ai302_headers(),
+        json=body,
+        timeout=timeout,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_DUBBINGX_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    result = response.json()
+    if not isinstance(result, dict) or result.get("success") is not True:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_DUBBINGX_FAILED",
+                "upstream": result,
+            },
+        )
+    return result
+
+
+def analyze_dubbingx_emotion(text: str) -> str:
+    result = post_dubbingx(
+        "/dubbingx/v2/analyzeEmotion",
+        {"text": text},
+    )
+    emotion = str(result.get("data") or "").strip()
+    if not emotion:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_DUBBINGX_EMOTION_EMPTY",
+                "upstream": result,
+            },
+        )
+    return emotion
+
+
+def submit_dubbingx_tts(
+    text: str,
+    voice_id: str,
+    emotion: str,
+    speed_ratio: float,
+) -> str:
+    ssml = (
+        f'<speak voiceId="{voice_id}" language="zh" '
+        f'emotion="{html.escape(emotion, quote=True)}" '
+        f'audioPitch="1.0" audioSpeed="{speed_ratio:.2f}">'
+        f'{html.escape(text, quote=False)}</speak>'
+    )
+    result = post_dubbingx(
+        "/dubbingx/v2/addTtsTask",
+        {"text": ssml},
+    )
+    data = result.get("data") or {}
+    task_id = str(data.get("taskId") or "").strip() if isinstance(data, dict) else ""
+    if not task_id:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_DUBBINGX_TASK_ID_EMPTY",
+                "upstream": result,
+            },
+        )
+    return task_id
+
+
+def wait_for_dubbingx_tts(task_id: str) -> str:
+    max_checks = int(os.getenv("DUBBINGX_MAX_POLLS", "120"))
+    poll_interval = float(os.getenv("DUBBINGX_POLL_INTERVAL_SEC", "2"))
+
+    for _ in range(max_checks):
+        result = post_dubbingx(
+            f"/dubbingx/v1/getTtsTaskInfo/{task_id}",
+            {},
+        )
+        data = result.get("data") or {}
+        status = str(data.get("status") or "").strip().lower()
+
+        if status == "completed":
+            file_url = str(data.get("fileUrl") or "").strip()
+            if not file_url.startswith(("https://", "http://")):
+                raise HTTPException(
+                    status_code=502,
+                    detail={"error_code": "302_DUBBINGX_AUDIO_URL_EMPTY"},
+                )
+            return file_url
+
+        if status in {"failed", "canceled"}:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_code": "302_DUBBINGX_TASK_FAILED",
+                    "upstream": result,
+                },
+            )
+
+        if status not in {"ready", "generating"}:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_code": "302_DUBBINGX_UNKNOWN_STATUS",
+                    "upstream": result,
+                },
+            )
+        time.sleep(poll_interval)
+
+    raise HTTPException(
+        status_code=504,
+        detail={"error_code": "302_DUBBINGX_TIMEOUT"},
+    )
+
+
+def concatenate_audio(parts: list[Path], output_path: Path) -> None:
+    if len(parts) == 1:
+        shutil.copyfile(parts[0], output_path)
+        return
+
+    args = ["ffmpeg", "-y"]
+    for part in parts:
+        args.extend(["-i", str(part)])
+    filter_inputs = "".join(f"[{index}:a]" for index in range(len(parts)))
+    args.extend(
+        [
+            "-filter_complex",
+            f"{filter_inputs}concat=n={len(parts)}:v=0:a=1[outa]",
+            "-map",
+            "[outa]",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+    run_command(args)
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
@@ -400,122 +573,57 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    voice = normalize_gemini_tts_voice(payload.voice_type)
-    style_prompt = str(payload.style_prompt or "").strip()
-    narration_prompt = (
-        f"{style_prompt}\n\n{payload.text}"
-        if style_prompt
-        else payload.text
-    )
-    request_body = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "text": narration_prompt,
-                    }
-                ]
-            }
-        ],
-        "generationConfig": {
-            "responseModalities": ["AUDIO"],
-            "speechConfig": {
-                "voiceConfig": {
-                    "prebuiltVoiceConfig": {
-                        "voiceName": voice,
-                    }
-                }
-            },
-        },
-        "model": "gemini-2.5-flash-preview-tts",
-    }
-
-    try:
-        response = httpx.post(
-            "https://api.302.ai/google/v1/models/gemini-2.5-flash-preview-tts?response_format=url",
-            headers={
-                "Authorization": f"Bearer {AI302_API_KEY}",
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            json=request_body,
-            timeout=70,
-        )
-        response.raise_for_status()
-        result = response.json()
-
-    except httpx.HTTPStatusError as exc:
-        logger.error(
-            "302_TTS_HTTP_STATUS request_id=%s voice=%s upstream=%s",
-            payload.request_id,
-            voice,
-            upstream_error_summary(exc.response),
-        )
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error_code": "302_TTS_HTTP_STATUS",
-                "upstream": upstream_error_summary(exc.response),
-            },
-        ) from exc
-
-    except Exception as exc:
-        logger.exception(
-            "302_TTS_REQUEST_FAILED request_id=%s voice=%s",
-            payload.request_id,
-            voice,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"302_TTS_REQUEST_FAILED: {exc}",
-        ) from exc
-
-    candidates = result.get("candidates") or []
-    parts = (
-        ((candidates[0].get("content") or {}).get("parts") or [])
-        if candidates and isinstance(candidates[0], dict)
-        else []
-    )
-    inline_data = (
-        (parts[0].get("inlineData") or parts[0].get("inline_data") or {})
-        if parts and isinstance(parts[0], dict)
-        else {}
-    )
-    upstream_audio_url = str(inline_data.get("data") or result.get("url") or "")
-
-    if not upstream_audio_url:
-        logger.error(
-            "302_TTS_AUDIO_URL_EMPTY request_id=%s voice=%s result=%s",
-            payload.request_id,
-            voice,
-            {
-                "keys": sorted(result.keys()),
-                "result": result,
-            },
-        )
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error_code": "302_TTS_FAILED",
-                "message": "302返回的url为空",
-                "upstream_keys": sorted(result.keys()),
-            },
-        )
-
     audio_name = f"tts-{uuid.uuid4()}.wav"
     audio_path = MEDIA_DIR / audio_name
+    request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
+    request_work_dir.mkdir(parents=True, exist_ok=True)
+
     try:
-        download_audio(upstream_audio_url, audio_path)
+        segments = parse_narration_segments(payload)
+        segment_paths: list[Path] = []
+        submitted_tasks: list[tuple[str, str]] = []
+
+        for segment_text in segments:
+            emotion = (
+                analyze_dubbingx_emotion(segment_text)
+                if payload.emotion_mode == "auto"
+                else "常规-日常说话-3"
+            )
+            task_id = submit_dubbingx_tts(
+                text=segment_text,
+                voice_id=payload.voice_id,
+                emotion=emotion,
+                speed_ratio=payload.speed_ratio,
+            )
+            submitted_tasks.append((task_id, emotion))
+
+        for index, (task_id, emotion) in enumerate(submitted_tasks):
+            upstream_audio_url = wait_for_dubbingx_tts(task_id)
+            segment_path = request_work_dir / f"segment-{index:02d}.wav"
+            download_audio(upstream_audio_url, segment_path)
+            segment_paths.append(segment_path)
+            logger.info(
+                "DUBBINGX_SEGMENT_COMPLETED request_id=%s segment=%s emotion=%s",
+                payload.request_id,
+                index + 1,
+                emotion,
+            )
+
+        concatenate_audio(segment_paths, audio_path)
     except Exception as exc:
         logger.exception(
-            "302_TTS_AUDIO_DOWNLOAD_FAILED request_id=%s voice=%s",
+            "302_DUBBINGX_GENERATION_FAILED request_id=%s voice_id=%s",
             payload.request_id,
-            voice,
+            payload.voice_id,
         )
+        if isinstance(exc, HTTPException):
+            raise
         raise HTTPException(
             status_code=502,
-            detail=f"302_TTS_AUDIO_DOWNLOAD_FAILED: {exc}",
+            detail=f"302_DUBBINGX_GENERATION_FAILED: {exc}",
         ) from exc
+    finally:
+        shutil.rmtree(request_work_dir, ignore_errors=True)
 
     duration_sec = round(
         probe_duration(audio_path),
@@ -530,9 +638,9 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         )
     except Exception as exc:
         logger.exception(
-            "WHISPERX_ALIGNMENT_FAILED request_id=%s voice=%s audio=%s",
+            "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
             payload.request_id,
-            voice,
+            payload.voice_id,
             audio_name,
         )
         raise HTTPException(
@@ -546,7 +654,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": duration_sec,
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
-        "alignment_method": "whisperx_bounds_original_text",
+        "alignment_method": "dubbingx_emotion_segments_whisperx_bounds",
         "format": "wav",
         "error_code": "",
         "error_message": "",
