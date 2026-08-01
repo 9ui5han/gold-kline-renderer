@@ -166,6 +166,8 @@ class TTSProxyRequest(BaseModel):
     style_prompt: str = Field(default="", max_length=2000)
     emotion_mode: Literal["auto", "neutral"] = "auto"
     narration_json: dict[str, Any] | str | None = None
+    tts_provider: Literal["dubbingx", "openai"] = "dubbingx"
+    openai_voice: Literal["alloy"] = "alloy"
 
 
 def ai302_headers() -> dict[str, str]:
@@ -351,6 +353,47 @@ def concatenate_audio(parts: list[Path], output_path: Path) -> None:
         ]
     )
     run_command(args)
+
+
+def generate_openai_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方OpenAI Speech格式生成一条试听音频。"""
+    response = httpx.post(
+        "https://api.302.ai/v1/audio/speech",
+        headers=ai302_headers(),
+        json={
+            "model": "gpt-4o-mini-tts",
+            "input": payload.text,
+            "voice": payload.openai_voice,
+        },
+        timeout=180,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_OPENAI_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    content_type = response.headers.get("content-type", "").lower()
+    if "audio" not in content_type:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_OPENAI_TTS_INVALID_RESPONSE",
+                "content_type": content_type,
+                "body": response.text[:1000],
+            },
+        )
+    if not response.content or len(response.content) > MAX_AUDIO_BYTES:
+        raise HTTPException(
+            status_code=502,
+            detail={"error_code": "302_OPENAI_TTS_INVALID_AUDIO_SIZE"},
+        )
+    output_path.write_bytes(response.content)
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
@@ -573,54 +616,58 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    audio_name = f"tts-{uuid.uuid4()}.wav"
+    audio_format = "mp3" if payload.tts_provider == "openai" else "wav"
+    audio_name = f"tts-{uuid.uuid4()}.{audio_format}"
     audio_path = MEDIA_DIR / audio_name
     request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
     request_work_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        segments = parse_narration_segments(payload)
-        segment_paths: list[Path] = []
-        submitted_tasks: list[tuple[str, str]] = []
+        if payload.tts_provider == "openai":
+            generate_openai_tts(payload, audio_path)
+        else:
+            segments = parse_narration_segments(payload)
+            segment_paths: list[Path] = []
+            submitted_tasks: list[tuple[str, str]] = []
 
-        for segment_text in segments:
-            emotion = (
-                analyze_dubbingx_emotion(segment_text)
-                if payload.emotion_mode == "auto"
-                else "常规-日常说话-3"
-            )
-            task_id = submit_dubbingx_tts(
-                text=segment_text,
-                voice_id=payload.voice_id,
-                emotion=emotion,
-                speed_ratio=payload.speed_ratio,
-            )
-            submitted_tasks.append((task_id, emotion))
+            for segment_text in segments:
+                emotion = (
+                    analyze_dubbingx_emotion(segment_text)
+                    if payload.emotion_mode == "auto"
+                    else "常规-日常说话-3"
+                )
+                task_id = submit_dubbingx_tts(
+                    text=segment_text,
+                    voice_id=payload.voice_id,
+                    emotion=emotion,
+                    speed_ratio=payload.speed_ratio,
+                )
+                submitted_tasks.append((task_id, emotion))
 
-        for index, (task_id, emotion) in enumerate(submitted_tasks):
-            upstream_audio_url = wait_for_dubbingx_tts(task_id)
-            segment_path = request_work_dir / f"segment-{index:02d}.wav"
-            download_audio(upstream_audio_url, segment_path)
-            segment_paths.append(segment_path)
-            logger.info(
-                "DUBBINGX_SEGMENT_COMPLETED request_id=%s segment=%s emotion=%s",
-                payload.request_id,
-                index + 1,
-                emotion,
-            )
+            for index, (task_id, emotion) in enumerate(submitted_tasks):
+                upstream_audio_url = wait_for_dubbingx_tts(task_id)
+                segment_path = request_work_dir / f"segment-{index:02d}.wav"
+                download_audio(upstream_audio_url, segment_path)
+                segment_paths.append(segment_path)
+                logger.info(
+                    "DUBBINGX_SEGMENT_COMPLETED request_id=%s segment=%s emotion=%s",
+                    payload.request_id,
+                    index + 1,
+                    emotion,
+                )
 
-        concatenate_audio(segment_paths, audio_path)
+            concatenate_audio(segment_paths, audio_path)
     except Exception as exc:
         logger.exception(
-            "302_DUBBINGX_GENERATION_FAILED request_id=%s voice_id=%s",
+            "302_TTS_GENERATION_FAILED request_id=%s provider=%s",
             payload.request_id,
-            payload.voice_id,
+            payload.tts_provider,
         )
         if isinstance(exc, HTTPException):
             raise
         raise HTTPException(
             status_code=502,
-            detail=f"302_DUBBINGX_GENERATION_FAILED: {exc}",
+            detail=f"302_TTS_GENERATION_FAILED: {exc}",
         ) from exc
     finally:
         shutil.rmtree(request_work_dir, ignore_errors=True)
@@ -654,8 +701,12 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": duration_sec,
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
-        "alignment_method": "dubbingx_emotion_segments_whisperx_bounds",
-        "format": "wav",
+        "alignment_method": (
+            "openai_tts_whisperx_bounds"
+            if payload.tts_provider == "openai"
+            else "dubbingx_emotion_segments_whisperx_bounds"
+        ),
+        "format": audio_format,
         "error_code": "",
         "error_message": "",
     }
