@@ -166,8 +166,21 @@ class TTSProxyRequest(BaseModel):
     style_prompt: str = Field(default="", max_length=2000)
     emotion_mode: Literal["auto", "neutral"] = "auto"
     narration_json: dict[str, Any] | str | None = None
-    tts_provider: Literal["dubbingx", "openai"] = "dubbingx"
+    tts_provider: Literal[
+        "dubbingx",
+        "openai",
+        "elevenlabs",
+        "minimax",
+    ] = "dubbingx"
     openai_voice: Literal["alloy"] = "alloy"
+    elevenlabs_voice_id: str = Field(
+        default="JBFqnCBsd6RMkjVDRZzb",
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
+    minimax_voice_id: str = Field(
+        default="audiobook_male_1",
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 def ai302_headers() -> dict[str, str]:
@@ -396,6 +409,109 @@ def generate_openai_tts(payload: TTSProxyRequest, output_path: Path) -> None:
     output_path.write_bytes(response.content)
 
 
+def generate_elevenlabs_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方ElevenLabs格式生成一条试听音频。"""
+    response = httpx.post(
+        (
+            "https://api.302.ai/elevenlabs/text-to-speech/"
+            f"{payload.elevenlabs_voice_id}"
+        ),
+        params={
+            "output_format": "mp3_44100_128",
+            "response_format": "url",
+        },
+        headers=ai302_headers(),
+        json={
+            "text": payload.text,
+            "model_id": "eleven_v3",
+        },
+        timeout=180,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_ELEVENLABS_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    result = response.json()
+    audio_url = str(result.get("url") or "").strip()
+    if not audio_url.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_ELEVENLABS_TTS_AUDIO_URL_EMPTY",
+                "upstream": result,
+            },
+        )
+    download_audio(audio_url, output_path)
+
+
+def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方MiniMax Speech 2.8 HD格式生成试听音频。"""
+    response = httpx.post(
+        "https://api.302.ai/minimaxi/v1/t2a_v2",
+        headers=ai302_headers(),
+        json={
+            "model": "speech-2.8-hd",
+            "text": payload.text,
+            "stream": False,
+            "voice_setting": {
+                "voice_id": payload.minimax_voice_id,
+                "speed": payload.speed_ratio,
+                "vol": 1,
+                "pitch": 0,
+            },
+            "text_normalization": True,
+            "audio_setting": {
+                "sample_rate": 32000,
+                "bitrate": 128000,
+                "format": "mp3",
+                "channel": 2,
+            },
+            "subtitle_enable": False,
+            "output_format": "url",
+        },
+        timeout=180,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_MINIMAX_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    result = response.json()
+    base_response = result.get("base_resp") or {}
+    if int(base_response.get("status_code") or 0) != 0:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_MINIMAX_TTS_FAILED",
+                "upstream": result,
+            },
+        )
+    data = result.get("data") or {}
+    audio_url = str(data.get("audio") or "").strip()
+    if not audio_url.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_MINIMAX_TTS_AUDIO_URL_EMPTY",
+                "upstream": result,
+            },
+        )
+    download_audio(audio_url, output_path)
+
+
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
     try:
         body: Any = response.json()
@@ -616,7 +732,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    audio_format = "mp3" if payload.tts_provider == "openai" else "wav"
+    audio_format = (
+        "mp3"
+        if payload.tts_provider in {"openai", "elevenlabs", "minimax"}
+        else "wav"
+    )
     audio_name = f"tts-{uuid.uuid4()}.{audio_format}"
     audio_path = MEDIA_DIR / audio_name
     request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
@@ -625,6 +745,10 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     try:
         if payload.tts_provider == "openai":
             generate_openai_tts(payload, audio_path)
+        elif payload.tts_provider == "elevenlabs":
+            generate_elevenlabs_tts(payload, audio_path)
+        elif payload.tts_provider == "minimax":
+            generate_minimax_tts(payload, audio_path)
         else:
             segments = parse_narration_segments(payload)
             segment_paths: list[Path] = []
@@ -704,7 +828,15 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "alignment_method": (
             "openai_tts_whisperx_bounds"
             if payload.tts_provider == "openai"
-            else "dubbingx_emotion_segments_whisperx_bounds"
+            else (
+                "elevenlabs_v3_whisperx_bounds"
+                if payload.tts_provider == "elevenlabs"
+                else (
+                    "minimax_speech_2_8_hd_whisperx_bounds"
+                    if payload.tts_provider == "minimax"
+                    else "dubbingx_emotion_segments_whisperx_bounds"
+                )
+            )
         ),
         "format": audio_format,
         "error_code": "",
