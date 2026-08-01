@@ -165,6 +165,18 @@ def normalize_qwen_tts_voice(voice_type: str) -> str:
     return legacy_voice_map.get(voice, voice or "Dylan")
 
 
+def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
+    try:
+        body: Any = response.json()
+    except Exception:
+        body = response.text[:1000]
+
+    return {
+        "status_code": response.status_code,
+        "body": body,
+    }
+
+
 def build_subtitle_cues(
     alignment_result: dict[str, Any],
     audio_duration_sec: float,
@@ -395,6 +407,15 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         )
         response.raise_for_status()
         result = response.json()
+
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
 
     except Exception as exc:
         raise HTTPException(
