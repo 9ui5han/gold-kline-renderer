@@ -157,13 +157,13 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "Charon"
+    voice_type: str = "Kore"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 def normalize_gemini_tts_voice(voice_type: str) -> str:
     """
-    兼容Dify里的旧音色值，默认使用适合信息讲解的Charon。
+    兼容Dify里的旧音色值，默认使用302AI文档示例音色Kore。
     """
     voice = str(voice_type or "").strip()
     supported_voices = {
@@ -176,7 +176,7 @@ def normalize_gemini_tts_voice(voice_type: str) -> str:
     }
     if voice in supported_voices:
         return voice
-    return "Charon"
+    return "Kore"
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
