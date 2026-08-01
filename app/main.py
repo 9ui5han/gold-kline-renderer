@@ -1,4 +1,3 @@
-import base64
 import json
 import math
 import os
@@ -149,8 +148,21 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "zh_male_M392_conversation_wvae_bigtts"
+    voice_type: str = "Dylan"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
+def normalize_qwen_tts_voice(voice_type: str) -> str:
+    """
+    兼容Dify里旧的火山音色字段；Qwen-TTS不认识旧voice_type时使用男声。
+    """
+    voice = str(voice_type or "").strip()
+
+    legacy_voice_map = {
+        "zh_male_M392_conversation_wvae_bigtts": "Dylan",
+    }
+
+    return legacy_voice_map.get(voice, voice or "Dylan")
 
 
 def build_subtitle_cues(
@@ -301,7 +313,7 @@ def align_audio_with_whisperx(
     original_text: str,
 ) -> list[dict[str, Any]]:
     """
-    上传已经生成的MP3，让302.AI WhisperX返回真实语音时间戳。
+    上传已经生成的音频，让302.AI WhisperX返回真实语音时间戳。
     """
     try:
         with audio_path.open("rb") as audio_file:
@@ -315,7 +327,7 @@ def align_audio_with_whisperx(
                     "audio_input": (
                         audio_path.name,
                         audio_file,
-                        "audio/mpeg",
+                        "audio/wav" if audio_path.suffix == ".wav" else "audio/mpeg",
                     )
                 },
                 data={
@@ -361,22 +373,18 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
+    voice = normalize_qwen_tts_voice(payload.voice_type)
     request_body = {
-        "audio": {
-            "voice_type": payload.voice_type,
-            "encoding": "mp3",
-            "speed_ratio": payload.speed_ratio,
-        },
-        "request": {
-            "reqid": uuid.uuid4().hex,
+        "model": "qwen-tts",
+        "input": {
             "text": payload.text,
-            "operation": "query",
+            "voice": voice,
         },
     }
 
     try:
         response = httpx.post(
-            "https://api.302.ai/doubao/tts_hd",
+            "https://api.302ai.cn/aliyun/api/v1/services/aigc/multimodal-generation/generation",
             headers={
                 "Authorization": f"Bearer {AI302_API_KEY}",
                 "Content-Type": "application/json",
@@ -394,37 +402,29 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail=f"302_TTS_REQUEST_FAILED: {exc}",
         ) from exc
 
-    if result.get("code") != 3000:
+    output = result.get("output") or {}
+    audio = output.get("audio") or {}
+    upstream_audio_url = str(audio.get("url") or "")
+
+    if not upstream_audio_url:
         raise HTTPException(
             status_code=502,
             detail={
                 "error_code": "302_TTS_FAILED",
-                "upstream": result,
+                "message": "302返回的output.audio.url为空",
+                "upstream_keys": sorted(result.keys()),
             },
         )
 
-    audio_base64 = str(result.get("data") or "")
-
-    if not audio_base64:
-        raise HTTPException(
-            status_code=502,
-            detail="302返回的音频data为空",
-        )
-
+    audio_name = f"tts-{uuid.uuid4()}.wav"
+    audio_path = MEDIA_DIR / audio_name
     try:
-        padding = "=" * (-len(audio_base64) % 4)
-        audio_bytes = base64.b64decode(
-            audio_base64 + padding
-        )
+        download_audio(upstream_audio_url, audio_path)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
-            detail=f"音频Base64解析失败: {exc}",
+            detail=f"302_TTS_AUDIO_DOWNLOAD_FAILED: {exc}",
         ) from exc
-
-    audio_name = f"tts-{uuid.uuid4()}.mp3"
-    audio_path = MEDIA_DIR / audio_name
-    audio_path.write_bytes(audio_bytes)
 
     duration_sec = round(
         probe_duration(audio_path),
@@ -450,7 +450,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
         "alignment_method": "whisperx_bounds_original_text",
-        "format": "mp3",
+        "format": "wav",
         "error_code": "",
         "error_message": "",
     }
