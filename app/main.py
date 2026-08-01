@@ -159,6 +159,7 @@ class TTSProxyRequest(BaseModel):
     text: str = Field(min_length=1, max_length=5000)
     voice_type: str = "Kore"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
+    style_prompt: str = Field(default="", max_length=2000)
 
 
 def normalize_gemini_tts_voice(voice_type: str) -> str:
@@ -400,15 +401,12 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         )
 
     voice = normalize_gemini_tts_voice(payload.voice_type)
-    narration_prompt = f"""
-请只朗读【旁白正文】中的内容，不要朗读说明、标题或括号标记。
-使用自然、沉稳、专业的中文财经解说语气，像真人在讲解图表，不要像广告或机械念稿。
-根据全文上下文自然调整停顿和轻重：历史数据部分客观平稳；支撑、压力、突破和回落处稍微加强重点；风险提示放慢并保持克制。
-数字、小数、日期和时间必须清晰准确，不要添加或改写正文。
-
-【旁白正文】
-{payload.text}
-""".strip()
+    style_prompt = str(payload.style_prompt or "").strip()
+    narration_prompt = (
+        f"{style_prompt}\n\n{payload.text}"
+        if style_prompt
+        else payload.text
+    )
     request_body = {
         "contents": [
             {
