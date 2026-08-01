@@ -668,7 +668,6 @@ def generate_glm_tts(payload: TTSProxyRequest, output_path: Path) -> None:
             "response_format": "wav",
             "speed": payload.speed_ratio,
             "volume": 1.0,
-            "watermark_enabled": True,
         },
         timeout=180,
     )
