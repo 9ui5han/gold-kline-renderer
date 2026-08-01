@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import re
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from .chart_renderer import render_tradingview_scene
 
 
+logger = logging.getLogger("gold_kline_renderer")
 DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/gold-video"))
 MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
@@ -409,6 +411,12 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         result = response.json()
 
     except httpx.HTTPStatusError as exc:
+        logger.error(
+            "302_TTS_HTTP_STATUS request_id=%s voice=%s upstream=%s",
+            payload.request_id,
+            voice,
+            upstream_error_summary(exc.response),
+        )
         raise HTTPException(
             status_code=502,
             detail={
@@ -418,6 +426,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         ) from exc
 
     except Exception as exc:
+        logger.exception(
+            "302_TTS_REQUEST_FAILED request_id=%s voice=%s",
+            payload.request_id,
+            voice,
+        )
         raise HTTPException(
             status_code=502,
             detail=f"302_TTS_REQUEST_FAILED: {exc}",
@@ -428,6 +441,15 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     upstream_audio_url = str(audio.get("url") or "")
 
     if not upstream_audio_url:
+        logger.error(
+            "302_TTS_AUDIO_URL_EMPTY request_id=%s voice=%s result=%s",
+            payload.request_id,
+            voice,
+            {
+                "keys": sorted(result.keys()),
+                "output": output,
+            },
+        )
         raise HTTPException(
             status_code=502,
             detail={
@@ -442,6 +464,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     try:
         download_audio(upstream_audio_url, audio_path)
     except Exception as exc:
+        logger.exception(
+            "302_TTS_AUDIO_DOWNLOAD_FAILED request_id=%s voice=%s",
+            payload.request_id,
+            voice,
+        )
         raise HTTPException(
             status_code=502,
             detail=f"302_TTS_AUDIO_DOWNLOAD_FAILED: {exc}",
@@ -459,6 +486,12 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             payload.text,
         )
     except Exception as exc:
+        logger.exception(
+            "WHISPERX_ALIGNMENT_FAILED request_id=%s voice=%s audio=%s",
+            payload.request_id,
+            voice,
+            audio_name,
+        )
         raise HTTPException(
             status_code=502,
             detail=str(exc),
