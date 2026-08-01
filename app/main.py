@@ -123,6 +123,7 @@ app = FastAPI(
 )
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 JOBS: dict[str, dict[str, Any]] = {}
+TTS_JOBS: dict[str, dict[str, Any]] = {}
 LOCK = threading.Lock()
 
 
@@ -141,6 +142,12 @@ def update_job(job_id: str, **changes: Any) -> None:
     with LOCK:
         JOBS[job_id].update(changes)
         JOBS[job_id]["updated_at"] = now_iso()
+
+
+def update_tts_job(job_id: str, **changes: Any) -> None:
+    with LOCK:
+        TTS_JOBS[job_id].update(changes)
+        TTS_JOBS[job_id]["updated_at"] = now_iso()
 
 
 @app.get("/health")
@@ -422,19 +429,19 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
                 }
             },
         },
-        "model": "gemini-2.5-pro-preview-tts",
+        "model": "gemini-2.5-flash-preview-tts",
     }
 
     try:
         response = httpx.post(
-            "https://api.302.ai/google/v1/models/gemini-2.5-pro-preview-tts?response_format=url",
+            "https://api.302.ai/google/v1/models/gemini-2.5-flash-preview-tts?response_format=url",
             headers={
                 "Authorization": f"Bearer {AI302_API_KEY}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
             json=request_body,
-            timeout=100,
+            timeout=70,
         )
         response.raise_for_status()
         result = response.json()
@@ -546,6 +553,89 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "error_code": "",
         "error_message": "",
     }
+
+
+def run_tts_job(job_id: str, payload: dict[str, Any]) -> None:
+    try:
+        update_tts_job(job_id, status="processing", progress=10)
+        result = create_tts_audio(TTSProxyRequest.model_validate(payload))
+        update_tts_job(
+            job_id,
+            status="completed",
+            progress=100,
+            **{key: value for key, value in result.items() if key != "status"},
+        )
+    except HTTPException as exc:
+        detail = exc.detail
+        error_code = "TTS_HTTP_ERROR"
+        if isinstance(detail, dict):
+            error_code = str(detail.get("error_code") or error_code)
+            error_message = json.dumps(detail, ensure_ascii=False)
+        else:
+            error_message = str(detail)
+        update_tts_job(
+            job_id,
+            status="failed",
+            progress=100,
+            error_code=error_code,
+            error_message=error_message,
+        )
+    except Exception as exc:
+        logger.exception("TTS_JOB_FAILED job_id=%s", job_id)
+        update_tts_job(
+            job_id,
+            status="failed",
+            progress=100,
+            error_code=type(exc).__name__.upper(),
+            error_message=str(exc),
+        )
+
+
+@app.post("/v1/tts-jobs", status_code=202, dependencies=[Depends(require_token)])
+def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
+    if not AI302_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="服务器尚未设置AI302_API_KEY",
+        )
+
+    job_id = str(uuid.uuid4())
+    status_url = f"{PUBLIC_BASE_URL}/v1/tts-jobs/{job_id}"
+    job = {
+        "job_id": job_id,
+        "request_id": payload.request_id,
+        "status": "queued",
+        "progress": 0,
+        "status_url": status_url,
+        "audio_url": "",
+        "duration_sec": 0,
+        "subtitle_cues": [],
+        "subtitle_count": 0,
+        "alignment_method": "",
+        "format": "",
+        "error_code": "",
+        "error_message": "",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+    }
+    with LOCK:
+        TTS_JOBS[job_id] = job
+
+    threading.Thread(
+        target=run_tts_job,
+        args=(job_id, payload.model_dump()),
+        daemon=True,
+    ).start()
+    return job
+
+
+@app.get("/v1/tts-jobs/{job_id}", dependencies=[Depends(require_token)])
+def get_tts_job(job_id: str) -> dict[str, Any]:
+    with LOCK:
+        job = TTS_JOBS.get(job_id)
+        if not job:
+            raise HTTPException(404, "TTS_JOB_NOT_FOUND")
+        return dict(job)
 
 @app.post("/v1/render-jobs", status_code=202, dependencies=[Depends(require_token)])
 def create_render_job(payload: RenderRequest) -> dict[str, Any]:
