@@ -180,6 +180,7 @@ class TTSProxyRequest(BaseModel):
         "minimax",
         "indextts2",
         "glm_tts",
+        "qwen3_tts",
     ] = "dubbingx"
     openai_voice: Literal["alloy"] = "alloy"
     elevenlabs_voice_id: str = Field(
@@ -199,6 +200,7 @@ class TTSProxyRequest(BaseModel):
         "douji",
         "luodo",
     ] = "tongtong"
+    qwen3_voice: Literal["Elias"] = "Elias"
 
 
 def ai302_headers() -> dict[str, str]:
@@ -705,6 +707,57 @@ def generate_glm_tts(payload: TTSProxyRequest, output_path: Path) -> None:
     download_audio(audio_url, output_path)
 
 
+def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方 Qwen3-TTS-Flash 示例生成语音。"""
+    response = httpx.post(
+        "https://api.302.ai/aliyun/api/v1/services/aigc/"
+        "multimodal-generation/generation",
+        headers=ai302_headers(),
+        json={
+            "model": "qwen3-tts-flash-2025-09-18",
+            "input": {
+                "text": payload.text,
+                "voice": payload.qwen3_voice,
+            },
+        },
+        timeout=180,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_QWEN3_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    try:
+        result = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_QWEN3_TTS_INVALID_JSON",
+                "error_message": str(exc),
+            },
+        ) from exc
+
+    audio_url = str(
+        ((result.get("output") or {}).get("audio") or {}).get("url") or ""
+    ).strip()
+    if not audio_url.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_QWEN3_TTS_AUDIO_URL_EMPTY",
+                "upstream": result,
+            },
+        )
+    download_audio(audio_url, output_path)
+
+
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
     try:
         body: Any = response.json()
@@ -946,6 +999,8 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             generate_indextts2_tts(payload, audio_path)
         elif payload.tts_provider == "glm_tts":
             generate_glm_tts(payload, audio_path)
+        elif payload.tts_provider == "qwen3_tts":
+            generate_qwen3_tts(payload, audio_path)
         else:
             segments = parse_narration_segments(payload)
             segment_paths: list[Path] = []
@@ -1037,7 +1092,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
                         else (
                             "glm_tts_whisperx_bounds"
                             if payload.tts_provider == "glm_tts"
-                            else "dubbingx_emotion_segments_whisperx_bounds"
+                            else (
+                                "qwen3_tts_whisperx_bounds"
+                                if payload.tts_provider == "qwen3_tts"
+                                else "dubbingx_emotion_segments_whisperx_bounds"
+                            )
                         )
                     )
                 )
