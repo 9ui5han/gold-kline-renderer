@@ -30,6 +30,10 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 TOKEN = os.getenv("RENDER_SERVICE_TOKEN", "change-me")
 AI302_API_KEY = os.getenv("AI302_API_KEY", "")
+INDEXTTS2_SPEAKER_AUDIO_URL = os.getenv(
+    "INDEXTTS2_SPEAKER_AUDIO_URL",
+    "",
+).strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 FONT_PATHS = [
@@ -174,6 +178,8 @@ class TTSProxyRequest(BaseModel):
         "openai",
         "elevenlabs",
         "minimax",
+        "indextts2",
+        "glm_tts",
     ] = "dubbingx"
     openai_voice: Literal["alloy"] = "alloy"
     elevenlabs_voice_id: str = Field(
@@ -184,6 +190,15 @@ class TTSProxyRequest(BaseModel):
         default="audiobook_male_1",
         pattern=r"^[A-Za-z0-9_-]+$",
     )
+    glm_voice: Literal[
+        "tongtong",
+        "chuichui",
+        "xiaochen",
+        "jam",
+        "kazi",
+        "douji",
+        "luodo",
+    ] = "tongtong"
 
 
 def ai302_headers() -> dict[str, str]:
@@ -515,6 +530,182 @@ def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
     download_audio(audio_url, output_path)
 
 
+def generate_indextts2_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方 IndexTTS-2 异步接口生成语音。"""
+    if not INDEXTTS2_SPEAKER_AUDIO_URL.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error_code": "INDEXTTS2_SPEAKER_AUDIO_URL_MISSING",
+                "error_message": (
+                    "Railway尚未设置有效的INDEXTTS2_SPEAKER_AUDIO_URL"
+                ),
+            },
+        )
+
+    try:
+        response = httpx.post(
+            "https://api.302.ai/302/index_tts2/task",
+            headers=ai302_headers(),
+            json={
+                "text": payload.text,
+                "speaker_audio_url": INDEXTTS2_SPEAKER_AUDIO_URL,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        result = response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_INDEXTTS2_CREATE_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_INDEXTTS2_CREATE_FAILED",
+                "error_message": str(exc),
+            },
+        ) from exc
+
+    task_id = str(result.get("task_id") or "").strip()
+    if not task_id:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_INDEXTTS2_TASK_ID_EMPTY",
+                "upstream": result,
+            },
+        )
+
+    max_checks = int(os.getenv("INDEXTTS2_MAX_POLLS", "150"))
+    poll_interval = float(os.getenv("INDEXTTS2_POLL_INTERVAL_SEC", "2"))
+
+    for _ in range(max_checks):
+        try:
+            response = httpx.get(
+                "https://api.302.ai/302/index_tts2/task",
+                params={"task_id": task_id},
+                headers=ai302_headers(),
+                timeout=30,
+            )
+            response.raise_for_status()
+            task_result = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_code": "302_INDEXTTS2_QUERY_HTTP_STATUS",
+                    "upstream": upstream_error_summary(exc.response),
+                },
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_code": "302_INDEXTTS2_QUERY_FAILED",
+                    "error_message": str(exc),
+                },
+            ) from exc
+
+        state = str(task_result.get("state") or "").strip().upper()
+        if state == "SUCCESS":
+            audio_url = str(task_result.get("audio_url") or "").strip()
+            if not audio_url.startswith(("https://", "http://")):
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error_code": "302_INDEXTTS2_AUDIO_URL_EMPTY",
+                        "upstream": task_result,
+                    },
+                )
+            download_audio(audio_url, output_path)
+            return
+
+        if any(word in state for word in ("FAIL", "ERROR", "CANCEL")):
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_code": "302_INDEXTTS2_TASK_FAILED",
+                    "upstream": task_result,
+                },
+            )
+
+        time.sleep(poll_interval)
+
+    raise HTTPException(
+        status_code=504,
+        detail={
+            "error_code": "302_INDEXTTS2_TIMEOUT",
+            "task_id": task_id,
+        },
+    )
+
+
+def generate_glm_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """按302.AI官方 GLM-TTS URL返回格式生成 WAV。"""
+    if len(payload.text) > 1024:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error_code": "GLM_TTS_TEXT_TOO_LONG",
+                "error_message": "GLM-TTS单次输入不能超过1024字符",
+            },
+        )
+
+    response = httpx.post(
+        "https://api.302.ai/bigmodel/api/paas/v4/audio/speech",
+        params={"output_format": "url"},
+        headers=ai302_headers(),
+        json={
+            "model": "glm-tts",
+            "input": payload.text,
+            "voice": payload.glm_voice,
+            "response_format": "wav",
+            "speed": payload.speed_ratio,
+            "volume": 1.0,
+            "watermark_enabled": True,
+        },
+        timeout=180,
+    )
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_GLM_TTS_HTTP_STATUS",
+                "upstream": upstream_error_summary(exc.response),
+            },
+        ) from exc
+
+    try:
+        result = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_GLM_TTS_INVALID_JSON",
+                "error_message": str(exc),
+            },
+        ) from exc
+
+    audio_url = str(result.get("url") or "").strip()
+    if not audio_url.startswith(("https://", "http://")):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_GLM_TTS_AUDIO_URL_EMPTY",
+                "upstream": result,
+            },
+        )
+    download_audio(audio_url, output_path)
+
+
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
     try:
         body: Any = response.json()
@@ -752,6 +943,10 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             generate_elevenlabs_tts(payload, audio_path)
         elif payload.tts_provider == "minimax":
             generate_minimax_tts(payload, audio_path)
+        elif payload.tts_provider == "indextts2":
+            generate_indextts2_tts(payload, audio_path)
+        elif payload.tts_provider == "glm_tts":
+            generate_glm_tts(payload, audio_path)
         else:
             segments = parse_narration_segments(payload)
             segment_paths: list[Path] = []
@@ -837,7 +1032,15 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
                 else (
                     "minimax_speech_2_8_hd_whisperx_bounds"
                     if payload.tts_provider == "minimax"
-                    else "dubbingx_emotion_segments_whisperx_bounds"
+                    else (
+                        "indextts2_whisperx_bounds"
+                        if payload.tts_provider == "indextts2"
+                        else (
+                            "glm_tts_whisperx_bounds"
+                            if payload.tts_provider == "glm_tts"
+                            else "dubbingx_emotion_segments_whisperx_bounds"
+                        )
+                    )
                 )
             )
         ),

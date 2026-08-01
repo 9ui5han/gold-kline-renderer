@@ -35,6 +35,9 @@ http://127.0.0.1:8000/docs
 | `PUBLIC_BASE_URL` | 云平台给你的 `https://...` 域名 | 否 |
 | `DATA_DIR` | `/tmp/gold-video` | 否 |
 | `MAX_AUDIO_MB` | `30` | 否 |
+| `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
+| `INDEXTTS2_MAX_POLLS` | `150` | 否 |
+| `INDEXTTS2_POLL_INTERVAL_SEC` | `2` | 否 |
 | `PORT` | 通常由平台自动设置 | 否 |
 
 部署完成后先访问 `https://你的域名/health`。返回 `{"status":"ok"}` 才能继续 Dify。
