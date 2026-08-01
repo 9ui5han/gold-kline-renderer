@@ -150,7 +150,7 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "Dylan"
+    voice_type: str = "Ethan"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
@@ -161,10 +161,10 @@ def normalize_qwen_tts_voice(voice_type: str) -> str:
     voice = str(voice_type or "").strip()
 
     legacy_voice_map = {
-        "zh_male_M392_conversation_wvae_bigtts": "Dylan",
+        "zh_male_M392_conversation_wvae_bigtts": "Ethan",
     }
 
-    return legacy_voice_map.get(voice, voice or "Dylan")
+    return legacy_voice_map.get(voice, voice or "Ethan")
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
