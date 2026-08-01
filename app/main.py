@@ -160,6 +160,9 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
+    # 可选的朗读专用文本。Eleven v3 的情绪/停顿标签只放在这里，
+    # 原始 text 继续用于 WhisperX 字幕对齐，避免控制标签进入字幕。
+    speech_text: str | None = Field(default=None, max_length=7000)
     voice_type: str = "Kore"
     voice_id: str = Field(default="30065", pattern=r"^\d+$")
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
@@ -422,7 +425,7 @@ def generate_elevenlabs_tts(payload: TTSProxyRequest, output_path: Path) -> None
         },
         headers=ai302_headers(),
         json={
-            "text": payload.text,
+            "text": (payload.speech_text or payload.text).strip(),
             "model_id": "eleven_v3",
         },
         timeout=180,
