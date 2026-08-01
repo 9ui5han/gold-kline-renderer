@@ -150,19 +150,26 @@ def health() -> dict[str, str]:
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
-    voice_type: str = "738d0cc1a3e9430a9de2b544a466a7fc"
+    voice_type: str = "Charon"
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
-def normalize_fish_audio_reference_id(voice_type: str) -> str:
+def normalize_gemini_tts_voice(voice_type: str) -> str:
     """
-    兼容Dify里的旧音色名；Fish Audio需要传入声音模型的reference_id。
+    兼容Dify里的旧音色值，默认使用适合信息讲解的Charon。
     """
     voice = str(voice_type or "").strip()
-    default_reference_id = "738d0cc1a3e9430a9de2b544a466a7fc"
-    if len(voice) == 32 and all(char in "0123456789abcdefABCDEF" for char in voice):
+    supported_voices = {
+        "Charon",
+        "Gacrux",
+        "Kore",
+        "Rasalgethi",
+        "Sadaltager",
+        "Schedar",
+    }
+    if voice in supported_voices:
         return voice
-    return default_reference_id
+    return "Charon"
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
@@ -385,24 +392,44 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    voice = normalize_fish_audio_reference_id(payload.voice_type)
+    voice = normalize_gemini_tts_voice(payload.voice_type)
+    narration_prompt = f"""
+请只朗读【旁白正文】中的内容，不要朗读说明、标题或括号标记。
+使用自然、沉稳、专业的中文财经解说语气，像真人在讲解图表，不要像广告或机械念稿。
+根据全文上下文自然调整停顿和轻重：历史数据部分客观平稳；支撑、压力、突破和回落处稍微加强重点；风险提示放慢并保持克制。
+数字、小数、日期和时间必须清晰准确，不要添加或改写正文。
+
+【旁白正文】
+{payload.text}
+""".strip()
     request_body = {
-        "text": payload.text,
-        "reference_id": voice,
-        "chunk_length": 200,
-        "normalize": True,
-        "format": "wav",
-        "mp3_bitrate": 64,
-        "opus_bitrate": 32,
-        "latency": "normal",
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": narration_prompt,
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {
+                    "prebuiltVoiceConfig": {
+                        "voiceName": voice,
+                    }
+                }
+            },
+        },
+        "model": "gemini-2.5-pro-preview-tts",
     }
 
     try:
         response = httpx.post(
-            "https://api.302.ai/fish-audio/v1/tts?response_format=url",
+            "https://api.302.ai/google/v1/models/gemini-2.5-pro-preview-tts?response_format=url",
             headers={
                 "Authorization": f"Bearer {AI302_API_KEY}",
-                "model": "s1",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
             },
@@ -438,7 +465,18 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             detail=f"302_TTS_REQUEST_FAILED: {exc}",
         ) from exc
 
-    upstream_audio_url = str(result.get("url") or "")
+    candidates = result.get("candidates") or []
+    parts = (
+        ((candidates[0].get("content") or {}).get("parts") or [])
+        if candidates and isinstance(candidates[0], dict)
+        else []
+    )
+    inline_data = (
+        (parts[0].get("inlineData") or parts[0].get("inline_data") or {})
+        if parts and isinstance(parts[0], dict)
+        else {}
+    )
+    upstream_audio_url = str(inline_data.get("data") or result.get("url") or "")
 
     if not upstream_audio_url:
         logger.error(
