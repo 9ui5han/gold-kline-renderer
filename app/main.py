@@ -36,6 +36,9 @@ INDEXTTS2_SPEAKER_AUDIO_URL = os.getenv(
 ).strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
+QWEN3_TTS_MAX_INPUT_BYTES = int(
+    os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
+)
 FONT_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
@@ -388,6 +391,53 @@ def concatenate_audio(parts: list[Path], output_path: Path) -> None:
     run_command(args)
 
 
+def split_text_by_utf8_limit(text: str, max_bytes: int) -> list[str]:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return []
+    if len(normalized.encode("utf-8")) <= max_bytes:
+        return [normalized]
+
+    pieces = re.findall(r".+?[。！？；，,]|.+$", normalized, flags=re.S)
+    chunks: list[str] = []
+    current = ""
+
+    def push_current() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for piece in pieces:
+        piece = piece.strip()
+        if not piece:
+            continue
+        if len(piece.encode("utf-8")) > max_bytes:
+            push_current()
+            buffer = ""
+            for char in piece:
+                candidate = buffer + char
+                if len(candidate.encode("utf-8")) > max_bytes:
+                    if buffer:
+                        chunks.append(buffer)
+                    buffer = char
+                else:
+                    buffer = candidate
+            if buffer:
+                chunks.append(buffer)
+            continue
+
+        candidate = current + piece
+        if current and len(candidate.encode("utf-8")) > max_bytes:
+            push_current()
+            current = piece
+        else:
+            current = candidate
+
+    push_current()
+    return chunks
+
+
 def generate_openai_tts(payload: TTSProxyRequest, output_path: Path) -> None:
     """按302.AI官方OpenAI Speech格式生成一条试听音频。"""
     response = httpx.post(
@@ -707,8 +757,12 @@ def generate_glm_tts(payload: TTSProxyRequest, output_path: Path) -> None:
     download_audio(audio_url, output_path)
 
 
-def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
-    """按302.AI官方 Qwen3-TTS-Flash 示例生成语音。"""
+def generate_qwen3_tts_segment(
+    text: str,
+    voice: str,
+    output_path: Path,
+) -> None:
+    """按302.AI官方 Qwen3-TTS-Flash 示例生成单段语音。"""
     response = httpx.post(
         "https://api.302.ai/aliyun/api/v1/services/aigc/"
         "multimodal-generation/generation",
@@ -716,8 +770,8 @@ def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
         json={
             "model": "qwen3-tts-flash-2025-09-18",
             "input": {
-                "text": payload.text,
-                "voice": payload.qwen3_voice,
+                "text": text,
+                "voice": voice,
             },
         },
         timeout=180,
@@ -756,6 +810,50 @@ def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
             },
         )
     download_audio(audio_url, output_path)
+
+
+def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
+    """将长旁白切成 Qwen3 可接受的小段，逐段生成后合并。"""
+    chunks = split_text_by_utf8_limit(
+        payload.text,
+        QWEN3_TTS_MAX_INPUT_BYTES,
+    )
+    if not chunks:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "QWEN3_TTS_TEXT_EMPTY"},
+        )
+
+    if len(chunks) == 1:
+        generate_qwen3_tts_segment(
+            chunks[0],
+            payload.qwen3_voice,
+            output_path,
+        )
+        return
+
+    segment_dir = WORK_DIR / f"qwen3-{payload.request_id}-{uuid.uuid4()}"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    segment_paths: list[Path] = []
+    try:
+        for index, chunk in enumerate(chunks):
+            segment_path = segment_dir / f"segment-{index:02d}.wav"
+            generate_qwen3_tts_segment(
+                chunk,
+                payload.qwen3_voice,
+                segment_path,
+            )
+            segment_paths.append(segment_path)
+            logger.info(
+                "QWEN3_TTS_SEGMENT_COMPLETED request_id=%s segment=%s/%s bytes=%s",
+                payload.request_id,
+                index + 1,
+                len(chunks),
+                len(chunk.encode("utf-8")),
+            )
+        concatenate_audio(segment_paths, output_path)
+    finally:
+        shutil.rmtree(segment_dir, ignore_errors=True)
 
 
 def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
