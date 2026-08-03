@@ -9,7 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app import main
-from app.macro_context import MacroContextError, MacroContextService
+from app.macro_context import MacroContextError, MacroContextService, _validate_request
 from app.macro_source_probe import SOURCE_SPECS
 
 
@@ -22,7 +22,7 @@ REQUEST = {
         "schema_version": "forecast-horizon-v1",
         "timeframe": "15m",
         "start_time": "2026-09-16T12:00:00Z",
-        "end_time": "2026-09-16T20:00:00Z",
+        "end_time": "2026-09-16T19:45:00Z",
         "duration_minutes": 480,
     },
 }
@@ -227,6 +227,28 @@ class MacroContextTests(unittest.TestCase):
             "DATA_AS_OF_TIMEZONE_REQUIRED",
         ):
             self.service().get_context(invalid, now=NOW)
+
+    def test_request_duration_uses_data_as_of_not_first_future_candle(self):
+        request = {
+            "request_id": "macro-56de31e816dea253",
+            "symbol": "XAUUSD",
+            "data_as_of": "2026-08-03T09:45:00Z",
+            "forecast_horizon": {
+                "schema_version": "forecast-horizon-v1",
+                "timeframe": "15m",
+                "start_time": "2026-08-03T10:00:00Z",
+                "end_time": "2026-08-03T11:45:00Z",
+                "duration_minutes": 120,
+            },
+        }
+
+        normalized = _validate_request(request)
+
+        self.assertEqual(normalized["request_id"], request["request_id"])
+        self.assertEqual(
+            normalized["forecast_horizon"]["duration_minutes"],
+            120.0,
+        )
 
     def test_context_route_uses_bearer_auth_and_service(self):
         expected = {

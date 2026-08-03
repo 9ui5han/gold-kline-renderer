@@ -85,7 +85,9 @@ def _validate_request(payload: dict[str, Any]) -> dict[str, Any]:
         duration_minutes, bool
     ):
         raise MacroContextError("HORIZON_DURATION_INVALID")
-    actual_duration = (end - start).total_seconds() / 60
+    # Dify的预测时长从最后一根真实K线(data_as_of)计算到预测终点。
+    # start_time是第一根未来K线时间，会比data_as_of晚一个K线周期。
+    actual_duration = (end - data_as_of).total_seconds() / 60
     if abs(float(duration_minutes) - actual_duration) > 0.01:
         raise MacroContextError("HORIZON_DURATION_MISMATCH")
 
