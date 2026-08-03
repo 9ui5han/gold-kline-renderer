@@ -1232,8 +1232,18 @@ def _whisper_word_timings(
     alignment_result: dict[str, Any],
 ) -> list[dict[str, Any]]:
     timings: list[dict[str, Any]] = []
-    for segment in alignment_result.get("segments") or []:
-        for word in segment.get("words") or []:
+    raw_word_groups = [
+        segment.get("words") or []
+        for segment in alignment_result.get("segments") or []
+        if isinstance(segment, dict)
+    ]
+    if not raw_word_groups:
+        raw_word_groups = [alignment_result.get("words") or []]
+
+    for words in raw_word_groups:
+        for word in words:
+            if not isinstance(word, dict):
+                continue
             start = word.get("start")
             end = word.get("end")
             text = _subtitle_word(word.get("word") or word.get("text") or "")
@@ -1382,35 +1392,38 @@ def whisperx_language_for_text(original_text: str) -> str:
     return "en" if english_letters > chinese_characters else "zh"
 
 
-def align_audio_with_whisperx(
+def align_audio_with_source_text(
     audio_path: Path,
     audio_duration_sec: float,
     original_text: str,
 ) -> tuple[list[dict[str, Any]], str]:
     """
-    上传已经生成的音频，让302.AI WhisperX返回真实语音时间戳。
+    使用302.AI的原文字幕打轴接口。
+    音频与原始旁白同时提交，避免金融数字被转录后再匹配时产生时间漂移。
     """
     alignment_language = whisperx_language_for_text(original_text)
     try:
         with audio_path.open("rb") as audio_file:
             response = httpx.post(
-                "https://api.302.ai/302/whisperx",
+                "https://api.302.ai/v1/audio/alignments",
                 headers={
                     "Authorization": f"Bearer {AI302_API_KEY}",
                     "Accept": "application/json",
                 },
                 files={
-                    "audio_input": (
+                    "file": (
                         audio_path.name,
                         audio_file,
                         "audio/wav" if audio_path.suffix == ".wav" else "audio/mpeg",
                     )
                 },
                 data={
-                    "language": alignment_language,
-                    "processing_type": "align",
-                    "translate": "false",
-                    "output": "text",
+                    "text": original_text,
+                    "model": "whisper-v3-turbo",
+                    "vad_model": "silero",
+                    "preprocessing": "none",
+                    "response_format": "verbose_json",
+                    "alignment_model": "tdnn_ffn",
                 },
                 timeout=300,
             )
@@ -1420,12 +1433,17 @@ def align_audio_with_whisperx(
 
     except Exception as exc:
         raise RuntimeError(
-            f"WHISPERX_REQUEST_FAILED: {exc}"
+            f"SOURCE_TEXT_ALIGNMENT_REQUEST_FAILED: {exc}"
         ) from exc
 
     if result.get("error"):
         raise RuntimeError(
-            f"WHISPERX_ALIGNMENT_FAILED: {result['error']}"
+            f"SOURCE_TEXT_ALIGNMENT_FAILED: {result['error']}"
+        )
+
+    if not _whisper_word_timings(result):
+        raise RuntimeError(
+            "SOURCE_TEXT_ALIGNMENT_NO_WORD_TIMINGS: 返回中没有逐词时间戳"
         )
 
     subtitle_cues = build_subtitle_cues(
@@ -1436,7 +1454,18 @@ def align_audio_with_whisperx(
 
     if not subtitle_cues:
         raise RuntimeError(
-            "WHISPERX_NO_SUBTITLE_CUES: 没有识别到有效字幕时间"
+            "SOURCE_TEXT_ALIGNMENT_NO_SUBTITLE_CUES: 没有生成有效字幕时间"
+        )
+
+    too_long = [
+        index + 1
+        for index, cue in enumerate(subtitle_cues)
+        if float(cue["end_sec"]) - float(cue["start_sec"]) > 8.0
+    ]
+    if too_long:
+        raise RuntimeError(
+            "SUBTITLE_ALIGNMENT_DURATION_INVALID:"
+            + ",".join(str(index) for index in too_long)
         )
 
     return subtitle_cues, alignment_language
@@ -1529,7 +1558,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     )
 
     try:
-        subtitle_cues, alignment_language = align_audio_with_whisperx(
+        subtitle_cues, alignment_language = align_audio_with_source_text(
             audio_path,
             duration_sec,
             payload.text,
@@ -1554,24 +1583,24 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "subtitle_count": len(subtitle_cues),
         "alignment_language": alignment_language,
         "alignment_method": (
-            "openai_tts_whisperx_bounds"
+            "openai_tts_source_text_alignment_bounds"
             if payload.tts_provider == "openai"
             else (
-                "elevenlabs_v3_whisperx_bounds"
+                "elevenlabs_v3_source_text_alignment_bounds"
                 if payload.tts_provider == "elevenlabs"
                 else (
-                    "minimax_speech_2_8_hd_whisperx_bounds"
+                    "minimax_speech_2_8_hd_source_text_alignment_bounds"
                     if payload.tts_provider == "minimax"
                     else (
-                        "indextts2_whisperx_bounds"
+                        "indextts2_source_text_alignment_bounds"
                         if payload.tts_provider == "indextts2"
                         else (
-                            "glm_tts_whisperx_bounds"
+                            "glm_tts_source_text_alignment_bounds"
                             if payload.tts_provider == "glm_tts"
                             else (
-                                "qwen3_tts_whisperx_bounds"
+                                "qwen3_tts_source_text_alignment_bounds"
                                 if payload.tts_provider == "qwen3_tts"
-                                else "dubbingx_emotion_segments_whisperx_bounds"
+                                else "dubbingx_emotion_segments_source_text_alignment_bounds"
                             )
                         )
                     )
