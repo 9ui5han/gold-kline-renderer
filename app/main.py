@@ -1107,6 +1107,173 @@ def upstream_error_summary(response: httpx.Response) -> dict[str, Any]:
     }
 
 
+SUBTITLE_MAX_CHARS = 58
+SUBTITLE_MAX_WORDS = 13
+
+
+def _subtitle_word(value: str) -> str:
+    """把原文或WhisperX单词规整为可比较的英文/数字单元。"""
+    return "".join(
+        re.findall(r"[a-z0-9]+(?:\.[0-9]+)?", str(value or "").lower())
+    )
+
+
+def _subtitle_chunks(original_text: str) -> tuple[list[dict[str, Any]], list[str]]:
+    """按完整短句和可读长度切分原旁白，且不拆开数字或小数。"""
+    tokens = re.findall(
+        r"\d+(?:\.\d+)*|[A-Za-z]+(?:['’][A-Za-z]+)?|[\u4e00-\u9fff]+|\s+|[^\s]",
+        original_text,
+    )
+    chunks: list[dict[str, Any]] = []
+    source_words: list[str] = []
+    current = ""
+    current_start = 0
+    current_words = 0
+    join_next_without_space = False
+
+    def is_word(token: str) -> bool:
+        return bool(
+            re.fullmatch(
+                r"\d+(?:\.\d+)*|[A-Za-z]+(?:['’][A-Za-z]+)?|[\u4e00-\u9fff]+",
+                token,
+            )
+        )
+
+    def flush() -> None:
+        nonlocal current, current_start, current_words
+        text = current.strip()
+        if text and current_words:
+            chunks.append(
+                {
+                    "text": text,
+                    "word_start": current_start,
+                    "word_end": len(source_words) - 1,
+                }
+            )
+        current = ""
+        current_start = len(source_words)
+        current_words = 0
+
+    for raw_token in tokens:
+        if raw_token.isspace():
+            continue
+        token = raw_token.strip()
+        word = is_word(token)
+        sentence_end = token in ("。", "！", "？", "；", ".", "!", "?", ";")
+        comma_end = token in ("，", "、", ",", ":", "：")
+        connector = token in ("-", "–", "—", "/")
+
+        projected_length = len(current.rstrip()) + len(token) + (1 if current else 0)
+        if (
+            word
+            and current_words
+            and (
+                projected_length > SUBTITLE_MAX_CHARS
+                or current_words >= SUBTITLE_MAX_WORDS
+            )
+        ):
+            flush()
+            join_next_without_space = False
+
+        if word:
+            if current and not join_next_without_space:
+                current += " "
+            current += token
+            source_words.append(token)
+            current_words += 1
+            join_next_without_space = False
+        elif connector:
+            current = current.rstrip() + token
+            join_next_without_space = True
+        else:
+            current = current.rstrip() + token
+            join_next_without_space = False
+
+        if sentence_end and (
+            len(current) >= 28 or current_words >= 7
+        ):
+            flush()
+        elif comma_end and (
+            len(current) >= 38 or current_words >= 9
+        ):
+            flush()
+
+    flush()
+    return chunks, source_words
+
+
+def _whisper_word_timings(
+    alignment_result: dict[str, Any],
+) -> list[dict[str, Any]]:
+    timings: list[dict[str, Any]] = []
+    for segment in alignment_result.get("segments") or []:
+        for word in segment.get("words") or []:
+            start = word.get("start")
+            end = word.get("end")
+            text = _subtitle_word(word.get("word") or word.get("text") or "")
+            if start is None or end is None or not text:
+                continue
+            try:
+                start_sec = float(start)
+                end_sec = float(end)
+            except (TypeError, ValueError):
+                continue
+            if end_sec > start_sec:
+                timings.append(
+                    {"text": text, "start_sec": start_sec, "end_sec": end_sec}
+                )
+    return timings
+
+
+def _match_source_words_to_alignment(
+    source_words: list[str],
+    timing_words: list[dict[str, Any]],
+) -> dict[int, int]:
+    """顺序匹配原文与识别词；数字识别差异会自动由邻近词插值处理。"""
+    matches: dict[int, int] = {}
+    cursor = 0
+    for source_index, source_word in enumerate(source_words):
+        normalized = _subtitle_word(source_word)
+        if not normalized:
+            continue
+        match_index = None
+        for candidate in range(cursor, min(cursor + 12, len(timing_words))):
+            if timing_words[candidate]["text"] == normalized:
+                match_index = candidate
+                break
+        if match_index is not None:
+            matches[source_index] = match_index
+            cursor = match_index + 1
+    return matches
+
+
+def _source_word_time(
+    source_index: int,
+    use_end: bool,
+    source_word_count: int,
+    matches: dict[int, int],
+    timing_words: list[dict[str, Any]],
+    speech_start: float,
+    speech_end: float,
+) -> float:
+    """优先使用真实时间戳；未识别词仅在相邻锚点之间插值。"""
+    timing_key = "end_sec" if use_end else "start_sec"
+    direct = matches.get(source_index)
+    if direct is not None:
+        return float(timing_words[direct][timing_key])
+
+    left = max((index for index in matches if index < source_index), default=None)
+    right = min((index for index in matches if index > source_index), default=None)
+    if left is not None and right is not None:
+        left_time = float(timing_words[matches[left]]["end_sec"])
+        right_time = float(timing_words[matches[right]]["start_sec"])
+        ratio = (source_index - left) / max(right - left, 1)
+        return left_time + (right_time - left_time) * ratio
+
+    ratio = source_index / max(source_word_count - 1, 1)
+    return speech_start + (speech_end - speech_start) * ratio
+
+
 def build_subtitle_cues(
     alignment_result: dict[str, Any],
     audio_duration_sec: float,
@@ -1121,79 +1288,19 @@ def build_subtitle_cues(
     if not original_text:
         raise RuntimeError("原始旁白为空")
 
-    # 数字、小数和英文作为完整单元，避免把4051.09拆成两条字幕。
-    tokens = re.findall(
-        r"\d+(?:\.\d+)*|[A-Za-z]+|[\u4e00-\u9fff]|\s+|[^\s]",
-        original_text,
-    )
-
-    chunks: list[str] = []
-    current = ""
-
-    for token in tokens:
-        if token.isspace():
-            if current and not current.endswith(" "):
-                current += " "
-            continue
-
-        token = token.strip()
-        punctuation_end = token in (
-            "。", "！", "？", "；",
-            ".", "!", "?", ";",
-        )
-        comma_end = token in ("，", "、", ",")
-
-        if (punctuation_end or comma_end) and not current and chunks:
-            chunks[-1] = chunks[-1].rstrip() + token
-            continue
-
-        # 达到一行上限时先换行，但不拆开数字或小数。
-        if (
-            current
-            and len(current) + len(token) > 16
-            and not punctuation_end
-            and not comma_end
-        ):
-            chunks.append(current.strip())
-            current = ""
-
-        if token in (".", "!", "?", ";", ",", "。", "！", "？", "；", "，", "、"):
-            current = current.rstrip()
-        current += token
-
-        if (
-            len(current) >= 16
-            or (punctuation_end and len(current) >= 6)
-            or (comma_end and len(current) >= 10)
-        ):
-            chunks.append(current.strip())
-            current = ""
-
-    if current:
-        chunks.append(current.strip())
-
-    if not chunks:
+    chunks, source_words = _subtitle_chunks(original_text)
+    if not chunks or not source_words:
         raise RuntimeError("没有生成有效字幕文本")
 
-    recognized_starts: list[float] = []
-    recognized_ends: list[float] = []
-
-    for segment in alignment_result.get("segments") or []:
-        for word in segment.get("words") or []:
-            start = word.get("start")
-            end = word.get("end")
-
-            if start is None or end is None:
-                continue
-
-            recognized_starts.append(float(start))
-            recognized_ends.append(float(end))
-
-    if recognized_starts and recognized_ends:
-        speech_start = max(0.0, min(recognized_starts))
+    timing_words = _whisper_word_timings(alignment_result)
+    if timing_words:
+        speech_start = max(
+            0.0,
+            min(item["start_sec"] for item in timing_words),
+        )
         speech_end = min(
             float(audio_duration_sec),
-            max(recognized_ends),
+            max(item["end_sec"] for item in timing_words),
         )
     else:
         speech_start = 0.0
@@ -1203,62 +1310,40 @@ def build_subtitle_cues(
         speech_start = 0.0
         speech_end = float(audio_duration_sec)
 
-    def speech_weight(text: str) -> float:
-        """
-        按大致朗读耗时分配字幕：
-        数字比普通汉字稍慢，标点只计算短暂停顿。
-        """
-        weight = 0.0
-
-        for char in text:
-            if char.isspace():
-                continue
-            if char.isdigit():
-                weight += 1.25
-            elif char in ".．":
-                weight += 0.8
-            elif char in "，、,":
-                weight += 0.45
-            elif char in "。！？；.!?;":
-                weight += 0.9
-            elif char.isascii() and char.isalpha():
-                weight += 0.75
-            else:
-                weight += 1.0
-
-        return max(1.0, weight)
-
-    weights = [speech_weight(chunk) for chunk in chunks]
-    total_weight = sum(weights)
-    speech_duration = speech_end - speech_start
-    cue_start = speech_start
+    matches = _match_source_words_to_alignment(source_words, timing_words)
+    cue_starts = [
+        _source_word_time(
+            chunk["word_start"],
+            False,
+            len(source_words),
+            matches,
+            timing_words,
+            speech_start,
+            speech_end,
+        )
+        for chunk in chunks
+    ]
     cues: list[dict[str, Any]] = []
-    consumed_weight = 0.0
-
-    for index, (chunk, weight) in enumerate(zip(chunks, weights)):
-        consumed_weight += weight
-
-        if index == len(chunks) - 1:
-            cue_end = speech_end
+    previous_start = speech_start
+    for index, chunk in enumerate(chunks):
+        cue_start = max(previous_start, cue_starts[index])
+        if index < len(chunks) - 1:
+            # 字幕延续到下一句真正开口，停顿期间不闪空白。
+            cue_end = max(cue_start + 0.2, cue_starts[index + 1])
         else:
-            cue_end = speech_start + (
-                speech_duration
-                * consumed_weight
-                / total_weight
-            )
-
-        cue_end = max(cue_start + 0.2, cue_end)
+            cue_end = speech_end
         cue_end = min(cue_end, float(audio_duration_sec))
+        if cue_end <= cue_start:
+            cue_end = min(float(audio_duration_sec), cue_start + 0.2)
 
         cues.append(
             {
                 "start_sec": round(cue_start, 3),
                 "end_sec": round(cue_end, 3),
-                "text": chunk,
+                "text": chunk["text"],
             }
         )
-
-        cue_start = cue_end
+        previous_start = cue_start
 
     return cues
 
