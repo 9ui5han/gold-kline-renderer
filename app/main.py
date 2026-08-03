@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
 
 from .chart_renderer import render_tradingview_scene
+from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 
 
@@ -54,6 +55,10 @@ PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
+)
+MACRO_CACHE_TTL_SEC = int(os.getenv("MACRO_CACHE_TTL_SEC", "21600"))
+MACRO_CACHE_MAX_STALE_SEC = int(
+    os.getenv("MACRO_CACHE_MAX_STALE_SEC", "172800")
 )
 FONT_PATHS = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
@@ -151,6 +156,11 @@ app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 JOBS: dict[str, dict[str, Any]] = {}
 TTS_JOBS: dict[str, dict[str, Any]] = {}
 LOCK = threading.Lock()
+MACRO_CONTEXT_SERVICE = MacroContextService(
+    DATA_DIR / "macro-events-cache.json",
+    cache_ttl_sec=MACRO_CACHE_TTL_SEC,
+    max_stale_sec=MACRO_CACHE_MAX_STALE_SEC,
+)
 
 
 def require_token(authorization: str = Header(default="")) -> None:
@@ -188,6 +198,33 @@ def health() -> dict[str, str]:
 def macro_event_source_health() -> dict[str, Any]:
     """Check official calendar reachability without interpreting direction."""
     return probe_all_sources()
+
+
+class MacroForecastHorizonRequest(BaseModel):
+    schema_version: str = "forecast-horizon-v1"
+    timeframe: str = Field(min_length=1, max_length=20)
+    start_time: str = Field(min_length=1, max_length=40)
+    end_time: str = Field(min_length=1, max_length=40)
+    duration_minutes: float = Field(gt=0, le=10080)
+
+
+class MacroContextRequest(BaseModel):
+    request_id: str | None = Field(default=None, max_length=100)
+    symbol: str = Field(default="XAUUSD", min_length=1, max_length=20)
+    data_as_of: str = Field(min_length=1, max_length=40)
+    forecast_horizon: MacroForecastHorizonRequest
+
+
+@app.post(
+    "/v1/macro-events/context",
+    dependencies=[Depends(require_token)],
+)
+def macro_event_context(payload: MacroContextRequest) -> dict[str, Any]:
+    """Return cached official macro event timing without directional bias."""
+    try:
+        return MACRO_CONTEXT_SERVICE.get_context(payload.model_dump())
+    except MacroContextError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 class TTSProxyRequest(BaseModel):

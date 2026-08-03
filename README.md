@@ -35,6 +35,8 @@ http://127.0.0.1:8000/docs
 | `PUBLIC_BASE_URL` | 云平台给你的 `https://...` 域名 | 否 |
 | `DATA_DIR` | `/tmp/gold-video` | 否 |
 | `MAX_AUDIO_MB` | `30` | 否 |
+| `MACRO_CACHE_TTL_SEC` | `21600`（6小时） | 否 |
+| `MACRO_CACHE_MAX_STALE_SEC` | `172800`（48小时） | 否 |
 | `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
 | `INDEXTTS2_MAX_POLLS` | `150` | 否 |
 | `INDEXTTS2_POLL_INTERVAL_SEC` | `2` | 否 |
@@ -51,8 +53,38 @@ GET /v1/macro-events/source-health
 Authorization: Bearer <RENDER_SERVICE_TOKEN>
 ```
 
-返回 `fed`、`bls`、`bea` 三个来源的HTTP状态、响应类型和结构校验结果。该接口
-仅用于宏观接入第一阶段验证；还没有向Dify提供正式事件列表。
+返回 `fed`、`bls`、`bea` 三个来源的HTTP状态、响应类型和结构校验结果。
+
+按预测范围查询正式宏观事件上下文：
+
+```http
+POST /v1/macro-events/context
+Authorization: Bearer <RENDER_SERVICE_TOKEN>
+Content-Type: application/json
+```
+
+请求体：
+
+```json
+{
+  "request_id": "macro-20260803-001",
+  "symbol": "XAUUSD",
+  "data_as_of": "2026-08-03T09:45:00Z",
+  "forecast_horizon": {
+    "schema_version": "forecast-horizon-v1",
+    "timeframe": "15m",
+    "start_time": "2026-08-03T10:00:00Z",
+    "end_time": "2026-08-03T12:00:00Z",
+    "duration_minutes": 120
+  }
+}
+```
+
+响应统一返回Fed、BLS、BEA来源状态及预测窗口前后24小时内的白名单事件。
+`data_status`为`complete`、`partial`或`unavailable`；任何情况下
+`directional_bias`都固定为`not_calculated`。正常缓存6小时，来源刷新失败时最多
+回退到48小时内最后一次成功缓存并明确标记`stale=true`。缓存文件保存在
+`DATA_DIR`；Railway配置Volume时会随`RAILWAY_VOLUME_MOUNT_PATH`持久保存。
 
 当前最小可行性测试使用同步接口：
 
