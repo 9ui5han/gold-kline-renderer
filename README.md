@@ -44,6 +44,16 @@ http://127.0.0.1:8000/docs
 
 ## API
 
+验证免费官方宏观日历来源（只检查可访问性和最小响应结构，不判断涨跌）：
+
+```http
+GET /v1/macro-events/source-health
+Authorization: Bearer <RENDER_SERVICE_TOKEN>
+```
+
+返回 `fed`、`bls`、`bea` 三个来源的HTTP状态、响应类型和结构校验结果。该接口
+仅用于宏观接入第一阶段验证；还没有向Dify提供正式事件列表。
+
 当前最小可行性测试使用同步接口：
 
 ```http

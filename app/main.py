@@ -20,6 +20,7 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, Field, field_validator
 
 from .chart_renderer import render_tradingview_scene
+from .macro_source_probe import probe_all_sources
 
 
 logger = logging.getLogger("gold_kline_renderer")
@@ -163,6 +164,16 @@ def update_tts_job(job_id: str, **changes: Any) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "time": now_iso()}
+
+
+@app.get(
+    "/v1/macro-events/source-health",
+    dependencies=[Depends(require_token)],
+)
+def macro_event_source_health() -> dict[str, Any]:
+    """Check official calendar reachability without interpreting direction."""
+    return probe_all_sources()
+
 
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
