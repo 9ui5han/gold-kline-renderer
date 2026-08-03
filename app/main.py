@@ -246,6 +246,65 @@ def parse_narration_segments(payload: TTSProxyRequest) -> list[str]:
     return segments
 
 
+def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
+    """读取ElevenLabs分段文字和段后停顿，并校验完整文本一致。"""
+    raw_narration = payload.narration_json
+    if isinstance(raw_narration, str):
+        raw_narration = json.loads(raw_narration or "{}")
+
+    if not isinstance(raw_narration, dict):
+        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+
+    raw_segments = raw_narration.get("segments") or []
+    if not isinstance(raw_segments, list) or not raw_segments:
+        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+
+    indexed_segments = list(enumerate(raw_segments, start=1))
+    ordered_segments = sorted(
+        (
+            (index, item)
+            for index, item in indexed_segments
+            if isinstance(item, dict)
+        ),
+        key=lambda pair: int(pair[1].get("order") or pair[0]),
+    )
+
+    segments: list[dict[str, Any]] = []
+    for index, item in ordered_segments:
+        text = str(item.get("text") or item.get("spoken_text") or "").strip()
+        if not text:
+            continue
+        pause_value = item.get("pause_after_ms", 0)
+        if isinstance(pause_value, bool):
+            raise ValueError(f"ElevenLabs分段{index}的pause_after_ms不是整数")
+        try:
+            pause_after_ms = int(pause_value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"ElevenLabs分段{index}的pause_after_ms不是整数"
+            ) from exc
+        if not 0 <= pause_after_ms <= 650:
+            raise ValueError(
+                f"ElevenLabs分段{index}的pause_after_ms超出0至650毫秒范围"
+            )
+        segments.append(
+            {
+                "text": text,
+                "pause_after_ms": pause_after_ms,
+            }
+        )
+
+    if not segments:
+        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+
+    normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip()
+    joined_text = " ".join(item["text"] for item in segments)
+    if normalize(joined_text) != normalize(payload.text):
+        raise ValueError("narration_json分段文字与完整旁白不一致")
+
+    return segments
+
+
 def post_dubbingx(path: str, body: dict[str, Any], timeout: float = 60) -> dict[str, Any]:
     response = httpx.post(
         f"https://api.302.ai{path}",
@@ -391,6 +450,83 @@ def concatenate_audio(parts: list[Path], output_path: Path) -> None:
     run_command(args)
 
 
+def normalize_audio_to_wav(input_path: Path, output_path: Path) -> None:
+    """把不同来源音频统一成ffmpeg concat可稳定处理的单声道WAV。"""
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+
+
+def create_silence_wav(duration_ms: int, output_path: Path) -> None:
+    """生成指定时长的无声片段，供段落之间插入。"""
+    duration_sec = max(0.001, duration_ms / 1000)
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=44100:cl=mono",
+            "-t",
+            f"{duration_sec:.3f}",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+
+
+def concatenate_audio_with_pauses(
+    normalized_segments: list[Path],
+    pauses_after_ms: list[int],
+    output_path: Path,
+    work_dir: Path,
+) -> None:
+    """插入段间静音并编码为MP3；最后一段停顿不追加到末尾。"""
+    parts: list[Path] = []
+    for index, segment_path in enumerate(normalized_segments):
+        parts.append(segment_path)
+        if index < len(normalized_segments) - 1:
+            pause_ms = int(pauses_after_ms[index] or 0)
+            if pause_ms > 0:
+                silence_path = work_dir / f"silence-{index:02d}.wav"
+                create_silence_wav(pause_ms, silence_path)
+                parts.append(silence_path)
+
+    combined_wav = work_dir / "combined.wav"
+    concatenate_audio(parts, combined_wav)
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(combined_wav),
+            "-c:a",
+            "libmp3lame",
+            "-b:a",
+            "128k",
+            str(output_path),
+        ]
+    )
+
+
 def split_text_by_utf8_limit(text: str, max_bytes: int) -> list[str]:
     normalized = str(text or "").strip()
     if not normalized:
@@ -519,6 +655,51 @@ def generate_elevenlabs_tts(payload: TTSProxyRequest, output_path: Path) -> None
             },
         )
     download_audio(audio_url, output_path)
+
+
+def generate_elevenlabs_segmented_tts(
+    payload: TTSProxyRequest,
+    output_path: Path,
+    request_work_dir: Path,
+) -> None:
+    """逐段调用302.AI ElevenLabs V3，并按计划插入段间停顿。"""
+    segments = parse_elevenlabs_segments(payload)
+    if len(segments) == 1:
+        generate_elevenlabs_tts(payload, output_path)
+        return
+
+    normalized_paths: list[Path] = []
+    pauses_after_ms: list[int] = []
+    for index, segment in enumerate(segments):
+        segment_text = segment["text"]
+        segment_mp3 = request_work_dir / f"eleven-segment-{index:02d}.mp3"
+        segment_wav = request_work_dir / f"eleven-segment-{index:02d}.wav"
+        segment_payload = payload.model_copy(
+            update={
+                "text": segment_text,
+                "speech_text": segment_text,
+                "narration_json": None,
+            }
+        )
+        generate_elevenlabs_tts(segment_payload, segment_mp3)
+        normalize_audio_to_wav(segment_mp3, segment_wav)
+        normalized_paths.append(segment_wav)
+        pauses_after_ms.append(int(segment["pause_after_ms"] or 0))
+        logger.info(
+            "ELEVENLABS_SEGMENT_COMPLETED request_id=%s segment=%s/%s "
+            "pause_after_ms=%s",
+            payload.request_id,
+            index + 1,
+            len(segments),
+            pauses_after_ms[-1],
+        )
+
+    concatenate_audio_with_pauses(
+        normalized_paths,
+        pauses_after_ms,
+        output_path,
+        request_work_dir,
+    )
 
 
 def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
@@ -877,14 +1058,14 @@ def build_subtitle_cues(
     WhisperX只负责提供真实语速和时间，字幕文字始终使用原始旁白。
     这样可以避免日期、K线数量和价格数字被语音识别遗漏。
     """
-    original_text = "".join(str(original_text or "").split())
+    original_text = re.sub(r"\s+", " ", str(original_text or "")).strip()
 
     if not original_text:
         raise RuntimeError("原始旁白为空")
 
     # 数字、小数和英文作为完整单元，避免把4051.09拆成两条字幕。
     tokens = re.findall(
-        r"\d+(?:\.\d+)*|[A-Za-z]+|[\u4e00-\u9fff]|[^\s]",
+        r"\d+(?:\.\d+)*|[A-Za-z]+|[\u4e00-\u9fff]|\s+|[^\s]",
         original_text,
     )
 
@@ -892,11 +1073,21 @@ def build_subtitle_cues(
     current = ""
 
     for token in tokens:
+        if token.isspace():
+            if current and not current.endswith(" "):
+                current += " "
+            continue
+
+        token = token.strip()
         punctuation_end = token in (
             "。", "！", "？", "；",
             ".", "!", "?", ";",
         )
         comma_end = token in ("，", "、", ",")
+
+        if (punctuation_end or comma_end) and not current and chunks:
+            chunks[-1] = chunks[-1].rstrip() + token
+            continue
 
         # 达到一行上限时先换行，但不拆开数字或小数。
         if (
@@ -905,9 +1096,11 @@ def build_subtitle_cues(
             and not punctuation_end
             and not comma_end
         ):
-            chunks.append(current)
+            chunks.append(current.strip())
             current = ""
 
+        if token in (".", "!", "?", ";", ",", "。", "！", "？", "；", "，", "、"):
+            current = current.rstrip()
         current += token
 
         if (
@@ -915,11 +1108,11 @@ def build_subtitle_cues(
             or (punctuation_end and len(current) >= 6)
             or (comma_end and len(current) >= 10)
         ):
-            chunks.append(current)
+            chunks.append(current.strip())
             current = ""
 
     if current:
-        chunks.append(current)
+        chunks.append(current.strip())
 
     if not chunks:
         raise RuntimeError("没有生成有效字幕文本")
@@ -960,6 +1153,8 @@ def build_subtitle_cues(
         weight = 0.0
 
         for char in text:
+            if char.isspace():
+                continue
             if char.isdigit():
                 weight += 1.25
             elif char in ".．":
@@ -1090,7 +1285,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         if payload.tts_provider == "openai":
             generate_openai_tts(payload, audio_path)
         elif payload.tts_provider == "elevenlabs":
-            generate_elevenlabs_tts(payload, audio_path)
+            generate_elevenlabs_segmented_tts(
+                payload,
+                audio_path,
+                request_work_dir,
+            )
         elif payload.tts_provider == "minimax":
             generate_minimax_tts(payload, audio_path)
         elif payload.tts_provider == "indextts2":
