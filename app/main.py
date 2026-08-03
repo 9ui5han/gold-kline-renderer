@@ -24,7 +24,22 @@ from .macro_source_probe import probe_all_sources
 
 
 logger = logging.getLogger("gold_kline_renderer")
-DATA_DIR = Path(os.getenv("DATA_DIR", "/tmp/gold-video"))
+
+
+def resolve_data_dir() -> Path:
+    """Railway挂载Volume后自动把媒体写入其中。"""
+    volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if volume_mount:
+        return Path(volume_mount) / "gold-video"
+
+    configured = os.getenv("DATA_DIR", "").strip()
+    if configured:
+        return Path(configured)
+
+    return Path("/tmp/gold-video")
+
+
+DATA_DIR = resolve_data_dir()
 MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1359,14 +1374,23 @@ def build_subtitle_cues(
     return cues
 
 
+def whisperx_language_for_text(original_text: str) -> str:
+    """为WhisperX提供与实际旁白一致的语言提示。"""
+    text = str(original_text or "")
+    english_letters = len(re.findall(r"[A-Za-z]", text))
+    chinese_characters = len(re.findall(r"[\u4e00-\u9fff]", text))
+    return "en" if english_letters > chinese_characters else "zh"
+
+
 def align_audio_with_whisperx(
     audio_path: Path,
     audio_duration_sec: float,
     original_text: str,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str]:
     """
     上传已经生成的音频，让302.AI WhisperX返回真实语音时间戳。
     """
+    alignment_language = whisperx_language_for_text(original_text)
     try:
         with audio_path.open("rb") as audio_file:
             response = httpx.post(
@@ -1383,7 +1407,7 @@ def align_audio_with_whisperx(
                     )
                 },
                 data={
-                    "language": "zh",
+                    "language": alignment_language,
                     "processing_type": "align",
                     "translate": "false",
                     "output": "text",
@@ -1415,7 +1439,7 @@ def align_audio_with_whisperx(
             "WHISPERX_NO_SUBTITLE_CUES: 没有识别到有效字幕时间"
         )
 
-    return subtitle_cues
+    return subtitle_cues, alignment_language
     
 @app.post("/v1/tts", dependencies=[Depends(require_token)])
 def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
@@ -1505,7 +1529,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     )
 
     try:
-        subtitle_cues = align_audio_with_whisperx(
+        subtitle_cues, alignment_language = align_audio_with_whisperx(
             audio_path,
             duration_sec,
             payload.text,
@@ -1528,6 +1552,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": duration_sec,
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
+        "alignment_language": alignment_language,
         "alignment_method": (
             "openai_tts_whisperx_bounds"
             if payload.tts_provider == "openai"
@@ -1615,6 +1640,7 @@ def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": 0,
         "subtitle_cues": [],
         "subtitle_count": 0,
+        "alignment_language": "",
         "alignment_method": "",
         "format": "",
         "error_code": "",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -110,24 +111,69 @@ def _wrap_text(
     max_width: int,
     max_lines: int = 2,
 ) -> list[str]:
-    lines: list[str] = []
-    current = ""
+    """按口播字幕的常规规则换行：不拆英文单词或价格数字。"""
+    normalized = " ".join(str(text or "").split())
+    if not normalized:
+        return []
 
-    for char in str(text or ""):
-        trial = current + char
-        bbox = draw.textbbox((0, 0), trial, font=face)
-        if current and bbox[2] - bbox[0] > max_width:
-            lines.append(current)
-            current = char
-            if len(lines) >= max_lines:
-                break
-        else:
-            current = trial
+    def width(value: str) -> int:
+        bbox = draw.textbbox((0, 0), value, font=face)
+        return bbox[2] - bbox[0]
 
-    if current and len(lines) < max_lines:
-        lines.append(current)
+    if width(normalized) <= max_width:
+        return [normalized]
 
-    return lines
+    # 英文口播：只在词与词之间换行；优先选择两行长度最接近的切分点。
+    words = normalized.split(" ")
+    if len(words) > 1:
+        candidates: list[tuple[int, str, str]] = []
+        for split_index in range(1, len(words)):
+            first = " ".join(words[:split_index])
+            second = " ".join(words[split_index:])
+            first_width = width(first)
+            second_width = width(second)
+            if first_width <= max_width and second_width <= max_width:
+                candidates.append(
+                    (abs(first_width - second_width), first, second)
+                )
+
+        if candidates and max_lines >= 2:
+            _, first, second = min(candidates, key=lambda item: item[0])
+            return [first, second]
+
+        # 兜底时仍保持单词完整。正常字幕长度不会走到三行以上。
+        lines: list[str] = []
+        current: list[str] = []
+        for word in words:
+            trial = " ".join([*current, word])
+            if current and width(trial) > max_width:
+                lines.append(" ".join(current))
+                current = [word]
+            else:
+                current.append(word)
+        if current:
+            lines.append(" ".join(current))
+        return lines[:max_lines]
+
+    # 中文没有空格时按字符换行，但价格数字仍视为一个不可拆分单元。
+    units = re.findall(r"\d+(?:\.\d+)*|[A-Za-z]+(?:['’][A-Za-z]+)?|.", normalized)
+    candidates = []
+    for split_index in range(1, len(units)):
+        first = "".join(units[:split_index]).strip()
+        second = "".join(units[split_index:]).strip()
+        first_width = width(first)
+        second_width = width(second)
+        if first_width <= max_width and second_width <= max_width:
+            punctuation_bonus = 80 if first.endswith(("，", "。", "；", "：", ",", ";", ":")) else 0
+            candidates.append(
+                (abs(first_width - second_width) - punctuation_bonus, first, second)
+            )
+
+    if candidates and max_lines >= 2:
+        _, first, second = min(candidates, key=lambda item: item[0])
+        return [first, second]
+
+    return [normalized]
 
 
 def _round_rect_label(
