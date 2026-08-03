@@ -291,6 +291,7 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
             {
                 "text": text,
                 "pause_after_ms": pause_after_ms,
+                "section": str(item.get("section") or "").strip().lower(),
             }
         )
 
@@ -303,6 +304,56 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
         raise ValueError("narration_json分段文字与完整旁白不一致")
 
     return segments
+
+
+def build_elevenlabs_narrative_chunks(
+    planned_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把口播计划的短句合并成连续叙事块，避免每句话都重新起音。
+
+    Dify 仍会保留并校验原来的细粒度分段、停顿和文字；这里仅决定
+    ElevenLabs 实际要合成几次。若计划不符合预期的章节顺序，则退回原
+    分段，避免擅自重排或漏读文字。
+    """
+    if len(planned_segments) < 2:
+        return planned_segments
+
+    section_to_chunk = {
+        "opening": (0, "opening_context"),
+        "context": (0, "opening_context"),
+        "evidence": (1, "levels_confirmation"),
+        "primary": (2, "primary_path"),
+        "alternate": (3, "alternate_risk_closing"),
+        "risk": (3, "alternate_risk_closing"),
+        "closing": (3, "alternate_risk_closing"),
+    }
+    grouped: list[tuple[str, list[dict[str, Any]]]] = []
+    last_chunk_index = -1
+
+    for segment in planned_segments:
+        section = str(segment.get("section") or "").strip().lower()
+        target = section_to_chunk.get(section)
+        if target is None:
+            return planned_segments
+        chunk_index, chunk_name = target
+        if chunk_index < last_chunk_index:
+            return planned_segments
+        if chunk_index > last_chunk_index:
+            grouped.append((chunk_name, []))
+            last_chunk_index = chunk_index
+        grouped[-1][1].append(segment)
+
+    if not 2 <= len(grouped) <= 4:
+        return planned_segments
+
+    return [
+        {
+            "text": " ".join(item["text"] for item in chunk_segments),
+            "pause_after_ms": int(chunk_segments[-1]["pause_after_ms"] or 0),
+            "section": chunk_name,
+        }
+        for chunk_name, chunk_segments in grouped
+    ]
 
 
 def post_dubbingx(path: str, body: dict[str, Any], timeout: float = 60) -> dict[str, Any]:
@@ -662,8 +713,15 @@ def generate_elevenlabs_segmented_tts(
     output_path: Path,
     request_work_dir: Path,
 ) -> None:
-    """逐段调用302.AI ElevenLabs V3，并按计划插入段间停顿。"""
-    segments = parse_elevenlabs_segments(payload)
+    """按连续叙事块调用302.AI ElevenLabs V3，并保留计划中的段间停顿。"""
+    planned_segments = parse_elevenlabs_segments(payload)
+    segments = build_elevenlabs_narrative_chunks(planned_segments)
+    logger.info(
+        "ELEVENLABS_NARRATIVE_CHUNKS request_id=%s planned_segments=%s tts_chunks=%s",
+        payload.request_id,
+        len(planned_segments),
+        len(segments),
+    )
     if len(segments) == 1:
         generate_elevenlabs_tts(payload, output_path)
         return
