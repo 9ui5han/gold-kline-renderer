@@ -52,6 +52,10 @@ INDEXTTS2_SPEAKER_AUDIO_URL = os.getenv(
     "",
 ).strip()
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+MEDIA_CACHE_CONTROL = os.getenv(
+    "MEDIA_CACHE_CONTROL",
+    "public, max-age=86400, immutable",
+).strip()
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
@@ -174,6 +178,18 @@ MACRO_CONTEXT_SERVICE = MacroContextService(
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
     max_stale_sec=MACRO_CACHE_MAX_STALE_SEC,
 )
+
+
+@app.middleware("http")
+async def add_media_cache_header(request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/media/") and response.status_code in {
+        200,
+        206,
+        304,
+    }:
+        response.headers["Cache-Control"] = MEDIA_CACHE_CONTROL
+    return response
 
 
 def require_token(authorization: str = Header(default="")) -> None:
