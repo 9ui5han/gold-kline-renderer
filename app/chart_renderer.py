@@ -232,45 +232,6 @@ def _dashed_line(
         draw.line((sx, sy, ex, ey), fill=fill, width=width)
 
 
-def _partial_polyline(
-    points: list[tuple[float, float]],
-    progress: float,
-) -> list[tuple[float, float]]:
-    """Reveal a bent line by travelled distance for smooth frame animation."""
-    if len(points) < 2:
-        return points
-
-    fraction = max(0.0, min(1.0, float(progress)))
-    lengths = [
-        math.hypot(
-            points[index][0] - points[index - 1][0],
-            points[index][1] - points[index - 1][1],
-        )
-        for index in range(1, len(points))
-    ]
-    total = sum(lengths)
-    if total <= 0:
-        return points[:1]
-
-    remaining = total * fraction
-    visible = [points[0]]
-    for index, length in enumerate(lengths, start=1):
-        if remaining >= length:
-            visible.append(points[index])
-            remaining -= length
-            continue
-        if length > 0 and remaining > 0:
-            ratio = remaining / length
-            x1, y1 = points[index - 1]
-            x2, y2 = points[index]
-            visible.append((
-                x1 + (x2 - x1) * ratio,
-                y1 + (y2 - y1) * ratio,
-            ))
-        break
-    return visible
-
-
 def _forecast_anchor_values(
     forecast: list[dict[str, Any]],
     last_close: float,
@@ -366,38 +327,6 @@ def _qualitative_range_paths(
         list(zip(primary_offsets, primary_values)),
         list(zip(alternate_offsets, alternate_values)),
     )
-
-
-def _smooth_curve(
-    points: list[tuple[float, float]],
-    samples_per_segment: int = 8,
-) -> list[tuple[float, float]]:
-    """Create a rounded Catmull-Rom path through all forecast anchors."""
-    if len(points) < 3:
-        return points
-
-    padded = [points[0]] + points + [points[-1]]
-    result = [points[0]]
-    for index in range(1, len(padded) - 2):
-        p0, p1, p2, p3 = padded[index - 1 : index + 3]
-        for sample in range(1, samples_per_segment + 1):
-            t = sample / samples_per_segment
-            t2 = t * t
-            t3 = t2 * t
-            x = 0.5 * (
-                2 * p1[0]
-                + (-p0[0] + p2[0]) * t
-                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
-                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
-            )
-            y = 0.5 * (
-                2 * p1[1]
-                + (-p0[1] + p2[1]) * t
-                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
-                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
-            )
-            result.append((x, y))
-    return result
 
 
 def _recent_fvg(
@@ -527,16 +456,6 @@ def _limit_structure_points(
         selected.add(chosen)
 
     return [values[index] for index in sorted(selected)]
-
-
-def _first_level_touch_index(
-    values: list[tuple[float, float, str]],
-) -> int | None:
-    """Return the first support/resistance decision point after the start."""
-    for index, (_, _, target_type) in enumerate(values[1:], start=1):
-        if target_type in {"support", "resistance"}:
-            return index
-    return None
 
 
 def _distance_to_segment(
@@ -673,46 +592,6 @@ def _scenario_text(value: str) -> str:
         "up": "向上情景",
         "down": "向下情景",
     }.get(str(value or ""), "条件情景")
-
-
-def _pivot_points(
-    candles: list[dict[str, Any]],
-    key: str,
-    window: int = 2,
-) -> list[tuple[int, float]]:
-    result: list[tuple[int, float]] = []
-    start = max(window, len(candles) - 80)
-
-    for index in range(start, len(candles) - window):
-        value = float(candles[index][key])
-        segment = candles[index - window : index + window + 1]
-        values = [float(item[key]) for item in segment]
-
-        if key == "high" and value == max(values):
-            result.append((index, value))
-        elif key == "low" and value == min(values):
-            result.append((index, value))
-
-    return result
-
-
-def _trendline(
-    candles: list[dict[str, Any]],
-) -> tuple[str, tuple[int, float], tuple[int, float]] | None:
-    highs = _pivot_points(candles, "high")
-    lows = _pivot_points(candles, "low")
-
-    if len(highs) >= 2:
-        first, second = highs[-2], highs[-1]
-        if second[1] < first[1]:
-            return "下降压力线", first, second
-
-    if len(lows) >= 2:
-        first, second = lows[-2], lows[-1]
-        if second[1] > first[1]:
-            return "上升支撑线", first, second
-
-    return None
 
 
 def _subtitle_at(
