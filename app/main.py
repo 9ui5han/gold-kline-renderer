@@ -788,7 +788,7 @@ def generate_elevenlabs_segmented_tts(
     payload: TTSProxyRequest,
     output_path: Path,
     request_work_dir: Path,
-) -> None:
+) -> list[dict[str, Any]]:
     """按连续叙事块调用302.AI ElevenLabs V3，并保留计划中的段间停顿。"""
     planned_segments = parse_elevenlabs_segments(payload)
     segments = build_elevenlabs_narrative_chunks(planned_segments)
@@ -800,10 +800,19 @@ def generate_elevenlabs_segmented_tts(
     )
     if len(segments) == 1:
         generate_elevenlabs_tts(payload, output_path)
-        return
+        duration_sec = probe_duration(output_path)
+        return [
+            {
+                "text": segments[0]["text"],
+                "start_sec": 0.0,
+                "end_sec": round(duration_sec, 3),
+            }
+        ]
 
     normalized_paths: list[Path] = []
     pauses_after_ms: list[int] = []
+    segment_bounds: list[dict[str, Any]] = []
+    cursor_sec = 0.0
     for index, segment in enumerate(segments):
         segment_text = segment["text"]
         segment_mp3 = request_work_dir / f"eleven-segment-{index:02d}.mp3"
@@ -819,6 +828,17 @@ def generate_elevenlabs_segmented_tts(
         normalize_audio_to_wav(segment_mp3, segment_wav)
         normalized_paths.append(segment_wav)
         pauses_after_ms.append(int(segment["pause_after_ms"] or 0))
+        segment_duration_sec = probe_duration(segment_wav)
+        segment_bounds.append(
+            {
+                "text": segment["text"],
+                "start_sec": round(cursor_sec, 3),
+                "end_sec": round(cursor_sec + segment_duration_sec, 3),
+            }
+        )
+        cursor_sec += segment_duration_sec
+        if index < len(segments) - 1:
+            cursor_sec += pauses_after_ms[-1] / 1000
         logger.info(
             "ELEVENLABS_SEGMENT_COMPLETED request_id=%s segment=%s/%s "
             "pause_after_ms=%s",
@@ -834,6 +854,7 @@ def generate_elevenlabs_segmented_tts(
         output_path,
         request_work_dir,
     )
+    return segment_bounds
 
 
 def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
@@ -1434,10 +1455,52 @@ def build_subtitle_cues(
     return cues
 
 
+def build_segment_boundary_subtitle_cues(
+    segment_bounds: list[dict[str, Any]],
+    audio_duration_sec: float,
+    original_text: str,
+) -> list[dict[str, Any]]:
+    """Build subtitles from real ElevenLabs concatenation boundaries.
+
+    This is a provider-specific fallback when the external word aligner is
+    unavailable. It never invents text or timings: both come from the actual
+    generated segment boundaries.
+    """
+    cues = []
+    duration = float(audio_duration_sec)
+    for index, bound in enumerate(segment_bounds, start=1):
+        if not isinstance(bound, dict):
+            raise RuntimeError(f"SUBTITLE_BOUNDARY_INVALID:{index}")
+        text = str(bound.get("text") or "").strip()
+        if not text:
+            raise RuntimeError(f"SUBTITLE_BOUNDARY_TEXT_EMPTY:{index}")
+        try:
+            start_sec = round(float(bound["start_sec"]), 3)
+            end_sec = round(float(bound["end_sec"]), 3)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"SUBTITLE_BOUNDARY_TIME_INVALID:{index}") from exc
+        cues.append(
+            {
+                "start_sec": start_sec,
+                "end_sec": end_sec,
+                "text": text,
+            }
+        )
+
+    validate_subtitle_cues(
+        cues,
+        duration,
+        original_text,
+        max_cue_duration_sec=30.0,
+    )
+    return cues
+
+
 def validate_subtitle_cues(
     subtitle_cues: list[dict[str, Any]],
     audio_duration_sec: float,
     original_text: str,
+    max_cue_duration_sec: float = 8.0,
 ) -> None:
     """验证字幕确实对应最终音频和最终旁白，而不是只检查数量。"""
     if not subtitle_cues:
@@ -1476,7 +1539,7 @@ def validate_subtitle_cues(
             raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_OVERLAP:{index}")
         if end > duration + 0.25:
             raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_AFTER_AUDIO:{index}")
-        if end - start > 8.0:
+        if end - start > max_cue_duration_sec:
             raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_TOO_LONG:{index}")
         previous_end = end
 
@@ -1618,12 +1681,13 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     audio_path = MEDIA_DIR / audio_name
     request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
     request_work_dir.mkdir(parents=True, exist_ok=True)
+    elevenlabs_segment_bounds: list[dict[str, Any]] = []
 
     try:
         if payload.tts_provider == "openai":
             generate_openai_tts(payload, audio_path)
         elif payload.tts_provider == "elevenlabs":
-            generate_elevenlabs_segmented_tts(
+            elevenlabs_segment_bounds = generate_elevenlabs_segmented_tts(
                 payload,
                 audio_path,
                 request_work_dir,
@@ -1688,6 +1752,32 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         3,
     )
 
+    alignment_method = (
+        "openai_tts_source_text_alignment_bounds"
+        if payload.tts_provider == "openai"
+        else (
+            "elevenlabs_v3_source_text_alignment_bounds"
+            if payload.tts_provider == "elevenlabs"
+            else (
+                "minimax_speech_2_8_hd_source_text_alignment_bounds"
+                if payload.tts_provider == "minimax"
+                else (
+                    "indextts2_source_text_alignment_bounds"
+                    if payload.tts_provider == "indextts2"
+                    else (
+                        "glm_tts_source_text_alignment_bounds"
+                        if payload.tts_provider == "glm_tts"
+                        else (
+                            "qwen3_tts_source_text_alignment_bounds"
+                            if payload.tts_provider == "qwen3_tts"
+                            else "dubbingx_emotion_segments_source_text_alignment_bounds"
+                        )
+                    )
+                )
+            )
+        )
+    )
+
     try:
         subtitle_cues, alignment_language = align_audio_with_source_text(
             audio_path,
@@ -1695,16 +1785,31 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             payload.text,
         )
     except Exception as exc:
-        logger.exception(
-            "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
+        if payload.tts_provider != "elevenlabs" or not elevenlabs_segment_bounds:
+            logger.exception(
+                "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
+                payload.request_id,
+                payload.voice_id,
+                audio_name,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
+
+        logger.warning(
+            "WHISPERX_ALIGNMENT_FALLBACK request_id=%s audio=%s error=%s",
             payload.request_id,
-            payload.voice_id,
             audio_name,
+            exc,
         )
-        raise HTTPException(
-            status_code=502,
-            detail=str(exc),
-        ) from exc
+        subtitle_cues = build_segment_boundary_subtitle_cues(
+            elevenlabs_segment_bounds,
+            duration_sec,
+            payload.text,
+        )
+        alignment_language = whisperx_language_for_text(payload.text)
+        alignment_method = "elevenlabs_segment_boundary_fallback"
 
     return {
         "status": "completed",
@@ -1715,31 +1820,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "subtitle_alignment_valid": True,
         "subtitle_alignment_error": "",
         "alignment_language": alignment_language,
-        "alignment_method": (
-            "openai_tts_source_text_alignment_bounds"
-            if payload.tts_provider == "openai"
-            else (
-                "elevenlabs_v3_source_text_alignment_bounds"
-                if payload.tts_provider == "elevenlabs"
-                else (
-                    "minimax_speech_2_8_hd_source_text_alignment_bounds"
-                    if payload.tts_provider == "minimax"
-                    else (
-                        "indextts2_source_text_alignment_bounds"
-                        if payload.tts_provider == "indextts2"
-                        else (
-                            "glm_tts_source_text_alignment_bounds"
-                            if payload.tts_provider == "glm_tts"
-                            else (
-                                "qwen3_tts_source_text_alignment_bounds"
-                                if payload.tts_provider == "qwen3_tts"
-                                else "dubbingx_emotion_segments_source_text_alignment_bounds"
-                            )
-                        )
-                    )
-                )
-            )
-        ),
+        "alignment_method": alignment_method,
         "format": audio_format,
         "error_code": "",
         "error_message": "",

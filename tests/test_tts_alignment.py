@@ -18,6 +18,33 @@ def alignment_response(request: httpx.Request, status: int, payload=None):
 
 
 class TtsAlignmentTests(unittest.TestCase):
+    def test_builds_fallback_cues_from_elevenlabs_segment_bounds(self):
+        cues = main.build_segment_boundary_subtitle_cues(
+            [
+                {
+                    "text": "First sentence.",
+                    "start_sec": 0.0,
+                    "end_sec": 9.5,
+                },
+                {
+                    "text": "Second sentence.",
+                    "start_sec": 9.8,
+                    "end_sec": 18.0,
+                },
+            ],
+            18.2,
+            "First sentence. Second sentence.",
+        )
+
+        self.assertEqual(
+            [cue["text"] for cue in cues],
+            ["First sentence.", "Second sentence."],
+        )
+        self.assertEqual(cues[0]["start_sec"], 0.0)
+        self.assertEqual(cues[0]["end_sec"], 9.5)
+        self.assertEqual(cues[1]["start_sec"], 9.8)
+        self.assertEqual(cues[1]["end_sec"], 18.0)
+
     def test_retry_on_503_then_returns_cues(self):
         with tempfile.TemporaryDirectory() as directory:
             audio_path = Path(directory) / "audio.wav"
@@ -58,6 +85,69 @@ class TtsAlignmentTests(unittest.TestCase):
             self.assertEqual(language, "en")
             self.assertEqual(cues[0]["text"], "Gold rises today.")
             self.assertGreater(cues[0]["end_sec"], cues[0]["start_sec"])
+
+    def test_elevenlabs_uses_segment_boundaries_when_alignment_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as directory:
+            media_dir = Path(directory) / "media"
+            work_dir = Path(directory) / "work"
+            media_dir.mkdir()
+
+            payload = main.TTSProxyRequest(
+                request_id="fallback-test",
+                text="First sentence. Second sentence.",
+                narration_json={
+                    "segments": [
+                        {
+                            "text": "First sentence.",
+                            "pause_after_ms": 300,
+                        },
+                        {
+                            "text": "Second sentence.",
+                            "pause_after_ms": 0,
+                        },
+                    ]
+                },
+                tts_provider="elevenlabs",
+            )
+
+            with patch.object(main, "AI302_API_KEY", "test-key"), patch.object(
+                main, "MEDIA_DIR", media_dir
+            ), patch.object(
+                main, "WORK_DIR", work_dir
+            ), patch.object(
+                main,
+                "generate_elevenlabs_segmented_tts",
+                return_value=[
+                    {
+                        "text": "First sentence.",
+                        "start_sec": 0.0,
+                        "end_sec": 1.2,
+                    },
+                    {
+                        "text": "Second sentence.",
+                        "start_sec": 1.5,
+                        "end_sec": 2.7,
+                    },
+                ],
+            ), patch.object(main, "probe_duration", return_value=2.7), patch.object(
+                main,
+                "align_audio_with_source_text",
+                side_effect=RuntimeError(
+                    "SOURCE_TEXT_ALIGNMENT_REQUEST_FAILED: 503 Service Unavailable"
+                ),
+            ):
+                result = main.create_tts_audio(payload)
+
+            self.assertEqual(result["status"], "completed")
+            self.assertTrue(result["subtitle_alignment_valid"])
+            self.assertEqual(
+                result["alignment_method"],
+                "elevenlabs_segment_boundary_fallback",
+            )
+            self.assertEqual(
+                [cue["text"] for cue in result["subtitle_cues"]],
+                ["First sentence.", "Second sentence."],
+            )
 
     def test_rejects_subtitle_text_mismatch(self):
         with self.assertRaisesRegex(RuntimeError, "TEXT_MISMATCH"):
