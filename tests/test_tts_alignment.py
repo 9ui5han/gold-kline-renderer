@@ -18,6 +18,46 @@ def alignment_response(request: httpx.Request, status: int, payload=None):
 
 
 class TtsAlignmentTests(unittest.TestCase):
+    def test_keeps_primary_segments_separate_for_fallback_boundaries(self):
+        chunks = main.build_elevenlabs_narrative_chunks(
+            [
+                {"text": "Opening.", "section": "opening", "pause_after_ms": 320},
+                {"text": "Levels.", "section": "evidence", "pause_after_ms": 240},
+                {
+                    "text": "Lower range.",
+                    "section": "primary",
+                    "pause_after_ms": 460,
+                },
+                {
+                    "text": "Upper range.",
+                    "section": "primary",
+                    "pause_after_ms": 300,
+                },
+                {
+                    "text": "Primary path.",
+                    "section": "primary",
+                    "pause_after_ms": 560,
+                },
+                {
+                    "text": "Alternate path.",
+                    "section": "alternate",
+                    "pause_after_ms": 380,
+                },
+            ]
+        )
+
+        self.assertEqual(
+            [item["text"] for item in chunks],
+            [
+                "Opening.",
+                "Levels.",
+                "Lower range.",
+                "Upper range.",
+                "Primary path.",
+                "Alternate path.",
+            ],
+        )
+
     def test_builds_fallback_cues_from_elevenlabs_segment_bounds(self):
         cues = main.build_segment_boundary_subtitle_cues(
             [

@@ -422,14 +422,26 @@ def build_elevenlabs_narrative_chunks(
     if not 2 <= len(grouped) <= 4:
         return planned_segments
 
-    return [
-        {
-            "text": " ".join(item["text"] for item in chunk_segments),
-            "pause_after_ms": int(chunk_segments[-1]["pause_after_ms"] or 0),
-            "section": chunk_name,
-        }
-        for chunk_name, chunk_segments in grouped
-    ]
+    chunks: list[dict[str, Any]] = []
+    for chunk_name, chunk_segments in grouped:
+        if chunk_name == "primary_path" and len(chunk_segments) > 1:
+            chunks.extend(
+                {
+                    "text": item["text"],
+                    "pause_after_ms": int(item["pause_after_ms"] or 0),
+                    "section": chunk_name,
+                }
+                for item in chunk_segments
+            )
+            continue
+        chunks.append(
+            {
+                "text": " ".join(item["text"] for item in chunk_segments),
+                "pause_after_ms": int(chunk_segments[-1]["pause_after_ms"] or 0),
+                "section": chunk_name,
+            }
+        )
+    return chunks
 
 
 def post_dubbingx(path: str, body: dict[str, Any], timeout: float = 60) -> dict[str, Any]:
