@@ -56,6 +56,19 @@ MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
 )
+ALIGNMENT_MAX_ATTEMPTS = max(
+    1,
+    int(os.getenv("ALIGNMENT_MAX_ATTEMPTS", "3")),
+)
+ALIGNMENT_RETRY_BASE_SEC = max(
+    0.1,
+    float(os.getenv("ALIGNMENT_RETRY_BASE_SEC", "1.5")),
+)
+ALIGNMENT_TIMEOUT_SEC = max(
+    10.0,
+    float(os.getenv("ALIGNMENT_TIMEOUT_SEC", "300")),
+)
+ALIGNMENT_RETRYABLE_STATUS_CODES = {502, 503, 504}
 MACRO_CACHE_TTL_SEC = int(os.getenv("MACRO_CACHE_TTL_SEC", "21600"))
 MACRO_CACHE_MAX_STALE_SEC = int(
     os.getenv("MACRO_CACHE_MAX_STALE_SEC", "172800")
@@ -1421,6 +1434,56 @@ def build_subtitle_cues(
     return cues
 
 
+def validate_subtitle_cues(
+    subtitle_cues: list[dict[str, Any]],
+    audio_duration_sec: float,
+    original_text: str,
+) -> None:
+    """验证字幕确实对应最终音频和最终旁白，而不是只检查数量。"""
+    if not subtitle_cues:
+        raise RuntimeError("SUBTITLE_ALIGNMENT_EMPTY")
+
+    duration = float(audio_duration_sec)
+    if not math.isfinite(duration) or duration <= 0:
+        raise RuntimeError("SUBTITLE_ALIGNMENT_AUDIO_DURATION_INVALID")
+
+    source_text = re.sub(r"\s+", "", str(original_text or "")).strip()
+    cue_text = re.sub(
+        r"\s+",
+        "",
+        "".join(str(cue.get("text") or "") for cue in subtitle_cues),
+    ).strip()
+    if not source_text or cue_text != source_text:
+        raise RuntimeError("SUBTITLE_ALIGNMENT_TEXT_MISMATCH")
+
+    previous_end = 0.0
+    for index, cue in enumerate(subtitle_cues, start=1):
+        if not isinstance(cue, dict):
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_INVALID:{index}")
+        try:
+            start = float(cue["start_sec"])
+            end = float(cue["end_sec"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"SUBTITLE_ALIGNMENT_CUE_TIME_INVALID:{index}"
+            ) from exc
+        text = str(cue.get("text") or "").strip()
+        if not text or not math.isfinite(start) or not math.isfinite(end):
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_INVALID:{index}")
+        if start < -0.05 or end <= start:
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_ORDER_INVALID:{index}")
+        if start < previous_end - 0.05:
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_OVERLAP:{index}")
+        if end > duration + 0.25:
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_AFTER_AUDIO:{index}")
+        if end - start > 8.0:
+            raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_TOO_LONG:{index}")
+        previous_end = end
+
+    if previous_end <= 0.0:
+        raise RuntimeError("SUBTITLE_ALIGNMENT_NO_AUDIO_COVERAGE")
+
+
 def whisperx_language_for_text(original_text: str) -> str:
     """为WhisperX提供与实际旁白一致的语言提示。"""
     text = str(original_text or "")
@@ -1439,39 +1502,75 @@ def align_audio_with_source_text(
     音频与原始旁白同时提交，避免金融数字被转录后再匹配时产生时间漂移。
     """
     alignment_language = whisperx_language_for_text(original_text)
-    try:
-        with audio_path.open("rb") as audio_file:
-            response = httpx.post(
-                "https://api.302.ai/v1/audio/alignments",
-                headers={
-                    "Authorization": f"Bearer {AI302_API_KEY}",
-                    "Accept": "application/json",
-                },
-                files={
-                    "file": (
-                        audio_path.name,
-                        audio_file,
-                        "audio/wav" if audio_path.suffix == ".wav" else "audio/mpeg",
-                    )
-                },
-                data={
-                    "text": original_text,
-                    "model": "whisper-v3-turbo",
-                    "vad_model": "silero",
-                    "preprocessing": "none",
-                    "response_format": "verbose_json",
-                    "alignment_model": "tdnn_ffn",
-                },
-                timeout=300,
+    result: dict[str, Any] | None = None
+    last_error: Exception | None = None
+    for attempt in range(1, ALIGNMENT_MAX_ATTEMPTS + 1):
+        try:
+            with audio_path.open("rb") as audio_file:
+                response = httpx.post(
+                    "https://api.302.ai/v1/audio/alignments",
+                    headers={
+                        "Authorization": f"Bearer {AI302_API_KEY}",
+                        "Accept": "application/json",
+                    },
+                    files={
+                        "file": (
+                            audio_path.name,
+                            audio_file,
+                            "audio/wav" if audio_path.suffix == ".wav" else "audio/mpeg",
+                        )
+                    },
+                    data={
+                        "text": original_text,
+                        "model": "whisper-v3-turbo",
+                        "vad_model": "silero",
+                        "preprocessing": "none",
+                        "response_format": "verbose_json",
+                        "alignment_model": "tdnn_ffn",
+                    },
+                    timeout=ALIGNMENT_TIMEOUT_SEC,
+                )
+
+            response.raise_for_status()
+            parsed = response.json()
+            if not isinstance(parsed, dict):
+                raise RuntimeError("SOURCE_TEXT_ALIGNMENT_RESPONSE_NOT_OBJECT")
+            result = parsed
+            break
+        except httpx.HTTPStatusError as exc:
+            last_error = exc
+            status_code = exc.response.status_code
+            retryable = status_code in ALIGNMENT_RETRYABLE_STATUS_CODES
+            if not retryable or attempt >= ALIGNMENT_MAX_ATTEMPTS:
+                break
+            logger.warning(
+                "SOURCE_TEXT_ALIGNMENT_RETRY attempt=%s/%s status=%s language=%s",
+                attempt,
+                ALIGNMENT_MAX_ATTEMPTS,
+                status_code,
+                alignment_language,
             )
+        except (httpx.TimeoutException, httpx.NetworkError) as exc:
+            last_error = exc
+            if attempt >= ALIGNMENT_MAX_ATTEMPTS:
+                break
+            logger.warning(
+                "SOURCE_TEXT_ALIGNMENT_RETRY attempt=%s/%s error=%s language=%s",
+                attempt,
+                ALIGNMENT_MAX_ATTEMPTS,
+                type(exc).__name__,
+                alignment_language,
+            )
+        except Exception as exc:
+            last_error = exc
+            break
 
-        response.raise_for_status()
-        result = response.json()
+        time.sleep(ALIGNMENT_RETRY_BASE_SEC * (2 ** (attempt - 1)))
 
-    except Exception as exc:
+    if result is None:
         raise RuntimeError(
-            f"SOURCE_TEXT_ALIGNMENT_REQUEST_FAILED: {exc}"
-        ) from exc
+            f"SOURCE_TEXT_ALIGNMENT_REQUEST_FAILED: {last_error}"
+        ) from last_error
 
     if result.get("error"):
         raise RuntimeError(
@@ -1494,16 +1593,11 @@ def align_audio_with_source_text(
             "SOURCE_TEXT_ALIGNMENT_NO_SUBTITLE_CUES: 没有生成有效字幕时间"
         )
 
-    too_long = [
-        index + 1
-        for index, cue in enumerate(subtitle_cues)
-        if float(cue["end_sec"]) - float(cue["start_sec"]) > 8.0
-    ]
-    if too_long:
-        raise RuntimeError(
-            "SUBTITLE_ALIGNMENT_DURATION_INVALID:"
-            + ",".join(str(index) for index in too_long)
-        )
+    validate_subtitle_cues(
+        subtitle_cues,
+        audio_duration_sec,
+        original_text,
+    )
 
     return subtitle_cues, alignment_language
     
@@ -1618,6 +1712,8 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": duration_sec,
         "subtitle_cues": subtitle_cues,
         "subtitle_count": len(subtitle_cues),
+        "subtitle_alignment_valid": True,
+        "subtitle_alignment_error": "",
         "alignment_language": alignment_language,
         "alignment_method": (
             "openai_tts_source_text_alignment_bounds"
@@ -1668,21 +1764,38 @@ def run_tts_job(job_id: str, payload: dict[str, Any]) -> None:
             error_message = json.dumps(detail, ensure_ascii=False)
         else:
             error_message = str(detail)
+        subtitle_alignment_error = (
+            error_message
+            if "ALIGNMENT" in error_message.upper()
+            or "SUBTITLE" in error_message.upper()
+            else ""
+        )
         update_tts_job(
             job_id,
             status="failed",
             progress=100,
             error_code=error_code,
             error_message=error_message,
+            subtitle_alignment_valid=False,
+            subtitle_alignment_error=subtitle_alignment_error,
         )
     except Exception as exc:
         logger.exception("TTS_JOB_FAILED job_id=%s", job_id)
+        error_message = str(exc)
+        subtitle_alignment_error = (
+            error_message
+            if "ALIGNMENT" in error_message.upper()
+            or "SUBTITLE" in error_message.upper()
+            else ""
+        )
         update_tts_job(
             job_id,
             status="failed",
             progress=100,
             error_code=type(exc).__name__.upper(),
-            error_message=str(exc),
+            error_message=error_message,
+            subtitle_alignment_valid=False,
+            subtitle_alignment_error=subtitle_alignment_error,
         )
 
 
@@ -1706,6 +1819,8 @@ def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
         "duration_sec": 0,
         "subtitle_cues": [],
         "subtitle_count": 0,
+        "subtitle_alignment_valid": False,
+        "subtitle_alignment_error": "",
         "alignment_language": "",
         "alignment_method": "",
         "format": "",
