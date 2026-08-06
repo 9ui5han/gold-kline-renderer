@@ -58,8 +58,8 @@ def normalize_ai302_api_key(value: str) -> str:
 TOKEN = os.getenv("RENDER_SERVICE_TOKEN", "change-me")
 AI302_API_KEY = normalize_ai302_api_key(os.getenv("AI302_API_KEY", ""))
 ELEVENLABS_MODEL_ID = (
-    os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
-    or "eleven_multilingual_v2"
+    os.getenv("ELEVENLABS_MODEL_ID", "eleven_v3").strip()
+    or "eleven_v3"
 )
 INDEXTTS2_SPEAKER_AUDIO_URL = os.getenv(
     "INDEXTTS2_SPEAKER_AUDIO_URL",

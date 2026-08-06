@@ -56,6 +56,33 @@ class TtsAlignmentTests(unittest.TestCase):
             "eleven_multilingual_v2",
         )
 
+    def test_elevenlabs_request_uses_v3_by_default(self):
+        payload = main.TTSProxyRequest(
+            request_id="v3-default-test",
+            text="A short test sentence.",
+            tts_provider="elevenlabs",
+        )
+        request = httpx.Request(
+            "POST",
+            "https://api.302.ai/elevenlabs/text-to-speech/test-voice",
+        )
+        response = httpx.Response(
+            200,
+            request=request,
+            json={"url": "https://example.com/test.mp3"},
+        )
+
+        with patch.object(main.httpx, "post", return_value=response) as post, patch.object(
+            main, "download_audio"
+        ):
+            with tempfile.TemporaryDirectory() as directory:
+                main.generate_elevenlabs_tts(
+                    payload,
+                    Path(directory) / "test.mp3",
+                )
+
+        self.assertEqual(post.call_args.kwargs["json"]["model_id"], "eleven_v3")
+
     def test_elevenlabs_rejects_empty_narration_object(self):
         payload = main.TTSProxyRequest(
             request_id="empty-narration",
