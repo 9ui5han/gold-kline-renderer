@@ -45,8 +45,22 @@ MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def normalize_ai302_api_key(value: str) -> str:
+    """Normalize a 302.AI key before placing it in an Authorization header."""
+    key = str(value or "").strip()
+    if key.lower().startswith("bearer "):
+        key = key[7:].strip()
+    return key
+
+
 TOKEN = os.getenv("RENDER_SERVICE_TOKEN", "change-me")
-AI302_API_KEY = os.getenv("AI302_API_KEY", "")
+AI302_API_KEY = normalize_ai302_api_key(os.getenv("AI302_API_KEY", ""))
+ELEVENLABS_MODEL_ID = (
+    os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
+    or "eleven_multilingual_v2"
+)
 INDEXTTS2_SPEAKER_AUDIO_URL = os.getenv(
     "INDEXTTS2_SPEAKER_AUDIO_URL",
     "",
@@ -351,8 +365,9 @@ class TTSProxyRequest(BaseModel):
 
 
 def ai302_headers() -> dict[str, str]:
+    key = normalize_ai302_api_key(AI302_API_KEY)
     return {
-        "Authorization": f"Bearer {AI302_API_KEY}",
+        "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
@@ -840,7 +855,7 @@ def generate_elevenlabs_tts(payload: TTSProxyRequest, output_path: Path) -> None
         headers=ai302_headers(),
         json={
             "text": (payload.speech_text or payload.text).strip(),
-            "model_id": "eleven_v3",
+            "model_id": ELEVENLABS_MODEL_ID,
         },
         timeout=180,
     )

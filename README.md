@@ -35,6 +35,8 @@ http://127.0.0.1:8000/docs
 | `PUBLIC_BASE_URL` | 云平台给你的 `https://...` 域名 | 否 |
 | `DATA_DIR` | `/tmp/gold-video` | 否 |
 | `MAX_AUDIO_MB` | `30` | 否 |
+| `AI302_API_KEY` | 302.AI API Key | 是 |
+| `ELEVENLABS_MODEL_ID` | `eleven_multilingual_v2` | 否 |
 | `MACRO_CACHE_TTL_SEC` | `21600`（6小时） | 否 |
 | `MACRO_CACHE_MAX_STALE_SEC` | `172800`（48小时） | 否 |
 | `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
@@ -128,3 +130,9 @@ OHLC；渲染器只使用 Dify 已校验的结构路径坐标绘制方向箭头�
 
 ElevenLabs 分段 TTS 同样要求 `narration_json.segments` 为非空数组，且分段文字拼接后必须
 与完整 `text` 一致；这能把 Dify 的空结果问题挡在付费语音请求之前。
+
+302.AI 的 ElevenLabs 请求使用官方文档中的 `eleven_multilingual_v2` 作为默认模型。
+如果在 Railway 中设置了 `ELEVENLABS_MODEL_ID`，只能填写 302.AI 官方模型列表中明确支持
+文字转语音的模型；不要继续使用未在当前 302.AI 文档中核对到的 `eleven_v3`。
+`AI302_API_KEY` 可以填写纯密钥，也可以误带一次 `Bearer ` 前缀，服务启动时会自动去除首尾空格
+并避免重复拼接鉴权前缀。修改 Railway 环境变量后必须重新部署，服务进程才会读取新值。
