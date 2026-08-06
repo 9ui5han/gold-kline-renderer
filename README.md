@@ -112,3 +112,19 @@ Authorization: Bearer <RENDER_SERVICE_TOKEN>
 
 状态只有 `queued`、`rendering`、`completed`、`failed`。完成后返回 `video_url` 和
 `thumbnail_url`。
+
+## Dify 结构路径请求契约
+
+趋势预测视频使用 `style.forecast_mode = "structure_paths"`。此模式不会预测未来精确
+OHLC；渲染器只使用 Dify 已校验的结构路径坐标绘制方向箭头。
+
+请求必须同时包含：
+
+- `forecast_paths.schema_version = "structure-path-v1"`；
+- 三个情景及不同的 `primary_scenario`、`alternate_scenario`；
+- 每个情景三至四个带 `resolved_value` 的 `path_points`。
+
+缺少这些字段时，接口会在请求校验阶段返回明确错误，不会把空对象静默当成无预测继续渲染。
+
+ElevenLabs 分段 TTS 同样要求 `narration_json.segments` 为非空数组，且分段文字拼接后必须
+与完整 `text` 一致；这能把 Dify 的空结果问题挡在付费语音请求之前。

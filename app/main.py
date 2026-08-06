@@ -17,7 +17,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .chart_renderer import render_tradingview_scene
 from .macro_context import MacroContextError, MacroContextService
@@ -118,6 +118,7 @@ class StyleOptions(BaseModel):
     show_alternate_path: bool = True
     show_exact_forecast_prices: bool = False
     show_exact_forecast_times: bool = False
+    forecast_mode: Literal["legacy", "structure_paths"] = "legacy"
 
     @field_validator("scenario", mode="before")
     @classmethod
@@ -162,6 +163,57 @@ class RenderRequest(BaseModel):
         if not value.startswith(("https://", "http://")):
             raise ValueError("audio_url必须是HTTP(S)地址")
         return value
+
+    @model_validator(mode="after")
+    def validate_forecast_contract(self):
+        """结构路径模式不能把空对象带到渲染线程。
+
+        Dify 已经在正式视频请求节点校验一次；这里保留同一份最小契约，
+        防止旧 DSL、手工请求或错误连线绕过 Dify 后让渲染器静默退回空预测。
+        """
+        if self.style.forecast_mode != "structure_paths":
+            return self
+
+        paths = self.forecast_paths
+        if not isinstance(paths, dict) or not paths:
+            raise ValueError("forecast_paths不能为空")
+        if paths.get("schema_version") != "structure-path-v1":
+            raise ValueError("forecast_paths.schema_version无效")
+
+        scenarios = paths.get("scenarios")
+        if not isinstance(scenarios, list) or len(scenarios) != 3:
+            raise ValueError("forecast_paths.scenarios必须包含三个情景")
+
+        scenario_ids = {
+            item.get("scenario_id")
+            for item in scenarios
+            if isinstance(item, dict)
+        }
+        primary = paths.get("primary_scenario")
+        alternate = paths.get("alternate_scenario")
+        if primary not in scenario_ids:
+            raise ValueError("forecast_paths.primary_scenario不存在")
+        if alternate not in scenario_ids or alternate == primary:
+            raise ValueError("forecast_paths.alternate_scenario无效")
+
+        for item in scenarios:
+            if not isinstance(item, dict):
+                raise ValueError("forecast_paths.scenarios包含无效对象")
+            points = item.get("path_points")
+            if not isinstance(points, list) or not 3 <= len(points) <= 4:
+                raise ValueError(
+                    f"forecast_paths.{item.get('scenario_id', 'unknown')}路径节点数量无效"
+                )
+            if any(
+                not isinstance(point, dict)
+                or "resolved_value" not in point
+                for point in points
+            ):
+                raise ValueError(
+                    f"forecast_paths.{item.get('scenario_id', 'unknown')}存在未解析路径节点"
+                )
+
+        return self
 
 
 app = FastAPI(
@@ -341,15 +393,19 @@ def parse_narration_segments(payload: TTSProxyRequest) -> list[str]:
 def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
     """读取ElevenLabs分段文字和段后停顿，并校验完整文本一致。"""
     raw_narration = payload.narration_json
+    if raw_narration is None:
+        raise ValueError("narration_json不能为空")
     if isinstance(raw_narration, str):
-        raw_narration = json.loads(raw_narration or "{}")
+        if not raw_narration.strip():
+            raise ValueError("narration_json不能为空")
+        raw_narration = json.loads(raw_narration)
 
     if not isinstance(raw_narration, dict):
-        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+        raise ValueError("narration_json必须是对象")
 
     raw_segments = raw_narration.get("segments") or []
     if not isinstance(raw_segments, list) or not raw_segments:
-        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+        raise ValueError("narration_json.segments不能为空")
 
     indexed_segments = list(enumerate(raw_segments, start=1))
     ordered_segments = sorted(
@@ -388,7 +444,7 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
         )
 
     if not segments:
-        return [{"text": payload.text.strip(), "pause_after_ms": 0}]
+        raise ValueError("narration_json.segments没有有效文本")
 
     normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip()
     joined_text = " ".join(item["text"] for item in segments)

@@ -18,6 +18,17 @@ def alignment_response(request: httpx.Request, status: int, payload=None):
 
 
 class TtsAlignmentTests(unittest.TestCase):
+    def test_elevenlabs_rejects_empty_narration_object(self):
+        payload = main.TTSProxyRequest(
+            request_id="empty-narration",
+            text="A valid narration.",
+            narration_json="{}",
+            tts_provider="elevenlabs",
+        )
+
+        with self.assertRaisesRegex(ValueError, "narration_json\\.segments不能为空"):
+            main.parse_elevenlabs_segments(payload)
+
     def test_keeps_primary_segments_separate_for_fallback_boundaries(self):
         chunks = main.build_elevenlabs_narrative_chunks(
             [
