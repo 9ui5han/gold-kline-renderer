@@ -80,6 +80,8 @@ MAX_RENDER_AUDIO_SECONDS = float(
 MAX_AUDIO_VIDEO_DRIFT_SECONDS = float(
     os.getenv("MAX_AUDIO_VIDEO_DRIFT_SECONDS", "0.2")
 )
+MIN_TTS_AUDIO_SECONDS = 105.0
+MAX_TTS_AUDIO_SECONDS = 120.0
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
 )
@@ -344,6 +346,11 @@ class TTSProxyRequest(BaseModel):
     voice_type: str = "Kore"
     voice_id: str = Field(default="30065", pattern=r"^\d+$")
     speed_ratio: float = Field(default=1.0, ge=0.5, le=2.0)
+    target_duration_sec: float | None = Field(
+        default=None,
+        ge=MIN_TTS_AUDIO_SECONDS,
+        le=MAX_TTS_AUDIO_SECONDS,
+    )
     style_prompt: str = Field(default="", max_length=2000)
     emotion_mode: Literal["auto", "neutral"] = "auto"
     narration_json: dict[str, Any] | str | None = None
@@ -479,6 +486,73 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
     if normalize(joined_text) != normalize(payload.text):
         raise ValueError("narration_json分段文字与完整旁白不一致")
 
+    return segments
+
+
+def parse_qwen3_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
+    """读取Dify英文segment；Qwen字幕和音频边界都以此列表为准。"""
+    raw_narration = payload.narration_json
+    if raw_narration is None:
+        raise ValueError("narration_json不能为空")
+    if isinstance(raw_narration, str):
+        if not raw_narration.strip():
+            raise ValueError("narration_json不能为空")
+        raw_narration = json.loads(raw_narration)
+    if not isinstance(raw_narration, dict):
+        raise ValueError("narration_json必须是对象")
+
+    raw_segments = raw_narration.get("segments") or []
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise ValueError("narration_json.segments不能为空")
+
+    if any(not isinstance(item, dict) for item in raw_segments):
+        raise ValueError("narration_json.segments包含非对象项")
+
+    indexed_segments = list(enumerate(raw_segments, start=1))
+    ordered_segments = sorted(
+        (
+            (index, item)
+            for index, item in indexed_segments
+            if isinstance(item, dict)
+        ),
+        key=lambda pair: int(pair[1].get("order") or pair[0]),
+    )
+
+    segments: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for index, item in ordered_segments:
+        text = str(item.get("text") or item.get("spoken_text") or "").strip()
+        if not text:
+            raise ValueError(f"Qwen分段{index}的文本为空")
+        segment_id = str(
+            item.get("segment_id") or f"segment_{index}"
+        ).strip()
+        if segment_id in seen_ids:
+            raise ValueError(f"Qwen分段ID重复：{segment_id}")
+        seen_ids.add(segment_id)
+        pause_value = item.get("pause_after_ms")
+        if isinstance(pause_value, bool) or not isinstance(pause_value, int):
+            raise ValueError(f"Qwen分段{index}的pause_after_ms不是整数")
+        pause_after_ms = pause_value
+        if not 180 <= pause_after_ms <= 650:
+            raise ValueError(
+                f"Qwen分段{index}的pause_after_ms超出180至650毫秒范围"
+            )
+        segments.append(
+            {
+                "order": int(item.get("order") or index),
+                "segment_id": segment_id,
+                "text": text,
+                "pause_after_ms": pause_after_ms,
+                "section": str(item.get("section") or "").strip().lower(),
+                "delivery": str(item.get("delivery") or "").strip().lower(),
+            }
+        )
+
+    normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip()
+    joined_text = " ".join(item["text"] for item in segments)
+    if normalize(joined_text) != normalize(payload.text):
+        raise ValueError("narration_json分段文字与完整旁白不一致")
     return segments
 
 
@@ -766,6 +840,161 @@ def concatenate_audio_with_pauses(
     )
 
 
+def validate_tts_duration_contract(
+    actual_duration_sec: float,
+    target_duration_sec: float | None = None,
+) -> None:
+    """TTS正式主线必须落在105至120秒，边界值允许。"""
+    try:
+        actual = float(actual_duration_sec)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("TTS_AUDIO_DURATION_INVALID") from exc
+    if not math.isfinite(actual):
+        raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
+
+    if target_duration_sec is not None:
+        try:
+            target = float(target_duration_sec)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("TTS_TARGET_DURATION_INVALID") from exc
+        if not math.isfinite(target) or not (
+            MIN_TTS_AUDIO_SECONDS <= target <= MAX_TTS_AUDIO_SECONDS
+        ):
+            raise RuntimeError(
+                "TTS_TARGET_DURATION_OUT_OF_RANGE:"
+                f"{target_duration_sec}"
+            )
+
+    if not MIN_TTS_AUDIO_SECONDS <= actual <= MAX_TTS_AUDIO_SECONDS:
+        raise RuntimeError(
+            "TTS_AUDIO_DURATION_OUT_OF_RANGE:"
+            f"{actual:.3f} not in "
+            f"{MIN_TTS_AUDIO_SECONDS:.0f}-{MAX_TTS_AUDIO_SECONDS:.0f}"
+        )
+
+
+def _atempo_filter_for_ratio(ratio: float) -> str:
+    """Return an FFmpeg atempo chain; one filter only accepts 0.5 to 2.0."""
+    if not math.isfinite(ratio) or ratio <= 0:
+        raise RuntimeError("TTS_AUDIO_SPEED_RATIO_INVALID")
+    factors: list[float] = []
+    remaining = float(ratio)
+    while remaining < 0.5:
+        factors.append(0.5)
+        remaining /= 0.5
+    while remaining > 2.0:
+        factors.append(2.0)
+        remaining /= 2.0
+    factors.append(remaining)
+    return ",".join(f"atempo={factor:.8f}" for factor in factors)
+
+
+def normalize_audio_to_target_duration(
+    input_path: Path,
+    output_path: Path,
+    target_duration_sec: float,
+) -> tuple[float, float]:
+    """轻微变速到目标时长，并返回(原时长,缩放后的时间比例)。"""
+    raw_duration = probe_duration(input_path)
+    if not math.isfinite(raw_duration) or raw_duration <= 0:
+        raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
+    target = float(target_duration_sec)
+    ratio = raw_duration / target
+    filter_chain = _atempo_filter_for_ratio(ratio)
+    run_command(
+        [
+            "ffmpeg",
+            "-y",
+            "-i",
+            str(input_path),
+            "-filter:a",
+            filter_chain,
+            "-t",
+            f"{target:.3f}",
+            "-ar",
+            "44100",
+            "-ac",
+            "1",
+            "-c:a",
+            "pcm_s16le",
+            str(output_path),
+        ]
+    )
+    normalized_duration = probe_duration(output_path)
+    if normalized_duration < target - 0.05:
+        # 编码四舍五入造成的极短尾差用静音补齐，不改变任何segment边界比例。
+        run_command(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(output_path),
+                "-af",
+                f"apad=pad_dur={target - normalized_duration:.3f}",
+                "-t",
+                f"{target:.3f}",
+                "-ar",
+                "44100",
+                "-ac",
+                "1",
+                "-c:a",
+                "pcm_s16le",
+                str(output_path.with_suffix(".padded.wav")),
+            ]
+        )
+        padded_path = output_path.with_suffix(".padded.wav")
+        padded_duration = probe_duration(padded_path)
+        shutil.move(padded_path, output_path)
+        normalized_duration = padded_duration
+    if abs(normalized_duration - target) > 0.25:
+        raise RuntimeError(
+            "TTS_AUDIO_DURATION_NORMALIZATION_FAILED:"
+            f"{normalized_duration:.3f}!={target:.3f}"
+        )
+    return raw_duration, normalized_duration / raw_duration
+
+
+def build_qwen_segment_bounds(
+    segments: list[dict[str, Any]],
+    speech_durations: list[float],
+    scale: float = 1.0,
+) -> list[dict[str, Any]]:
+    """根据每段实际音频时长和pause_after_ms生成字幕边界。"""
+    if len(segments) != len(speech_durations) or not segments:
+        raise RuntimeError("QWEN3_TTS_SEGMENT_DURATION_COUNT_MISMATCH")
+    if not math.isfinite(scale) or scale <= 0:
+        raise RuntimeError("QWEN3_TTS_SEGMENT_BOUNDARY_SCALE_INVALID")
+
+    bounds: list[dict[str, Any]] = []
+    cursor_sec = 0.0
+    for index, (segment, raw_duration) in enumerate(
+        zip(segments, speech_durations),
+        start=1,
+    ):
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"QWEN3_TTS_SEGMENT_DURATION_INVALID:{index}"
+            ) from exc
+        if not math.isfinite(duration) or duration <= 0:
+            raise RuntimeError(f"QWEN3_TTS_SEGMENT_DURATION_INVALID:{index}")
+
+        bounds.append(
+            {
+                "segment_id": segment["segment_id"],
+                "order": segment["order"],
+                "text": segment["text"],
+                "start_sec": round(cursor_sec * scale, 3),
+                "end_sec": round((cursor_sec + duration) * scale, 3),
+            }
+        )
+        cursor_sec += duration
+        if index < len(segments):
+            cursor_sec += int(segment["pause_after_ms"]) / 1000
+    return bounds
+
+
 def split_text_by_utf8_limit(text: str, max_bytes: int) -> list[str]:
     normalized = str(text or "").strip()
     if not normalized:
@@ -923,8 +1152,7 @@ def generate_elevenlabs_segmented_tts(
 
     normalized_paths: list[Path] = []
     pauses_after_ms: list[int] = []
-    segment_bounds: list[dict[str, Any]] = []
-    cursor_sec = 0.0
+    speech_durations: list[float] = []
     for index, segment in enumerate(segments):
         segment_text = segment["text"]
         segment_mp3 = request_work_dir / f"eleven-segment-{index:02d}.mp3"
@@ -1260,46 +1488,79 @@ def generate_qwen3_tts_segment(
     download_audio(audio_url, output_path)
 
 
-def generate_qwen3_tts(payload: TTSProxyRequest, output_path: Path) -> None:
-    """将长旁白切成 Qwen3 可接受的小段，逐段生成后合并。"""
-    chunks = split_text_by_utf8_limit(
-        payload.text,
-        QWEN3_TTS_MAX_INPUT_BYTES,
-    )
-    if not chunks:
+def generate_qwen3_tts(
+    payload: TTSProxyRequest,
+    output_path: Path,
+) -> list[dict[str, Any]]:
+    """按Dify segments逐段生成Qwen语音，并返回真实语音边界。"""
+    segments = parse_qwen3_segments(payload)
+    if not segments:
         raise HTTPException(
             status_code=400,
             detail={"error_code": "QWEN3_TTS_TEXT_EMPTY"},
         )
 
-    if len(chunks) == 1:
-        generate_qwen3_tts_segment(
-            chunks[0],
-            payload.qwen3_voice,
-            output_path,
-        )
-        return
-
     segment_dir = WORK_DIR / f"qwen3-{payload.request_id}-{uuid.uuid4()}"
     segment_dir.mkdir(parents=True, exist_ok=True)
-    segment_paths: list[Path] = []
+    normalized_paths: list[Path] = []
+    pauses_after_ms: list[int] = []
+    speech_durations: list[float] = []
     try:
-        for index, chunk in enumerate(chunks):
-            segment_path = segment_dir / f"segment-{index:02d}.wav"
+        for index, segment in enumerate(segments):
+            source_path = segment_dir / f"segment-{index:02d}.source.wav"
+            normalized_path = segment_dir / f"segment-{index:02d}.wav"
             generate_qwen3_tts_segment(
-                chunk,
+                segment["text"],
                 payload.qwen3_voice,
-                segment_path,
+                source_path,
             )
-            segment_paths.append(segment_path)
+            normalize_audio_to_wav(source_path, normalized_path)
+            normalized_paths.append(normalized_path)
+            pauses_after_ms.append(int(segment["pause_after_ms"]))
+            segment_duration_sec = probe_duration(normalized_path)
+            speech_durations.append(segment_duration_sec)
             logger.info(
-                "QWEN3_TTS_SEGMENT_COMPLETED request_id=%s segment=%s/%s bytes=%s",
+                "QWEN3_TTS_SEGMENT_COMPLETED request_id=%s segment=%s/%s pause_after_ms=%s",
                 payload.request_id,
                 index + 1,
-                len(chunks),
-                len(chunk.encode("utf-8")),
+                len(segments),
+                pauses_after_ms[-1],
             )
-        concatenate_audio(segment_paths, output_path)
+
+        combined_path = segment_dir / "combined.mp3"
+        concatenate_audio_with_pauses(
+            normalized_paths,
+            pauses_after_ms,
+            combined_path,
+            segment_dir,
+        )
+        combined_wav = segment_dir / "combined.wav"
+        normalize_audio_to_wav(combined_path, combined_wav)
+
+        raw_duration = probe_duration(combined_wav)
+        scale = 1.0
+        target_duration = payload.target_duration_sec
+        if target_duration is not None:
+            _, scale = normalize_audio_to_target_duration(
+                combined_wav,
+                output_path,
+                float(target_duration),
+            )
+        else:
+            normalize_audio_to_wav(combined_wav, output_path)
+
+        if scale == 1.0:
+            # Keep the final probe as the single source of truth for boundary
+            # validation when no target normalization was requested.
+            output_duration = probe_duration(output_path)
+            if raw_duration > 0 and abs(output_duration - raw_duration) > 0.25:
+                raise RuntimeError("QWEN3_TTS_AUDIO_CONCAT_DURATION_MISMATCH")
+        segment_bounds = build_qwen_segment_bounds(
+            segments,
+            speech_durations,
+            scale=scale,
+        )
+        return segment_bounds
     finally:
         shutil.rmtree(segment_dir, ignore_errors=True)
 
@@ -1802,6 +2063,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
     request_work_dir.mkdir(parents=True, exist_ok=True)
     elevenlabs_segment_bounds: list[dict[str, Any]] = []
+    qwen_segment_bounds: list[dict[str, Any]] = []
 
     try:
         if payload.tts_provider == "openai":
@@ -1819,7 +2081,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         elif payload.tts_provider == "glm_tts":
             generate_glm_tts(payload, audio_path)
         elif payload.tts_provider == "qwen3_tts":
-            generate_qwen3_tts(payload, audio_path)
+            qwen_segment_bounds = generate_qwen3_tts(payload, audio_path)
         else:
             segments = parse_narration_segments(payload)
             segment_paths: list[Path] = []
@@ -1871,6 +2133,11 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         probe_duration(audio_path),
         3,
     )
+    if payload.tts_provider == "qwen3_tts":
+        validate_tts_duration_contract(
+            duration_sec,
+            payload.target_duration_sec,
+        )
 
     alignment_method = (
         "openai_tts_source_text_alignment_bounds"
@@ -1898,38 +2165,47 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         )
     )
 
-    try:
-        subtitle_cues, alignment_language = align_audio_with_source_text(
-            audio_path,
-            duration_sec,
-            payload.text,
-        )
-    except Exception as exc:
-        if payload.tts_provider != "elevenlabs" or not elevenlabs_segment_bounds:
-            logger.exception(
-                "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
-                payload.request_id,
-                payload.voice_id,
-                audio_name,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=str(exc),
-            ) from exc
-
-        logger.warning(
-            "WHISPERX_ALIGNMENT_FALLBACK request_id=%s audio=%s error=%s",
-            payload.request_id,
-            audio_name,
-            exc,
-        )
+    if payload.tts_provider == "qwen3_tts":
         subtitle_cues = build_segment_boundary_subtitle_cues(
-            elevenlabs_segment_bounds,
+            qwen_segment_bounds,
             duration_sec,
             payload.text,
         )
         alignment_language = whisperx_language_for_text(payload.text)
-        alignment_method = "elevenlabs_segment_boundary_fallback"
+        alignment_method = "qwen3_segment_boundary_contract"
+    else:
+        try:
+            subtitle_cues, alignment_language = align_audio_with_source_text(
+                audio_path,
+                duration_sec,
+                payload.text,
+            )
+        except Exception as exc:
+            if payload.tts_provider != "elevenlabs" or not elevenlabs_segment_bounds:
+                logger.exception(
+                    "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
+                    payload.request_id,
+                    payload.voice_id,
+                    audio_name,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=str(exc),
+                ) from exc
+
+            logger.warning(
+                "WHISPERX_ALIGNMENT_FALLBACK request_id=%s audio=%s error=%s",
+                payload.request_id,
+                audio_name,
+                exc,
+            )
+            subtitle_cues = build_segment_boundary_subtitle_cues(
+                elevenlabs_segment_bounds,
+                duration_sec,
+                payload.text,
+            )
+            alignment_language = whisperx_language_for_text(payload.text)
+            alignment_method = "elevenlabs_segment_boundary_fallback"
 
     return {
         "status": "completed",
