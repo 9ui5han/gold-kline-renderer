@@ -284,6 +284,43 @@ class TtsAlignmentTests(unittest.TestCase):
                 "First Second",
             )
 
+    def test_caps_gap_driven_cue_duration_before_validation(self):
+        text = (
+            "One two three four five six seven. "
+            "Alpha beta gamma delta epsilon zeta eta. "
+            "Iota kappa lambda mu nu xi omicron. "
+            "Pi rho sigma tau upsilon phi chi. "
+            "Psi omega alpha beta gamma delta eta."
+        )
+        chunks, source_words = main._subtitle_chunks(text)
+        delayed_chunk_start = chunks[4]["word_start"]
+        alignment_words = []
+        for index, word in enumerate(source_words):
+            start = (
+                20.0 + (index - delayed_chunk_start) * 0.4
+                if index >= delayed_chunk_start
+                else index * 0.4
+            )
+            alignment_words.append(
+                {"word": word, "start": start, "end": start + 0.2}
+            )
+
+        cues = main.build_subtitle_cues(
+            {"segments": [{"words": alignment_words}]},
+            24.0,
+            text,
+        )
+
+        main.validate_subtitle_cues(cues, 24.0, text)
+        self.assertLessEqual(
+            cues[3]["end_sec"] - cues[3]["start_sec"],
+            8.0,
+        )
+        self.assertEqual(
+            " ".join(cue["text"] for cue in cues),
+            text,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

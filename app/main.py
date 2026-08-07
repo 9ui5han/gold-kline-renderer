@@ -1484,6 +1484,7 @@ def build_subtitle_cues(
     alignment_result: dict[str, Any],
     audio_duration_sec: float,
     original_text: str,
+    max_cue_duration_sec: float = 8.0,
 ) -> list[dict[str, Any]]:
     """
     WhisperX只负责提供真实语速和时间，字幕文字始终使用原始旁白。
@@ -1538,7 +1539,14 @@ def build_subtitle_cues(
             cue_end = max(cue_start + 0.2, cue_starts[index + 1])
         else:
             cue_end = speech_end
-        cue_end = min(cue_end, float(audio_duration_sec))
+        # 对齐服务偶尔会把长停顿后的下一句作为当前字幕的结束锚点，
+        # 导致一条字幕覆盖超过8秒。保留原文和真实起点，但不让字幕
+        # 在长停顿期间一直占屏，确保结果能通过同一条时长门禁。
+        cue_end = min(
+            cue_end,
+            float(audio_duration_sec),
+            cue_start + float(max_cue_duration_sec),
+        )
         if cue_end <= cue_start:
             cue_end = min(float(audio_duration_sec), cue_start + 0.2)
 
