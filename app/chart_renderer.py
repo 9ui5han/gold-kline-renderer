@@ -603,13 +603,10 @@ def _subtitle_at(
     # 不再提前显示，否则会让字幕抢在口播前出现。
     subtitle_time = current_time
     subtitle_cues = narration.get("subtitle_cues") or []
-    for cue_index, cue in enumerate(subtitle_cues):
+    for cue in subtitle_cues:
         start = float(cue.get("start_sec") or 0)
         end = float(cue.get("end_sec") or 0)
         if start <= subtitle_time < end:
-            # 结尾为固定风险提示时，只保留口播，不在画面上再显示字幕。
-            if cue_index == len(subtitle_cues) - 1:
-                return ""
             return str(cue.get("text") or "")
 
     # 已提供正式时间轴时，时间轴外（例如口播结束后的尾帧）必须没有字幕。

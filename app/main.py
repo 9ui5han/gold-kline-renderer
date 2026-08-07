@@ -71,6 +71,15 @@ MEDIA_CACHE_CONTROL = os.getenv(
     "public, max-age=86400, immutable",
 ).strip()
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
+MIN_RENDER_AUDIO_SECONDS = float(
+    os.getenv("MIN_RENDER_AUDIO_SECONDS", "20")
+)
+MAX_RENDER_AUDIO_SECONDS = float(
+    os.getenv("MAX_RENDER_AUDIO_SECONDS", "120")
+)
+MAX_AUDIO_VIDEO_DRIFT_SECONDS = float(
+    os.getenv("MAX_AUDIO_VIDEO_DRIFT_SECONDS", "0.2")
+)
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
 )
@@ -149,7 +158,11 @@ class RenderRequest(BaseModel):
     symbol: str = "XAUUSD"
     timeframe: str
     data_as_of: str
-    duration_target_sec: int = Field(default=90, ge=60, le=120)
+    duration_target_sec: float = Field(
+        default=90.0,
+        ge=MIN_RENDER_AUDIO_SECONDS,
+        le=MAX_RENDER_AUDIO_SECONDS,
+    )
     test_duration_sec: int = Field(default=10, ge=5, le=20)
     historical_candles: list[Candle] = Field(min_length=20, max_length=500)
     analysis_forecast: dict[str, Any]
@@ -2308,31 +2321,11 @@ def render_scene(
     else:
         current_time = float(current_time_sec)
 
-    subtitle = ""
-
-    for cue in subtitle_cues:
-        start_sec = float(cue.get("start_sec") or 0)
-        end_sec = float(cue.get("end_sec") or 0)
-
-        if start_sec <= current_time < end_sec:
-            subtitle = str(cue.get("text") or "")
-            break
-
-    if not subtitle:
-        segments = sorted(
-            payload["narration"].get("segments") or [],
-            key=lambda item: item.get("order", 0),
-        )
-
-        if segments:
-            segment = segments[
-                min(scene_index, len(segments) - 1)
-            ]
-            subtitle = str(segment.get("text") or "")
-        else:
-            subtitle = str(
-                payload["narration"].get("full_text") or ""
-            )
+    subtitle = subtitle_for_time(
+        payload["narration"],
+        current_time,
+        scene_index=scene_index,
+    )
 
     subtitle_lines = text_lines(draw, subtitle, subtitle_font, 900)[:5]
     panel_top = 1540
@@ -2376,6 +2369,70 @@ def probe_duration(path: Path) -> float:
     if result.returncode != 0:
         raise RuntimeError(f"无法读取音频时长: {result.stderr[-1000:]}")
     return float(result.stdout.strip())
+
+
+def validate_audio_video_duration(
+    audio_duration_sec: float,
+    video_duration_sec: float,
+    tolerance_sec: float | None = None,
+) -> None:
+    """在任务完成前确认输出MP4没有脱离旁白真实时间轴。"""
+    audio = float(audio_duration_sec)
+    video = float(video_duration_sec)
+    tolerance = (
+        MAX_AUDIO_VIDEO_DRIFT_SECONDS
+        if tolerance_sec is None
+        else float(tolerance_sec)
+    )
+    if (
+        not math.isfinite(audio)
+        or not math.isfinite(video)
+        or not math.isfinite(tolerance)
+        or tolerance < 0
+    ):
+        raise RuntimeError("AUDIO_VIDEO_DURATION_INVALID")
+
+    delta = abs(video - audio)
+    # 浮点数相减可能把理论上的0.2显示成0.20000000000000284；
+    # 契约边界按小数秒理解，保留极小的计算误差余量。
+    if delta > tolerance + 1e-6:
+        raise RuntimeError(
+            "AUDIO_VIDEO_DURATION_MISMATCH:"
+            f"audio={audio:.3f};"
+            f"video={video:.3f};"
+            f"delta={delta:.3f}"
+        )
+
+
+def subtitle_for_time(
+    narration: dict[str, Any],
+    current_time_sec: float,
+    scene_index: int = 0,
+) -> str:
+    """只在当前cue活动时显示字幕，避免停顿期间串出错误分段文字。"""
+    narration = narration if isinstance(narration, dict) else {}
+    cues = narration.get("subtitle_cues") or []
+    current_time = float(current_time_sec)
+
+    if cues:
+        for cue in cues:
+            try:
+                start_sec = float(cue.get("start_sec") or 0)
+                end_sec = float(cue.get("end_sec") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if start_sec <= current_time < end_sec:
+                return str(cue.get("text") or "")
+        return ""
+
+    segments = sorted(
+        narration.get("segments") or [],
+        key=lambda item: item.get("order", 0),
+    )
+    if segments:
+        segment = segments[min(scene_index, len(segments) - 1)]
+        return str(segment.get("text") or "")
+    return str(narration.get("full_text") or "")
 
 
 def download_audio(url: str, target: Path) -> None:
@@ -2469,8 +2526,16 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         audio_path = job_dir / "narration.mp3"
         download_audio(payload["audio_url"], audio_path)
         duration = probe_duration(audio_path)
-        if duration < 20 or duration > 150:
-            raise RuntimeError(f"音频时长{duration:.1f}秒，不在20到150秒安全范围")
+        if (
+            not math.isfinite(duration)
+            or duration < MIN_RENDER_AUDIO_SECONDS
+            or duration > MAX_RENDER_AUDIO_SECONDS
+        ):
+            raise RuntimeError(
+                f"音频时长{duration:.1f}秒，不在"
+                f"{MIN_RENDER_AUDIO_SECONDS:g}到"
+                f"{MAX_RENDER_AUDIO_SECONDS:g}秒安全范围"
+            )
         payload["render_duration_sec"] = duration
         update_job(job_id, progress=15)
 
@@ -2551,6 +2616,7 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
             ]
         )
         actual_duration = round(probe_duration(output_path), 3)
+        validate_audio_video_duration(duration, actual_duration)
         update_job(
             job_id,
             status="completed",
