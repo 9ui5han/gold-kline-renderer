@@ -21,30 +21,44 @@ def _history():
 
 
 class RenderDurationContractTests(unittest.TestCase):
-    def test_render_request_accepts_fractional_duration_up_to_120_seconds(self):
+    def test_render_request_accepts_duration_up_to_900_seconds(self):
         payload = main.RenderRequest(
             request_id="fractional-duration",
             timeframe="15m",
             data_as_of="2026-08-04T04:45:00Z",
-            duration_target_sec=119.8,
+            duration_target_sec=900,
             historical_candles=_history(),
             analysis_forecast={"trend": "sideways"},
             narration={"segments": []},
         )
 
-        self.assertAlmostEqual(payload.duration_target_sec, 119.8)
+        self.assertAlmostEqual(payload.duration_target_sec, 900)
 
-    def test_render_request_rejects_duration_above_120_seconds(self):
-        with self.assertRaises(ValidationError):
-            main.RenderRequest(
-                request_id="too-long",
-                timeframe="15m",
-                data_as_of="2026-08-04T04:45:00Z",
-                duration_target_sec=120.1,
-                historical_candles=_history(),
-                analysis_forecast={"trend": "sideways"},
-                narration={"segments": []},
-            )
+    def test_render_request_rejects_duration_outside_30_to_900_seconds(self):
+        for duration in (29.9, 900.1):
+            with self.subTest(duration=duration):
+                with self.assertRaises(ValidationError):
+                    main.RenderRequest(
+                        request_id="out-of-range",
+                        timeframe="15m",
+                        data_as_of="2026-08-04T04:45:00Z",
+                        duration_target_sec=duration,
+                        historical_candles=_history(),
+                        analysis_forecast={"trend": "sideways"},
+                        narration={"segments": []},
+                    )
+
+    def test_render_request_accepts_eighty_seconds(self):
+        payload = main.RenderRequest(
+            request_id="eighty-seconds",
+            timeframe="15m",
+            data_as_of="2026-08-04T04:45:00Z",
+            duration_target_sec=80,
+            historical_candles=_history(),
+            analysis_forecast={"trend": "sideways"},
+            narration={"segments": []},
+        )
+        self.assertEqual(payload.duration_target_sec, 80)
 
     def test_audio_video_drift_within_tolerance_is_accepted(self):
         main.validate_audio_video_duration(119.8, 120.0)

@@ -72,16 +72,20 @@ MEDIA_CACHE_CONTROL = os.getenv(
 ).strip()
 MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_MB", "30")) * 1024 * 1024
 MIN_RENDER_AUDIO_SECONDS = float(
-    os.getenv("MIN_RENDER_AUDIO_SECONDS", "20")
+    os.getenv("MIN_RENDER_AUDIO_SECONDS", "30")
 )
 MAX_RENDER_AUDIO_SECONDS = float(
-    os.getenv("MAX_RENDER_AUDIO_SECONDS", "120")
+    os.getenv("MAX_RENDER_AUDIO_SECONDS", "900")
 )
 MAX_AUDIO_VIDEO_DRIFT_SECONDS = float(
     os.getenv("MAX_AUDIO_VIDEO_DRIFT_SECONDS", "0.2")
 )
-MIN_TTS_AUDIO_SECONDS = 105.0
-MAX_TTS_AUDIO_SECONDS = 120.0
+MIN_TTS_AUDIO_SECONDS = float(
+    os.getenv("MIN_TTS_AUDIO_SECONDS", "30")
+)
+MAX_TTS_AUDIO_SECONDS = float(
+    os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
+)
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
 )
@@ -935,7 +939,7 @@ def validate_tts_duration_contract(
     actual_duration_sec: float,
     target_duration_sec: float | None = None,
 ) -> None:
-    """TTS正式主线必须落在105至120秒，边界值允许。"""
+    """TTS正式主线必须落在30至900秒，边界值允许。"""
     try:
         actual = float(actual_duration_sec)
     except (TypeError, ValueError) as exc:

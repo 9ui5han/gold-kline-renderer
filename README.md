@@ -35,8 +35,10 @@ http://127.0.0.1:8000/docs
 | `PUBLIC_BASE_URL` | 云平台给你的 `https://...` 域名 | 否 |
 | `DATA_DIR` | `/tmp/gold-video` | 否 |
 | `MAX_AUDIO_MB` | `30` | 否 |
-| `MIN_RENDER_AUDIO_SECONDS` | `20` | 否 |
-| `MAX_RENDER_AUDIO_SECONDS` | `120` | 否 |
+| `MIN_RENDER_AUDIO_SECONDS` | `30` | 否 |
+| `MAX_RENDER_AUDIO_SECONDS` | `900` | 否 |
+| `MIN_TTS_AUDIO_SECONDS` | `30` | 否 |
+| `MAX_TTS_AUDIO_SECONDS` | `900` | 否 |
 | `MAX_AUDIO_VIDEO_DRIFT_SECONDS` | `0.2` | 否 |
 | `AI302_API_KEY` | 302.AI API Key | 是 |
 | `ELEVENLABS_MODEL_ID` | `eleven_v3` | 否 |

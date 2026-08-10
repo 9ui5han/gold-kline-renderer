@@ -60,11 +60,26 @@ class QwenSegmentContractTests(unittest.TestCase):
                 ])
             )
 
-    def test_audio_duration_contract_is_105_to_120_seconds(self):
-        main.validate_tts_duration_contract(105, 115)
-        main.validate_tts_duration_contract(120, 115)
-        with self.assertRaisesRegex(RuntimeError, "TTS_AUDIO_DURATION_OUT_OF_RANGE"):
-            main.validate_tts_duration_contract(104.9, 115)
+    def test_audio_duration_contract_is_30_to_900_seconds(self):
+        for duration in (30, 80, 240, 900):
+            with self.subTest(duration=duration):
+                main.validate_tts_duration_contract(duration, duration)
+        for duration in (29.9, 900.1):
+            with self.subTest(duration=duration):
+                with self.assertRaisesRegex(RuntimeError, "TTS_AUDIO_DURATION_OUT_OF_RANGE"):
+                    main.validate_tts_duration_contract(duration, 80)
+
+    def test_tts_request_model_accepts_eighty_seconds(self):
+        payload = payload_for([
+            {"order": 1, "text": "First sentence.", "pause_after_ms": 320},
+        ], target_duration_sec=80)
+        self.assertEqual(payload.target_duration_sec, 80)
+
+    def test_duration_validator_rejects_out_of_range_target(self):
+        for target in (29.9, 900.1):
+            with self.subTest(target=target):
+                with self.assertRaisesRegex(RuntimeError, "TTS_TARGET_DURATION_OUT_OF_RANGE"):
+                    main.validate_tts_duration_contract(80, target)
 
 
 if __name__ == "__main__":
