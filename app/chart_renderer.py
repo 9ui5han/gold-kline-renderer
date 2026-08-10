@@ -1657,7 +1657,7 @@ def render_tradingview_scene(
         width - 150,
         max_lines=2,
     )
-    subtitle_top = safe["safe_bottom"] - 190 if is_tiktok_safe else height - 215
+    subtitle_top = safe["safe_bottom"] - 158 if is_tiktok_safe else height - 215
     subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
     subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
     draw.rounded_rectangle(
