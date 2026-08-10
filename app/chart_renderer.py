@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +24,37 @@ SC_BOLD_FONT_CANDIDATES = (
     ("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0),
     ("/System/Library/Fonts/STHeiti Medium.ttc", 0),
 )
-FONT_SMOKE_TEXT = "关注关键支撑区，观察压力变化，黄金K线预测"
+FONT_SMOKE_TEXT = "Gold support resistance forecast"
 _FONT_VERIFIED = False
+
+VIDEO_LABELS = {
+    "last_closed_candle": "Last Closed Candle",
+    "current_view": "Current View",
+    "candle_time": "Candle Time",
+    "support": "Support",
+    "resistance": "Resistance",
+    "key_support_zone": "Key Support Zone",
+    "key_resistance_zone": "Key Resistance Zone",
+    "bullish_fvg": "Bullish FVG",
+    "bearish_fvg": "Bearish FVG",
+    "primary": "Primary",
+    "alternate": "Alternate",
+    "range_bound": "Range-bound",
+    "bullish": "Bullish",
+    "bearish": "Bearish",
+    "conditional_path": "Conditional Path",
+    "near_term": "Near Term",
+    "mid_term": "Mid Term",
+    "later": "Later",
+    "trend_scenarios": "Trend Scenarios",
+    "two_way_scenario": "Two-way Scenario",
+    "range_bullish": "Range, Bullish Bias",
+    "range_bearish": "Range, Bearish Bias",
+    "range_consolidation": "Range Consolidation",
+    "primary_alternate_paths": "Primary and Alternate Paths",
+    "potential_trend_path": "Potential Trend Path",
+    "utc": "UTC",
+}
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -96,12 +125,29 @@ def _price(value: float) -> str:
     return f"{float(value):,.2f}"
 
 
-def _time_label(value: str) -> str:
+def _utc_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _header_time_label(value: str) -> str:
     try:
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return parsed.strftime("%m-%d %H:%M")
+        return _utc_datetime(value).strftime("%Y-%m-%d %H:%M UTC")
     except Exception:
-        return str(value or "")[:10]
+        return str(value or "")
+
+
+def _axis_time_label(value: str) -> str:
+    try:
+        return _utc_datetime(value).strftime("%b %d %H:%M")
+    except Exception:
+        return str(value or "")[:16]
+
+
+def _time_label(value: str) -> str:
+    return _axis_time_label(value)
 
 
 def _wrap_text(
@@ -339,14 +385,14 @@ def _recent_fvg(
         third = candles[index]
         if float(third["low"]) > float(first["high"]):
             return (
-                "多头FVG",
+                VIDEO_LABELS["bullish_fvg"],
                 float(first["high"]),
                 float(third["low"]),
                 index,
             )
         if float(third["high"]) < float(first["low"]):
             return (
-                "空头FVG",
+                VIDEO_LABELS["bearish_fvg"],
                 float(third["high"]),
                 float(first["low"]),
                 index,
@@ -588,10 +634,14 @@ def _spread_label_positions(
 
 def _scenario_text(value: str) -> str:
     return {
-        "sideways": "区间震荡",
-        "up": "向上情景",
-        "down": "向下情景",
-    }.get(str(value or ""), "条件情景")
+        "sideways": VIDEO_LABELS["range_bound"],
+        "up": VIDEO_LABELS["bullish"],
+        "down": VIDEO_LABELS["bearish"],
+        "resistance_break": "Resistance Break",
+        "resistance_hold": "Resistance Hold",
+        "support_break": "Support Break",
+        "support_hold": "Support Hold",
+    }.get(str(value or ""), VIDEO_LABELS["conditional_path"])
 
 
 def _subtitle_at(
@@ -719,26 +769,26 @@ def render_tradingview_scene(
     narration = payload["narration"]
     support_start_sec = _cue_start(
         narration,
-        ("支撑关注", "支撑位"),
+        ("support", "Support"),
         duration * 0.34,
     )
     resistance_start_sec = _cue_start(
         narration,
-        ("压力关注", "压力位"),
+        ("resistance", "Resistance"),
         duration * 0.40,
     )
     level_start_sec = min(support_start_sec, resistance_start_sec)
     prediction_start_sec = _cue_start(
         narration,
         (
-            "基础情景",
-            "预测阶段",
-            "未来走势",
-            "接下来展示",
-            "预测K线",
-            "预测前段",
-            "结构路径",
-            "未来5小时",
+            "base scenario",
+            "prediction phase",
+            "future path",
+            "next we show",
+            "conditional path",
+            "forecast path",
+            "structure path",
+            "next five hours",
         ),
         duration * 0.62,
     )
@@ -895,6 +945,13 @@ def render_tradingview_scene(
                 font=axis_face,
                 fill="#787b86",
             )
+    # One explicit timezone marker applies to every x-axis timestamp.
+    draw.text(
+        (price_axis_x + 8, time_axis_y - 28),
+        VIDEO_LABELS["utc"],
+        font=axis_face,
+        fill="#787b86",
+    )
 
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
@@ -978,9 +1035,9 @@ def render_tradingview_scene(
         supports = analysis.get("support_levels") or []
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
-            levels_to_show.append((supports[0], "#2962ff", "支撑"))
+            levels_to_show.append((supports[0], "#2962ff", VIDEO_LABELS["support"]))
         if resistances and current_time >= resistance_start_sec:
-            levels_to_show.append((resistances[0], "#f59e0b", "压力"))
+            levels_to_show.append((resistances[0], "#f59e0b", VIDEO_LABELS["resistance"]))
 
         for level, color, name in levels_to_show:
             y = py(float(level))
@@ -1008,13 +1065,13 @@ def render_tradingview_scene(
                 "potential_buy_zones",
                 "#ede1f7",
                 "#8653a6",
-                "主要支撑区",
+                VIDEO_LABELS["key_support_zone"],
             ),
             (
                 "potential_sell_zones",
                 "#f1e3f6",
                 "#9c4dcc",
-                "强压力区",
+                VIDEO_LABELS["key_resistance_zone"],
             ),
         )
 
@@ -1062,7 +1119,7 @@ def render_tradingview_scene(
             draw,
             divider_x + 10,
             chart_top + 24,
-            "趋势推演",
+                VIDEO_LABELS["trend_scenarios"],
             label_face,
             "#2962ff",
         )
@@ -1104,7 +1161,7 @@ def render_tradingview_scene(
             fvg_x2 = chart_right
             fvg_y1 = py(fvg_high)
             fvg_y2 = py(fvg_low)
-            fvg_color = "#089981" if fvg_name == "多头FVG" else "#f23645"
+            fvg_color = "#089981" if fvg_name == VIDEO_LABELS["bullish_fvg"] else "#f23645"
             draw.rectangle(
                 (fvg_x1, fvg_y1, fvg_x2, fvg_y2),
                 outline=fvg_color,
@@ -1303,10 +1360,11 @@ def render_tradingview_scene(
                     ranked_structure_scenarios[1].get("scenario_id")
                 )
                 path_label = (
-                    f"主路径 {primary_name} · 备选 {alternate_name}"
+                    f"{VIDEO_LABELS['primary']} {primary_name} · "
+                    f"{VIDEO_LABELS['alternate']} {alternate_name}"
                 )
             else:
-                path_label = f"主路径 {primary_name}"
+                path_label = f"{VIDEO_LABELS['primary']} {primary_name}"
             _round_rect_label(
                 draw,
                 chart_left + (chart_right - chart_left) * 0.61,
@@ -1317,9 +1375,9 @@ def render_tradingview_scene(
             )
 
         for label, fraction in (
-            ("近期", 0.12),
-            ("中段", 0.50),
-            ("后段", 0.88),
+            (VIDEO_LABELS["near_term"], 0.12),
+            (VIDEO_LABELS["mid_term"], 0.50),
+            (VIDEO_LABELS["later"], 0.88),
         ):
             x = (
                 forecast_left
@@ -1428,16 +1486,16 @@ def render_tradingview_scene(
             neutral_threshold = max((pmax - pmin) * 0.025, 0.01)
             if use_range_path:
                 trend_color = "#00a86b"
-                trend_text = "双向情景"
+                trend_text = VIDEO_LABELS["two_way_scenario"]
             elif end_value > start_value + neutral_threshold:
                 trend_color = "#00a86b"
-                trend_text = "震荡偏多"
+                trend_text = VIDEO_LABELS["range_bullish"]
             elif end_value < start_value - neutral_threshold:
                 trend_color = "#00a86b"
-                trend_text = "震荡偏空"
+                trend_text = VIDEO_LABELS["range_bearish"]
             else:
                 trend_color = "#00a86b"
-                trend_text = "区间整理"
+                trend_text = VIDEO_LABELS["range_consolidation"]
 
             # The alternate path is lighter and appears just after the primary.
             if len(visible_alternate) >= 2:
@@ -1469,9 +1527,9 @@ def render_tradingview_scene(
                 chart_left + (chart_right - chart_left) * 0.61,
                 chart_top + 70,
                 (
-                    f"主要与备选路径 · {trend_text}"
+                    f"{VIDEO_LABELS['primary_alternate_paths']} · {trend_text}"
                     if use_range_path
-                    else f"趋势可能路径 · {trend_text}"
+                    else f"{VIDEO_LABELS['potential_trend_path']} · {trend_text}"
                 ),
                 label_face,
                 trend_color,
@@ -1482,9 +1540,9 @@ def render_tradingview_scene(
                 len(visible_history) + max(len(forecast_all) - 1, 1)
             )
             for label, fraction in (
-                ("近期", 0.12),
-                ("中段", 0.50),
-                ("后段", 0.88),
+                (VIDEO_LABELS["near_term"], 0.12),
+                (VIDEO_LABELS["mid_term"], 0.50),
+                (VIDEO_LABELS["later"], 0.88),
             ):
                 x = forecast_x1 + (forecast_x2 - forecast_x1) * fraction
                 draw.text(
@@ -1580,7 +1638,11 @@ def render_tradingview_scene(
         if prediction_phase
         else visible_history[-1]
     )
-    header_state = "最后真实K线" if prediction_phase else "当前显示"
+    header_state = (
+        VIDEO_LABELS["last_closed_candle"]
+        if prediction_phase
+        else VIDEO_LABELS["current_view"]
+    )
     draw.rectangle(
         (0, 0, width, 168),
         fill="#ffffff",
@@ -1598,7 +1660,8 @@ def render_tradingview_scene(
     )
     draw.text(
         (52, 72),
-        f"K线时间 {_time_label(latest.get('time', ''))}",
+        f"{VIDEO_LABELS['candle_time']}: "
+        f"{_header_time_label(latest.get('time', ''))}",
         font=meta_face,
         fill="#787b86",
     )
