@@ -644,6 +644,39 @@ def _scenario_text(value: str) -> str:
     }.get(str(value or ""), VIDEO_LABELS["conditional_path"])
 
 
+def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int]:
+    """Keep critical TikTok content outside platform overlay areas."""
+    if str(platform or "").lower() == "tiktok" and (width, height) == (1080, 1920):
+        return {
+            "safe_top": round(height * 0.12),
+            "safe_bottom": height - round(height * 0.22),
+            "safe_right": width - round(width * 0.15),
+            "safe_left": round(width * 0.05),
+        }
+    return {
+        "safe_top": 0,
+        "safe_bottom": height,
+        "safe_right": width,
+        "safe_left": 0,
+    }
+
+
+def _history_end_sec(payload: dict[str, Any], duration: float) -> float:
+    for cue in (payload.get("narration") or {}).get("subtitle_cues") or []:
+        if str(cue.get("segment_id") or "") == "technical_evidence":
+            try:
+                return min(duration, max(0.1, float(cue["end_sec"])))
+            except (KeyError, TypeError, ValueError):
+                break
+    try:
+        ratio = float((payload.get("timeline") or {}).get("history_ratio", 0.20))
+    except (TypeError, ValueError):
+        ratio = 0.20
+    if not 0.10 <= ratio <= 0.23:
+        ratio = 0.20
+    return max(0.1, duration * ratio)
+
+
 def _subtitle_at(
     narration: dict[str, Any],
     current_time: float,
@@ -700,6 +733,12 @@ def render_tradingview_scene(
 
     width = int(payload["video"]["width"])
     height = int(payload["video"]["height"])
+    safe = resolve_safe_layout(
+        width,
+        height,
+        payload.get("platform_profile", ""),
+    )
+    is_tiktok_safe = safe["safe_top"] > 0
     duration = float(
         payload.get("render_duration_sec")
         or payload.get("duration_target_sec")
@@ -816,7 +855,7 @@ def render_tradingview_scene(
     else:
         # Reveal the real market chronologically with the narration.
         initial_history_count = min(8, len(history))
-        history_reveal_end_sec = max(1.0, level_start_sec - 0.5)
+        history_reveal_end_sec = _history_end_sec(payload, duration)
         history_reveal = max(
             0.0,
             min(1.0, current_time / history_reveal_end_sec),
@@ -850,13 +889,14 @@ def render_tradingview_scene(
     label_face = _font(21, True)
     subtitle_face = _font(34, True)
 
-    chart_left = 48
-    chart_top = 188
+    chart_left = max(48, safe["safe_left"])
+    chart_top = safe["safe_top"] + 188 if is_tiktok_safe else 188
     # Reserve a dedicated lane on the right for exact price tags. Candles,
     # zones and the trend arrow never enter this lane.
     # Keep a wide right lane for price and market-structure names.
-    chart_right = width - 220
-    chart_bottom = height - 280
+    label_right = safe["safe_right"] - 8 if is_tiktok_safe else width - 8
+    chart_right = safe["safe_right"] - 170 if is_tiktok_safe else width - 220
+    chart_bottom = safe["safe_bottom"] - 210 if is_tiktok_safe else height - 280
     price_axis_x = chart_right
     time_axis_y = chart_bottom
     draw.rectangle(
@@ -1583,7 +1623,7 @@ def render_tradingview_scene(
             )
         _round_rect_label(
             draw,
-            width - 8,
+            label_right,
             y,
             text,
             axis_face,
@@ -1610,9 +1650,11 @@ def render_tradingview_scene(
         width - 150,
         max_lines=2,
     )
-    subtitle_top = height - 215
+    subtitle_top = safe["safe_bottom"] - 190 if is_tiktok_safe else height - 215
+    subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
+    subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
     draw.rounded_rectangle(
-        (48, subtitle_top, width - 48, height - 38),
+        (48, subtitle_top, subtitle_right, subtitle_bottom),
         radius=20,
         fill="#f4f4f6",
         outline="#d9dce3",
@@ -1622,7 +1664,7 @@ def render_tradingview_scene(
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((width - text_width) / 2, subtitle_top + 25 + line_no * 52),
+            ((48 + subtitle_right - text_width) / 2, subtitle_top + 25 + line_no * 52),
             line,
             font=subtitle_face,
             fill="#131722",
@@ -1643,23 +1685,26 @@ def render_tradingview_scene(
         if prediction_phase
         else VIDEO_LABELS["current_view"]
     )
+    header_top = safe["safe_top"] if is_tiktok_safe else 0
+    header_bottom = header_top + 168
+    header_right = safe["safe_right"] if is_tiktok_safe else width
     draw.rectangle(
-        (0, 0, width, 168),
+        (0, header_top, header_right, header_bottom),
         fill="#ffffff",
     )
     draw.line(
-        (0, 167, width, 167),
+        (0, header_bottom - 1, header_right, header_bottom - 1),
         fill="#d9dce3",
         width=2,
     )
     draw.text(
-        (52, 24),
+        (52, header_top + 24),
         f"{payload['symbol']} · {payload['timeframe']}",
         font=title_face,
         fill="#131722",
     )
     draw.text(
-        (52, 72),
+        (52, header_top + 72),
         f"{VIDEO_LABELS['candle_time']}: "
         f"{_header_time_label(latest.get('time', ''))}",
         font=meta_face,
@@ -1672,15 +1717,15 @@ def render_tradingview_scene(
         f"C {_price(latest['close'])}"
     )
     draw.text(
-        (52, 112),
+        (52, header_top + 112),
         real_ohlc,
         font=meta_face,
         fill="#131722",
     )
     _round_rect_label(
         draw,
-        width - 44,
-        48,
+        safe["safe_right"] - 18 if is_tiktok_safe else width - 44,
+        header_top + 48,
         header_state,
         axis_face,
         "#089981",

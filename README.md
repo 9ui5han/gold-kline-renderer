@@ -139,3 +139,20 @@ ElevenLabs 分段 TTS 同样要求 `narration_json.segments` 为非空数组，�
 文字转语音的模型。切换模型前先用一小段文本试听，再决定是否用于完整视频。
 `AI302_API_KEY` 可以填写纯密钥，也可以误带一次 `Bearer ` 前缀，服务启动时会自动去除首尾空格
 并避免重复拼接鉴权前缀。修改 Railway 环境变量后必须重新部署，服务进程才会读取新值。
+
+## MiniMax Speech 2.8 Turbo 逐句节奏
+
+当 `/v1/tts-jobs` 请求使用 `tts_provider=minimax` 时，服务读取
+`narration_json.segments` 中已经校验的英文、`effective_speed`（或 `speed`）和
+`pause_after_ms`。每个segment会在句末标点后的空白处继续拆成完整句子；价格小数（例如
+`4,273.04`）不会被拆开，也不会改写任何英文或数字。
+
+每句话调用一次302.AI的 `speech-2.8-turbo`，固定使用请求中的
+`minimax_voice_id`、`language_boost=English`、`emotion=calm`。句速只在segment基础值
+附近按 `-0.01 / 0 / +0.01` 确定性变化，并限制在 `0.90` 至 `1.01`；段内停顿为
+`200` 或 `220` 毫秒，段末保留Dify传入的 `pause_after_ms`。任意一句失败会让整个TTS任务
+失败，不会返回缺句音频。
+
+音频拼接和停顿插入后，字幕直接使用每句话的真实音频边界；成功结果的
+`alignment_method` 为 `minimax_sentence_boundary_contract`。自动重试由Dify保持关闭，
+避免付费请求重复执行。

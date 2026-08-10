@@ -369,7 +369,7 @@ class TTSProxyRequest(BaseModel):
         pattern=r"^[A-Za-z0-9_-]+$",
     )
     minimax_voice_id: str = Field(
-        default="audiobook_male_1",
+        default="English_Trustworthy_Man",
         pattern=r"^[A-Za-z0-9_-]+$",
     )
     glm_voice: Literal[
@@ -554,6 +554,97 @@ def parse_qwen3_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
     if normalize(joined_text) != normalize(payload.text):
         raise ValueError("narration_json分段文字与完整旁白不一致")
     return segments
+
+
+def parse_minimax_sentence_units(
+    payload: TTSProxyRequest,
+) -> list[dict[str, Any]]:
+    """把Dify已校验segment确定性拆成逐句MiniMax合成单元。
+
+    只在句末标点后的空白处分句，因此不会把4,273.04这类价格小数拆开。
+    每句话只在segment基础速度附近变化0.01；段内使用短停顿，段末保留
+    Dify给出的pause_after_ms。
+    """
+    raw_narration = payload.narration_json
+    if raw_narration is None:
+        raise ValueError("narration_json不能为空")
+    if isinstance(raw_narration, str):
+        if not raw_narration.strip():
+            raise ValueError("narration_json不能为空")
+        raw_narration = json.loads(raw_narration)
+    if not isinstance(raw_narration, dict):
+        raise ValueError("narration_json必须是对象")
+
+    raw_segments = raw_narration.get("segments") or []
+    if not isinstance(raw_segments, list) or not raw_segments:
+        raise ValueError("narration_json.segments不能为空")
+    if any(not isinstance(item, dict) for item in raw_segments):
+        raise ValueError("narration_json.segments包含非对象项")
+
+    ordered_segments = sorted(
+        enumerate(raw_segments, start=1),
+        key=lambda pair: int(pair[1].get("order") or pair[0]),
+    )
+    units: list[dict[str, Any]] = []
+    speed_offsets = (-0.01, 0.0, 0.01, 0.0)
+    for segment_index, item in ordered_segments:
+        text = str(item.get("text") or item.get("spoken_text") or "").strip()
+        if not text:
+            raise ValueError(f"MiniMax分段{segment_index}的文本为空")
+        sentences = [
+            sentence.strip()
+            for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text)
+            if sentence.strip()
+        ]
+        if not sentences:
+            raise ValueError(f"MiniMax分段{segment_index}没有有效句子")
+
+        raw_speed = item.get("effective_speed", item.get("speed"))
+        if isinstance(raw_speed, bool) or not isinstance(raw_speed, (int, float)):
+            raise ValueError(f"MiniMax分段{segment_index}的speed不是数字")
+        base_speed = float(raw_speed)
+        if not math.isfinite(base_speed) or not 0.90 <= base_speed <= 1.01:
+            raise ValueError(
+                f"MiniMax分段{segment_index}的speed超出0.90至1.01范围"
+            )
+
+        pause_value = item.get("pause_after_ms")
+        if isinstance(pause_value, bool) or not isinstance(pause_value, int):
+            raise ValueError(
+                f"MiniMax分段{segment_index}的pause_after_ms不是整数"
+            )
+        if not 180 <= pause_value <= 650:
+            raise ValueError(
+                f"MiniMax分段{segment_index}的pause_after_ms超出180至650毫秒范围"
+            )
+
+        segment_id = str(
+            item.get("segment_id") or f"segment_{segment_index}"
+        ).strip()
+        for sentence_index, sentence in enumerate(sentences, start=1):
+            speed = round(
+                min(1.01, max(0.90, base_speed + speed_offsets[(sentence_index - 1) % 4])),
+                2,
+            )
+            is_last = sentence_index == len(sentences)
+            internal_pause = 220 if re.search(r"\d", sentence) else (
+                200 if sentence_index % 2 else 220
+            )
+            units.append(
+                {
+                    "order": len(units) + 1,
+                    "segment_id": f"{segment_id}_{sentence_index}",
+                    "text": sentence,
+                    "speed": speed,
+                    "pause_after_ms": pause_value if is_last else internal_pause,
+                }
+            )
+
+    normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip()
+    joined_text = " ".join(item["text"] for item in units)
+    if normalize(joined_text) != normalize(payload.text):
+        raise ValueError("MiniMax逐句文字与完整旁白不一致")
+    return units
 
 
 def build_elevenlabs_narrative_chunks(
@@ -1197,30 +1288,38 @@ def generate_elevenlabs_segmented_tts(
     return segment_bounds
 
 
-def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
-    """按302.AI官方MiniMax Speech 2.8 HD格式生成试听音频。"""
+def generate_minimax_tts_segment(
+    text: str,
+    voice: str,
+    speed: float,
+    output_path: Path,
+) -> None:
+    """按302.AI当前MiniMax Speech 2.8 Turbo格式生成单句音频。"""
     response = httpx.post(
         "https://api.302.ai/minimaxi/v1/t2a_v2",
         headers=ai302_headers(),
         json={
-            "model": "speech-2.8-hd",
-            "text": payload.text,
+            "model": "speech-2.8-turbo",
+            "text": text,
             "stream": False,
             "voice_setting": {
-                "voice_id": payload.minimax_voice_id,
-                "speed": payload.speed_ratio,
+                "voice_id": voice,
+                "speed": speed,
                 "vol": 1,
                 "pitch": 0,
+                "emotion": "calm",
+                "text_normalization": True,
             },
-            "text_normalization": True,
             "audio_setting": {
                 "sample_rate": 32000,
                 "bitrate": 128000,
                 "format": "mp3",
-                "channel": 2,
+                "channel": 1,
             },
+            "language_boost": "English",
             "subtitle_enable": False,
             "output_format": "url",
+            "aigc_watermark": False,
         },
         timeout=180,
     )
@@ -1235,9 +1334,18 @@ def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
             },
         ) from exc
 
-    result = response.json()
+    try:
+        result = response.json()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_code": "302_MINIMAX_TTS_INVALID_JSON",
+                "error_message": str(exc),
+            },
+        ) from exc
     base_response = result.get("base_resp") or {}
-    if int(base_response.get("status_code") or 0) != 0:
+    if int(base_response.get("status_code", -1)) != 0:
         raise HTTPException(
             status_code=502,
             detail={
@@ -1256,6 +1364,81 @@ def generate_minimax_tts(payload: TTSProxyRequest, output_path: Path) -> None:
             },
         )
     download_audio(audio_url, output_path)
+
+
+def generate_minimax_segmented_tts(
+    payload: TTSProxyRequest,
+    output_path: Path,
+) -> list[dict[str, Any]]:
+    """逐句调用MiniMax，插入真实停顿并返回逐句字幕边界。"""
+    units = parse_minimax_sentence_units(payload)
+    if not units:
+        raise HTTPException(
+            status_code=400,
+            detail={"error_code": "MINIMAX_TTS_SENTENCES_EMPTY"},
+        )
+
+    unit_dir = WORK_DIR / f"minimax-{payload.request_id}-{uuid.uuid4()}"
+    unit_dir.mkdir(parents=True, exist_ok=True)
+    normalized_paths: list[Path] = []
+    pauses_after_ms: list[int] = []
+    speech_durations: list[float] = []
+    try:
+        for index, unit in enumerate(units):
+            source_path = unit_dir / f"sentence-{index:02d}.mp3"
+            normalized_path = unit_dir / f"sentence-{index:02d}.wav"
+            generate_minimax_tts_segment(
+                unit["text"],
+                payload.minimax_voice_id,
+                float(unit["speed"]),
+                source_path,
+            )
+            normalize_audio_to_wav(source_path, normalized_path)
+            normalized_paths.append(normalized_path)
+            pauses_after_ms.append(int(unit["pause_after_ms"]))
+            speech_durations.append(probe_duration(normalized_path))
+            logger.info(
+                "MINIMAX_TTS_SENTENCE_COMPLETED request_id=%s sentence=%s/%s "
+                "speed=%.2f pause_after_ms=%s",
+                payload.request_id,
+                index + 1,
+                len(units),
+                float(unit["speed"]),
+                pauses_after_ms[-1],
+            )
+
+        combined_mp3 = unit_dir / "combined.mp3"
+        concatenate_audio_with_pauses(
+            normalized_paths,
+            pauses_after_ms,
+            combined_mp3,
+            unit_dir,
+        )
+        combined_wav = unit_dir / "combined.wav"
+        normalize_audio_to_wav(combined_mp3, combined_wav)
+
+        raw_duration = probe_duration(combined_wav)
+        scale = 1.0
+        if payload.target_duration_sec is not None:
+            _, scale = normalize_audio_to_target_duration(
+                combined_wav,
+                output_path,
+                float(payload.target_duration_sec),
+            )
+        else:
+            normalize_audio_to_wav(combined_wav, output_path)
+
+        if scale == 1.0:
+            output_duration = probe_duration(output_path)
+            if raw_duration > 0 and abs(output_duration - raw_duration) > 0.25:
+                raise RuntimeError("MINIMAX_TTS_AUDIO_CONCAT_DURATION_MISMATCH")
+        return build_qwen_segment_bounds(
+            units,
+            speech_durations,
+            scale=scale,
+        )
+    finally:
+        shutil.rmtree(unit_dir, ignore_errors=True)
 
 
 def generate_indextts2_tts(payload: TTSProxyRequest, output_path: Path) -> None:
@@ -1865,6 +2048,7 @@ def build_segment_boundary_subtitle_cues(
                 "start_sec": start_sec,
                 "end_sec": end_sec,
                 "text": text,
+                "segment_id": str(bound.get("segment_id") or ""),
             }
         )
 
@@ -2055,7 +2239,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
 
     audio_format = (
         "mp3"
-        if payload.tts_provider in {"openai", "elevenlabs", "minimax"}
+        if payload.tts_provider in {"openai", "elevenlabs"}
         else "wav"
     )
     audio_name = f"tts-{uuid.uuid4()}.{audio_format}"
@@ -2063,6 +2247,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     request_work_dir = WORK_DIR / f"tts-{payload.request_id}-{uuid.uuid4()}"
     request_work_dir.mkdir(parents=True, exist_ok=True)
     elevenlabs_segment_bounds: list[dict[str, Any]] = []
+    minimax_segment_bounds: list[dict[str, Any]] = []
     qwen_segment_bounds: list[dict[str, Any]] = []
 
     try:
@@ -2075,7 +2260,10 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
                 request_work_dir,
             )
         elif payload.tts_provider == "minimax":
-            generate_minimax_tts(payload, audio_path)
+            minimax_segment_bounds = generate_minimax_segmented_tts(
+                payload,
+                audio_path,
+            )
         elif payload.tts_provider == "indextts2":
             generate_indextts2_tts(payload, audio_path)
         elif payload.tts_provider == "glm_tts":
@@ -2133,7 +2321,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         probe_duration(audio_path),
         3,
     )
-    if payload.tts_provider == "qwen3_tts":
+    if payload.tts_provider in {"minimax", "qwen3_tts"}:
         validate_tts_duration_contract(
             duration_sec,
             payload.target_duration_sec,
@@ -2146,7 +2334,7 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             "elevenlabs_v3_source_text_alignment_bounds"
             if payload.tts_provider == "elevenlabs"
             else (
-                "minimax_speech_2_8_hd_source_text_alignment_bounds"
+                "minimax_speech_2_8_turbo_sentence_bounds"
                 if payload.tts_provider == "minimax"
                 else (
                     "indextts2_source_text_alignment_bounds"
@@ -2165,7 +2353,15 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         )
     )
 
-    if payload.tts_provider == "qwen3_tts":
+    if payload.tts_provider == "minimax":
+        subtitle_cues = build_segment_boundary_subtitle_cues(
+            minimax_segment_bounds,
+            duration_sec,
+            payload.text,
+        )
+        alignment_language = whisperx_language_for_text(payload.text)
+        alignment_method = "minimax_sentence_boundary_contract"
+    elif payload.tts_provider == "qwen3_tts":
         subtitle_cues = build_segment_boundary_subtitle_cues(
             qwen_segment_bounds,
             duration_sec,
@@ -2726,6 +2922,25 @@ def download_audio(url: str, target: Path) -> None:
                 output.write(chunk)
 
 
+def resolve_history_end_sec(payload: dict[str, Any], duration: float) -> float:
+    """Use an aligned segment boundary, then fall back to 20% of real audio."""
+    narration = payload.get("narration") or {}
+    for cue in narration.get("subtitle_cues") or []:
+        if str(cue.get("segment_id") or "") == "technical_evidence":
+            try:
+                return min(float(duration), max(0.1, float(cue["end_sec"])))
+            except (KeyError, TypeError, ValueError):
+                break
+    timeline = payload.get("timeline") or {}
+    try:
+        ratio = float(timeline.get("history_ratio", 0.20))
+    except (TypeError, ValueError):
+        ratio = 0.20
+    if not 0.10 <= ratio <= 0.23:
+        ratio = 0.20
+    return max(0.1, float(duration) * ratio)
+
+
 def build_scene_intervals(
     payload: dict[str, Any],
     duration: float,
@@ -2750,42 +2965,41 @@ def build_scene_intervals(
     if not cues:
         scene_count = 10
         seconds_per_scene = duration / scene_count
-        return [
+        intervals = [
             (
                 index * seconds_per_scene,
                 (index + 1) * seconds_per_scene,
             )
             for index in range(scene_count)
         ]
-
-    intervals: list[tuple[float, float]] = []
-    cursor = 0.0
-
-    for start, end in cues:
-        start = max(cursor, start)
-
-        if start > cursor:
-            intervals.append((cursor, start))
-
-        if end > start:
-            intervals.append((start, end))
-            cursor = end
-
-    if cursor < duration:
-        intervals.append((cursor, duration))
+    else:
+        intervals = []
+        cursor = 0.0
+        for start, end in cues:
+            start = max(cursor, start)
+            if start > cursor:
+                intervals.append((cursor, start))
+            if end > start:
+                intervals.append((start, end))
+                cursor = end
+        if cursor < duration:
+            intervals.append((cursor, duration))
 
     # The TradingView theme animates candles against narration. Subdivide long
     # subtitle intervals so the renderer receives a new visual state every
     # fifth-second instead of holding one still image for an entire sentence.
     if payload.get("style", {}).get("theme") == "light_tradingview":
         animated_intervals: list[tuple[float, float]] = []
-        step_seconds = 0.2
+        history_end = resolve_history_end_sec(payload, duration)
 
         for start, end in intervals:
             frame_start = start
 
             while frame_start < end:
+                step_seconds = 0.1 if frame_start < history_end else 0.2
                 frame_end = min(end, frame_start + step_seconds)
+                if frame_start < history_end < frame_end:
+                    frame_end = history_end
                 animated_intervals.append((frame_start, frame_end))
                 frame_start = frame_end
 
