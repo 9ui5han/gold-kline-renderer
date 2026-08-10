@@ -1,6 +1,22 @@
+import ast
 import unittest
+from pathlib import Path
+from typing import Any
 
-from app.main import build_scene_intervals, resolve_history_end_sec
+
+SOURCE = Path("app/main.py").resolve()
+TREE = ast.parse(SOURCE.read_text(encoding="utf-8"))
+FUNCTIONS = {
+    node.name: node
+    for node in TREE.body
+    if isinstance(node, ast.FunctionDef)
+    and node.name in {"resolve_history_end_sec", "build_scene_intervals"}
+}
+MODULE = ast.Module(body=list(FUNCTIONS.values()), type_ignores=[])
+namespace = {"Any": Any}
+exec(compile(ast.fix_missing_locations(MODULE), str(SOURCE), "exec"), namespace)
+resolve_history_end_sec = namespace["resolve_history_end_sec"]
+build_scene_intervals = namespace["build_scene_intervals"]
 
 
 def payload(cues=None):

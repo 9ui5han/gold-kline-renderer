@@ -882,6 +882,13 @@ def render_tradingview_scene(
 
     image = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(image)
+    if is_tiktok_safe:
+        # Safe zones keep the same visual surface; only critical content is
+        # excluded from them. A faint grid avoids visible blank borders.
+        for grid_y in range(0, height + 1, 120):
+            draw.line((0, grid_y, width, grid_y), fill="#f7f8fa", width=1)
+        for grid_x in range(0, width + 1, 120):
+            draw.line((grid_x, 0, grid_x, height), fill="#f7f8fa", width=1)
 
     title_face = _font(36, True)
     meta_face = _font(24)
@@ -1415,9 +1422,9 @@ def render_tradingview_scene(
             )
 
         for label, fraction in (
-            (VIDEO_LABELS["near_term"], 0.12),
-            (VIDEO_LABELS["mid_term"], 0.50),
-            (VIDEO_LABELS["later"], 0.88),
+            ("Near", 0.12),
+            ("Mid", 0.50),
+            ("Later", 0.88),
         ):
             x = (
                 forecast_left
@@ -1426,7 +1433,7 @@ def render_tradingview_scene(
             draw.text(
                 (x - 22, chart_bottom - 48),
                 label,
-                font=axis_face,
+                font=_font(15),
                 fill="#787b86",
             )
         structured_path_rendered = True
@@ -1580,15 +1587,15 @@ def render_tradingview_scene(
                 len(visible_history) + max(len(forecast_all) - 1, 1)
             )
             for label, fraction in (
-                (VIDEO_LABELS["near_term"], 0.12),
-                (VIDEO_LABELS["mid_term"], 0.50),
-                (VIDEO_LABELS["later"], 0.88),
+                ("Near", 0.12),
+                ("Mid", 0.50),
+                ("Later", 0.88),
             ):
                 x = forecast_x1 + (forecast_x2 - forecast_x1) * fraction
                 draw.text(
                     (x - 22, chart_bottom - 48),
                     label,
-                    font=axis_face,
+                    font=_font(15),
                     fill="#787b86",
                 )
 

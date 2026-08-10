@@ -2995,7 +2995,7 @@ def build_scene_intervals(
         for start, end in intervals:
             frame_start = start
 
-            while frame_start < end:
+            while frame_start < end - 1e-9:
                 step_seconds = 0.1 if frame_start < history_end else 0.2
                 frame_end = min(end, frame_start + step_seconds)
                 if frame_start < history_end < frame_end:
