@@ -563,11 +563,10 @@ def parse_qwen3_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
 def parse_minimax_sentence_units(
     payload: TTSProxyRequest,
 ) -> list[dict[str, Any]]:
-    """把Dify已校验segment确定性拆成逐句MiniMax合成单元。
+    """把Dify已校验segment保留为完整MiniMax合成单元。
 
-    只在句末标点后的空白处分句，因此不会把4,273.04这类价格小数拆开。
-    每句话只在segment基础速度附近变化0.01；段内使用短停顿，段末保留
-    Dify给出的pause_after_ms。
+    每个逻辑段只请求一次MiniMax，直接使用上游已校验实际语速，
+    段末保留Dify给出的pause_after_ms。
     """
     raw_narration = payload.narration_json
     if raw_narration is None:
@@ -590,16 +589,11 @@ def parse_minimax_sentence_units(
         key=lambda pair: int(pair[1].get("order") or pair[0]),
     )
     units: list[dict[str, Any]] = []
-    speed_offsets = (-0.01, 0.0, 0.01, 0.0)
     for segment_index, item in ordered_segments:
         text = str(item.get("text") or item.get("spoken_text") or "").strip()
         if not text:
             raise ValueError(f"MiniMax分段{segment_index}的文本为空")
-        sentences = [
-            sentence.strip()
-            for sentence in re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", text)
-            if sentence.strip()
-        ]
+        sentences = [text]
         if not sentences:
             raise ValueError(f"MiniMax分段{segment_index}没有有效句子")
 
@@ -656,10 +650,7 @@ def parse_minimax_sentence_units(
             item.get("segment_id") or f"segment_{segment_index}"
         ).strip()
         for sentence_index, sentence in enumerate(sentences, start=1):
-            speed = round(
-                min(2.0, max(0.5, base_speed + speed_offsets[(sentence_index - 1) % 4])),
-                2,
-            )
+            speed = round(base_speed, 2)
             is_last = sentence_index == len(sentences)
             internal_pause = 220 if re.search(r"\d", sentence) else (
                 200 if sentence_index % 2 else 220
@@ -889,13 +880,15 @@ def concatenate_audio(parts: list[Path], output_path: Path) -> None:
 
 
 def normalize_audio_to_wav(input_path: Path, output_path: Path) -> None:
-    """把不同来源音频统一成ffmpeg concat可稳定处理的单声道WAV。"""
+    """统一为WAV，并在两端加8毫秒淡入淡出避免拼接爆音。"""
     run_command(
         [
             "ffmpeg",
             "-y",
             "-i",
             str(input_path),
+            "-af",
+            "afade=t=in:st=0:d=0.008,areverse,afade=t=in:st=0:d=0.008,areverse",
             "-ar",
             "44100",
             "-ac",
@@ -937,7 +930,7 @@ def concatenate_audio_with_pauses(
     output_path: Path,
     work_dir: Path,
 ) -> None:
-    """插入段间静音并编码为MP3；最后一段停顿不追加到末尾。"""
+    """仅用WAV插入段间静音并拼接。"""
     parts: list[Path] = []
     for index, segment_path in enumerate(normalized_segments):
         parts.append(segment_path)
@@ -948,21 +941,7 @@ def concatenate_audio_with_pauses(
                 create_silence_wav(pause_ms, silence_path)
                 parts.append(silence_path)
 
-    combined_wav = work_dir / "combined.wav"
-    concatenate_audio(parts, combined_wav)
-    run_command(
-        [
-            "ffmpeg",
-            "-y",
-            "-i",
-            str(combined_wav),
-            "-c:a",
-            "libmp3lame",
-            "-b:a",
-            "128k",
-            str(output_path),
-        ]
-    )
+    concatenate_audio(parts, output_path)
 
 
 def validate_tts_duration_contract(
@@ -1025,6 +1004,12 @@ def normalize_audio_to_target_duration(
         raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
     target = float(target_duration_sec)
     ratio = raw_duration / target
+    if not 0.97 <= ratio <= 1.03:
+        raise RuntimeError(
+            "TTS_NARRATION_LENGTH_MISMATCH:"
+            f"raw={raw_duration:.3f};target={target:.3f};"
+            f"word_multiplier={target / raw_duration:.4f};allowed_tempo=0.97-1.03"
+        )
     filter_chain = _atempo_filter_for_ratio(ratio)
     run_command(
         [
@@ -1432,7 +1417,7 @@ def generate_minimax_segmented_tts(
             pauses_after_ms.append(int(unit["pause_after_ms"]))
             speech_durations.append(probe_duration(normalized_path))
             logger.info(
-                "MINIMAX_TTS_SENTENCE_COMPLETED request_id=%s sentence=%s/%s "
+                "MINIMAX_TTS_SEGMENT_COMPLETED request_id=%s segment=%s/%s "
                 "speed=%.2f pause_after_ms=%s",
                 payload.request_id,
                 index + 1,
@@ -1441,15 +1426,13 @@ def generate_minimax_segmented_tts(
                 pauses_after_ms[-1],
             )
 
-        combined_mp3 = unit_dir / "combined.mp3"
+        combined_wav = unit_dir / "combined.wav"
         concatenate_audio_with_pauses(
             normalized_paths,
             pauses_after_ms,
-            combined_mp3,
+            combined_wav,
             unit_dir,
         )
-        combined_wav = unit_dir / "combined.wav"
-        normalize_audio_to_wav(combined_mp3, combined_wav)
 
         raw_duration = probe_duration(combined_wav)
         scale = 1.0
