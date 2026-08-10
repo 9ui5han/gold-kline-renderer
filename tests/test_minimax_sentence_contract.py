@@ -51,6 +51,32 @@ class MiniMaxSentenceContractTests(unittest.TestCase):
             0.02,
         )
 
+    def test_parser_combines_global_and_segment_speed(self):
+        payload = payload_for([{
+            "order": 1,
+            "segment_id": "opening",
+            "text": "First sentence. Second sentence.",
+            "speed": 1.01,
+            "effective_speed": 1.091,
+            "pause_after_ms": 300,
+        }])
+        payload.speed_ratio = 1.08
+        units = main.parse_minimax_sentence_units(payload)
+        self.assertEqual([unit["speed"] for unit in units], [1.08, 1.09])
+
+    def test_parser_rejects_inconsistent_effective_speed(self):
+        payload = payload_for([{
+            "order": 1,
+            "segment_id": "opening",
+            "text": "Opening sentence.",
+            "speed": 1.01,
+            "effective_speed": 0.95,
+            "pause_after_ms": 300,
+        }])
+        payload.speed_ratio = 1.08
+        with self.assertRaisesRegex(ValueError, "effective_speed"):
+            main.parse_minimax_sentence_units(payload)
+
     def test_parser_rejects_missing_speed_before_paid_requests(self):
         with self.assertRaisesRegex(ValueError, "speed"):
             main.parse_minimax_sentence_units(payload_for([{

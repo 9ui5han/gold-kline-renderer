@@ -603,13 +603,43 @@ def parse_minimax_sentence_units(
         if not sentences:
             raise ValueError(f"MiniMax分段{segment_index}没有有效句子")
 
-        raw_speed = item.get("effective_speed", item.get("speed"))
-        if isinstance(raw_speed, bool) or not isinstance(raw_speed, (int, float)):
+        raw_segment_speed = item.get("speed")
+        raw_effective_speed = item.get("effective_speed")
+        if raw_segment_speed is None and raw_effective_speed is None:
             raise ValueError(f"MiniMax分段{segment_index}的speed不是数字")
-        base_speed = float(raw_speed)
-        if not math.isfinite(base_speed) or not 0.90 <= base_speed <= 1.01:
+        if raw_segment_speed is not None:
+            if isinstance(raw_segment_speed, bool) or not isinstance(
+                raw_segment_speed, (int, float)
+            ):
+                raise ValueError(f"MiniMax分段{segment_index}的speed不是数字")
+            segment_speed = float(raw_segment_speed)
+            if not math.isfinite(segment_speed) or not 0.85 <= segment_speed <= 1.05:
+                raise ValueError(
+                    f"MiniMax分段{segment_index}的speed超出0.85至1.05范围"
+                )
+            base_speed = float(payload.speed_ratio) * segment_speed
+            if raw_effective_speed is not None:
+                if isinstance(raw_effective_speed, bool) or not isinstance(
+                    raw_effective_speed, (int, float)
+                ):
+                    raise ValueError(
+                        f"MiniMax分段{segment_index}的effective_speed不是数字"
+                    )
+                if abs(float(raw_effective_speed) - base_speed) > 0.0015:
+                    raise ValueError(
+                        f"MiniMax分段{segment_index}的effective_speed与全局语速不一致"
+                    )
+        else:
+            if isinstance(raw_effective_speed, bool) or not isinstance(
+                raw_effective_speed, (int, float)
+            ):
+                raise ValueError(
+                    f"MiniMax分段{segment_index}的effective_speed不是数字"
+                )
+            base_speed = float(raw_effective_speed)
+        if not math.isfinite(base_speed) or not 0.5 <= base_speed <= 2.0:
             raise ValueError(
-                f"MiniMax分段{segment_index}的speed超出0.90至1.01范围"
+                f"MiniMax分段{segment_index}的实际speed超出0.5至2.0范围"
             )
 
         pause_value = item.get("pause_after_ms")
@@ -627,7 +657,7 @@ def parse_minimax_sentence_units(
         ).strip()
         for sentence_index, sentence in enumerate(sentences, start=1):
             speed = round(
-                min(1.01, max(0.90, base_speed + speed_offsets[(sentence_index - 1) % 4])),
+                min(2.0, max(0.5, base_speed + speed_offsets[(sentence_index - 1) % 4])),
                 2,
             )
             is_last = sentence_index == len(sentences)
