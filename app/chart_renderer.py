@@ -1020,6 +1020,31 @@ def _subtitle_at(
     return str(narration.get("full_text") or "")
 
 
+def _chinese_subtitle_at(
+    narration: dict[str, Any],
+    current_time: float,
+) -> str:
+    """Resolve display-only Chinese by the active English cue's segment id."""
+    active_segment_id = ""
+    for cue in narration.get("subtitle_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        start = float(cue.get("start_sec") or 0)
+        end = float(cue.get("end_sec") or 0)
+        if start <= current_time < end:
+            active_segment_id = re.sub(
+                r"_\d+$", "",
+                str(cue.get("parent_segment_id") or cue.get("segment_id") or ""),
+            )
+            break
+    if not active_segment_id:
+        return ""
+    for segment in narration.get("bilingual_segments") or []:
+        if isinstance(segment, dict) and str(segment.get("segment_id") or "") == active_segment_id:
+            return str(segment.get("chinese_text") or "").strip()
+    return ""
+
+
 def _cue_start(
     narration: dict[str, Any],
     keywords: tuple[str, ...],
@@ -1258,7 +1283,8 @@ def render_tradingview_scene(
     meta_face = _font(24)
     axis_face = _font(20)
     label_face = _font(21, True)
-    subtitle_face = _font(34, True)
+    subtitle_face = _font(30, True)
+    subtitle_zh_face = _font(27, True)
 
     chart_left = max(48, safe["safe_left"])
     chart_top = safe["safe_top"] + 188 if is_tiktok_safe else 188
@@ -2074,8 +2100,9 @@ def render_tradingview_scene(
 
     # Compact subtitle area; narration and timing are preserved unchanged.
     subtitle = _subtitle_at(narration, current_time, progress)
+    subtitle_zh = _chinese_subtitle_at(narration, current_time)
     subtitle_left = safe["safe_left"] if is_tiktok_safe else 48
-    subtitle_top = safe["safe_bottom"] - 158 if is_tiktok_safe else height - 215
+    subtitle_top = safe["safe_bottom"] - 242 if is_tiktok_safe else height - 285
     subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
     subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
     subtitle_lines = _wrap_text(
@@ -2092,15 +2119,34 @@ def render_tradingview_scene(
         outline="#d9dce3",
         width=1,
     )
+    english_y = subtitle_top + 18
     for line_no, line in enumerate(subtitle_lines):
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((subtitle_left + subtitle_right - text_width) / 2, subtitle_top + 25 + line_no * 52),
+            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 43),
             line,
             font=subtitle_face,
             fill="#131722",
         )
+    if subtitle_zh:
+        chinese_lines = _wrap_text(
+            draw,
+            subtitle_zh,
+            subtitle_zh_face,
+            subtitle_right - subtitle_left - 54,
+            max_lines=2,
+        )
+        chinese_y = subtitle_top + 112
+        for line_no, line in enumerate(chinese_lines):
+            bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
+            text_width = bbox[2] - bbox[0]
+            draw.text(
+                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 39),
+                line,
+                font=subtitle_zh_face,
+                fill="#4b5563",
+            )
 
     # Persistent disclosure stays in the chart footer requested by the user.
     # Price projection and right-side labels stop above this reserved strip;
