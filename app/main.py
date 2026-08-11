@@ -218,7 +218,10 @@ class RenderRequest(BaseModel):
             raise ValueError("timeline.stage_word_tolerance无效")
         timeline["stage_word_tolerance"] = tolerance
         strategy = timeline.get("stage_budget_strategy", "legacy-unspecified")
-        if strategy not in {"legacy-unspecified", "shared-total-cap-v1"}:
+        if strategy not in {
+            "legacy-unspecified", "shared-total-cap-v1",
+            "adaptive-shared-total-v2",
+        }:
             raise ValueError("timeline.stage_budget_strategy无效")
         timeline["stage_budget_strategy"] = strategy
         visual_sync = timeline.get("visual_sync_strategy", "legacy-time-ratio")

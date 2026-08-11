@@ -19,7 +19,7 @@ def request_payload():
             "schema_version": "media-timeline-v1",
             "history_ratio": 0.20,
             "stage_word_tolerance": 7,
-            "stage_budget_strategy": "shared-total-cap-v1",
+            "stage_budget_strategy": "adaptive-shared-total-v2",
             "visual_sync_strategy": "segment-id-v1",
             "history_source_candles": 60,
             "history_window_candles": 40,
@@ -38,7 +38,7 @@ class RailwayTimelineContractTests(unittest.TestCase):
         self.assertEqual(model.model_dump()["timeline"]["stage_word_tolerance"], 7)
         self.assertEqual(
             model.model_dump()["timeline"]["stage_budget_strategy"],
-            "shared-total-cap-v1",
+            "adaptive-shared-total-v2",
         )
         self.assertEqual(
             model.model_dump()["timeline"]["visual_sync_strategy"],
