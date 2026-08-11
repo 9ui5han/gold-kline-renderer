@@ -86,6 +86,10 @@ MIN_TTS_AUDIO_SECONDS = float(
 MAX_TTS_AUDIO_SECONDS = float(
     os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
 )
+MAX_TTS_TARGET_OVERRUN_SECONDS = max(
+    0.0,
+    float(os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "3")),
+)
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
 )
@@ -1067,17 +1071,30 @@ def normalize_audio_to_target_duration(
     output_path: Path,
     target_duration_sec: float,
 ) -> tuple[float, float]:
-    """轻微变速到目标时长，并返回(原时长,缩放后的时间比例)。"""
+    """轻微变速；成片可比计划时长最多长3秒，不截断尾音。"""
     raw_duration = probe_duration(input_path)
     if not math.isfinite(raw_duration) or raw_duration <= 0:
         raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
     target = float(target_duration_sec)
-    ratio = raw_duration / target
-    if not 0.97 <= ratio <= 1.03:
+    requested_ratio = raw_duration / target
+    if requested_ratio < 0.97:
         raise RuntimeError(
             "TTS_NARRATION_LENGTH_MISMATCH:"
             f"raw={raw_duration:.3f};target={target:.3f};"
-            f"word_multiplier={target / raw_duration:.4f};allowed_tempo=0.97-1.03"
+            f"word_multiplier={target / raw_duration:.4f};"
+            "allowed_tempo=0.97-1.03;"
+            f"allowed_overrun_sec={MAX_TTS_TARGET_OVERRUN_SECONDS:.3f}"
+        )
+    ratio = min(requested_ratio, 1.03)
+    output_target = raw_duration / ratio
+    if output_target > target + MAX_TTS_TARGET_OVERRUN_SECONDS:
+        raise RuntimeError(
+            "TTS_NARRATION_LENGTH_MISMATCH:"
+            f"raw={raw_duration:.3f};target={target:.3f};"
+            f"clamped={output_target:.3f};"
+            f"word_multiplier={target / raw_duration:.4f};"
+            "allowed_tempo=0.97-1.03;"
+            f"allowed_overrun_sec={MAX_TTS_TARGET_OVERRUN_SECONDS:.3f}"
         )
     filter_chain = _atempo_filter_for_ratio(ratio)
     run_command(
@@ -1089,7 +1106,7 @@ def normalize_audio_to_target_duration(
             "-filter:a",
             filter_chain,
             "-t",
-            f"{target:.3f}",
+            f"{output_target:.3f}",
             "-ar",
             "44100",
             "-ac",
@@ -1100,7 +1117,7 @@ def normalize_audio_to_target_duration(
         ]
     )
     normalized_duration = probe_duration(output_path)
-    if normalized_duration < target - 0.05:
+    if normalized_duration < output_target - 0.05:
         # 编码四舍五入造成的极短尾差用静音补齐，不改变任何segment边界比例。
         run_command(
             [
@@ -1109,9 +1126,9 @@ def normalize_audio_to_target_duration(
                 "-i",
                 str(output_path),
                 "-af",
-                f"apad=pad_dur={target - normalized_duration:.3f}",
+                f"apad=pad_dur={output_target - normalized_duration:.3f}",
                 "-t",
-                f"{target:.3f}",
+                f"{output_target:.3f}",
                 "-ar",
                 "44100",
                 "-ac",
@@ -1125,10 +1142,10 @@ def normalize_audio_to_target_duration(
         padded_duration = probe_duration(padded_path)
         shutil.move(padded_path, output_path)
         normalized_duration = padded_duration
-    if abs(normalized_duration - target) > 0.25:
+    if abs(normalized_duration - output_target) > 0.25:
         raise RuntimeError(
             "TTS_AUDIO_DURATION_NORMALIZATION_FAILED:"
-            f"{normalized_duration:.3f}!={target:.3f}"
+            f"{normalized_duration:.3f}!={output_target:.3f}"
         )
     return raw_duration, normalized_duration / raw_duration
 

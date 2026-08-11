@@ -39,6 +39,7 @@ http://127.0.0.1:8000/docs
 | `MAX_RENDER_AUDIO_SECONDS` | `900` | 否 |
 | `MIN_TTS_AUDIO_SECONDS` | `30` | 否 |
 | `MAX_TTS_AUDIO_SECONDS` | `900` | 否 |
+| `MAX_TTS_TARGET_OVERRUN_SECONDS` | `3` | 否；轻微变速后允许成片比计划时长最多增加的秒数 |
 | `MAX_AUDIO_VIDEO_DRIFT_SECONDS` | `0.2` | 否 |
 | `AI302_API_KEY` | 302.AI API Key | 是 |
 | `ELEVENLABS_MODEL_ID` | `eleven_v3` | 否 |
