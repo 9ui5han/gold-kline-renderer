@@ -6,6 +6,8 @@ from app.chart_renderer import (
     _partial_polyline,
     _segment_state,
     _segment_visual_path,
+    _visible_segment_paths,
+    PREDICTION_SEGMENT_COLORS,
 )
 
 
@@ -69,6 +71,48 @@ class SegmentVisualSyncTests(unittest.TestCase):
             _latest_prediction_segment_id(narration, 35),
             "support_break",
         )
+
+    def test_started_paths_accumulate_and_use_four_fixed_colors(self):
+        narration = {"subtitle_cues": [
+            {"segment_id": segment_id, "start_sec": index * 10, "end_sec": index * 10 + 8}
+            for index, segment_id in enumerate([
+                "resistance_break", "resistance_hold", "support_break", "support_hold",
+            ], start=1)
+        ]}
+        paths = {"segment_paths": {
+            segment_id: [
+                {"time_ratio": 0, "resolved_value": 1},
+                {"time_ratio": 1, "resolved_value": 2},
+            ]
+            for segment_id in PREDICTION_SEGMENT_COLORS
+        }}
+        during_third = _visible_segment_paths(paths, narration, 35)
+        self.assertEqual(
+            [item[0] for item in during_third],
+            ["resistance_break", "resistance_hold", "support_break"],
+        )
+        self.assertEqual([item[2] for item in during_third[:2]], [1.0, 1.0])
+        self.assertGreater(during_third[2][2], 0)
+        self.assertLess(during_third[2][2], 1)
+        after_all = _visible_segment_paths(paths, narration, 60)
+        self.assertEqual(len(after_all), 4)
+        self.assertEqual(len(set(PREDICTION_SEGMENT_COLORS.values())), 4)
+
+    def test_split_segment_pause_holds_path_progress(self):
+        narration = {"subtitle_cues": [
+            {"segment_id": "support_break_1", "parent_segment_id": "support_break",
+             "start_sec": 10, "end_sec": 12},
+            {"segment_id": "support_break_2", "parent_segment_id": "support_break",
+             "start_sec": 14, "end_sec": 16},
+        ]}
+        paths = {"segment_paths": {"support_break": [
+            {"time_ratio": 0, "resolved_value": 2},
+            {"time_ratio": 1, "resolved_value": 1},
+        ]}}
+        pause_start = _visible_segment_paths(paths, narration, 12)[0][2]
+        pause_middle = _visible_segment_paths(paths, narration, 13)[0][2]
+        self.assertEqual(pause_start, 0.5)
+        self.assertEqual(pause_middle, pause_start)
 
 
 if __name__ == "__main__":

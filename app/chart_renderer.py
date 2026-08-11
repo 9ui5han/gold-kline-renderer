@@ -375,6 +375,19 @@ def _qualitative_range_paths(
     )
 
 
+def _observation_zones(
+    analysis: dict[str, Any],
+    plural_key: str,
+) -> list[dict[str, Any]]:
+    """Accept both the deployed singular facts contract and legacy arrays."""
+    plural = analysis.get(plural_key)
+    if isinstance(plural, list):
+        return [zone for zone in plural if isinstance(zone, dict)]
+    singular_key = plural_key[:-1] if plural_key.endswith("s") else plural_key
+    singular = analysis.get(singular_key)
+    return [singular] if isinstance(singular, dict) else []
+
+
 def _recent_fvg(
     candles: list[dict[str, Any]],
 ) -> tuple[str, float, float, int] | None:
@@ -681,6 +694,21 @@ HISTORY_SEGMENT_IDS = {"opening", "context", "technical_evidence"}
 PREDICTION_SEGMENT_IDS = {
     "resistance_break", "resistance_hold", "support_break", "support_hold",
 }
+PREDICTION_SEGMENT_ORDER = (
+    "resistance_break", "resistance_hold", "support_break", "support_hold",
+)
+PREDICTION_SEGMENT_COLORS = {
+    "resistance_break": "#00a86b",
+    "resistance_hold": "#f59e0b",
+    "support_break": "#e53935",
+    "support_hold": "#2962ff",
+}
+PREDICTION_SEGMENT_LABELS = {
+    "resistance_break": "R Break",
+    "resistance_hold": "R Hold",
+    "support_break": "S Break",
+    "support_hold": "S Hold",
+}
 
 
 def _segment_state(
@@ -815,6 +843,50 @@ def _segment_visual_path(
     return list(value) if isinstance(value, list) else []
 
 
+def _visible_segment_paths(
+    forecast_paths: dict[str, Any],
+    narration: dict[str, Any],
+    current_time: float,
+) -> list[tuple[str, list[dict[str, Any]], float]]:
+    """Return every started branch; completed branches remain fully visible."""
+    cue_bounds: dict[str, list[tuple[float, float]]] = {}
+    for cue in narration.get("subtitle_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        segment_id = re.sub(
+            r"_\d+$", "",
+            str(cue.get("parent_segment_id") or cue.get("segment_id") or ""),
+        )
+        if segment_id not in PREDICTION_SEGMENT_IDS:
+            continue
+        try:
+            start = float(cue.get("start_sec") or 0)
+            end = max(start + 0.001, float(cue.get("end_sec") or start))
+        except (TypeError, ValueError):
+            continue
+        cue_bounds.setdefault(segment_id, []).append((start, end))
+
+    visible = []
+    for segment_id in PREDICTION_SEGMENT_ORDER:
+        if segment_id not in cue_bounds:
+            continue
+        intervals = sorted(cue_bounds[segment_id])
+        start = intervals[0][0]
+        if current_time < start:
+            continue
+        total_active = sum(end - start for start, end in intervals)
+        elapsed_active = sum(
+            max(0.0, min(current_time, end) - start)
+            for start, end in intervals
+            if current_time >= start
+        )
+        progress = max(0.0, min(1.0, elapsed_active / max(total_active, 0.001)))
+        path = _segment_visual_path(forecast_paths, segment_id)
+        if path:
+            visible.append((segment_id, path, progress))
+    return visible
+
+
 def _subtitle_at(
     narration: dict[str, Any],
     current_time: float,
@@ -921,6 +993,11 @@ def render_tradingview_scene(
     active_segment_path = _segment_visual_path(
         forecast_paths,
         visual_segment_id,
+    )
+    cumulative_segment_paths = (
+        _visible_segment_paths(forecast_paths, narration, current_time)
+        if segment_sync
+        else []
     )
     if (
         segment_sync
@@ -1117,12 +1194,15 @@ def render_tradingview_scene(
     ]
     if prediction_phase:
         for zone_key in ("potential_buy_zones", "potential_sell_zones"):
-            for zone in analysis.get(zone_key) or []:
+            for zone in _observation_zones(analysis, zone_key):
                 prices.extend((float(zone["low"]), float(zone["high"])))
         for _, value, _ in (
             primary_structure_values + alternate_structure_values
         ):
             prices.append(float(value))
+        for _, path, _ in cumulative_segment_paths:
+            for _, value, _ in _structure_path_values({"path_points": path}):
+                prices.append(float(value))
     if not prices:
         prices = [0.0, 1.0]
 
@@ -1288,9 +1368,9 @@ def render_tradingview_scene(
                 dash=10,
             )
 
-    # Local rectangles are intentionally restricted to the prediction section.
+    # Show source-backed support/resistance bands from technical analysis onward.
     if (
-        prediction_phase
+        current_time >= level_start_sec
         and payload["style"].get("show_observation_zones", True)
     ):
         zone_start_index = max(len(visible_history) - 4, 0)
@@ -1315,7 +1395,7 @@ def render_tradingview_scene(
         )
 
         for key, fill, outline, label in zone_specs:
-            zones = analysis.get(key) or []
+            zones = _observation_zones(analysis, key)
             if not zones:
                 continue
             zone = zones[0]
@@ -1417,8 +1497,58 @@ def render_tradingview_scene(
     # New structure-path contract: Dify sends 3-4 validated decision nodes.
     # The highest ranked scenario is green and the runner-up is red.
     structured_path_rendered = False
+    if prediction_phase and cumulative_segment_paths:
+        forecast_left = history_end_x + 4
+        forecast_right = chart_right - 18
+        legend_y = chart_top + 62
+        for legend_index, (segment_id, path, path_progress) in enumerate(
+            cumulative_segment_paths
+        ):
+            values = _structure_path_values({"path_points": path})
+            points = [
+                (
+                    forecast_left + ratio * (forecast_right - forecast_left),
+                    py(value),
+                )
+                for ratio, value, _ in values
+            ]
+            points = _simplify_visual_polyline(points)
+            visible_points = _partial_polyline(points, path_progress)
+            color = PREDICTION_SEGMENT_COLORS[segment_id]
+            if len(visible_points) >= 2:
+                draw.line(
+                    visible_points,
+                    fill=color,
+                    width=5 if path_progress < 1 else 4,
+                )
+                draw.polygon(
+                    _arrow_head(
+                        visible_points[-1],
+                        visible_points[-2],
+                        size=17 if path_progress < 1 else 14,
+                    ),
+                    fill=color,
+                )
+            label_y = legend_y + legend_index * 30
+            draw.line(
+                (forecast_left + 8, label_y + 8, forecast_left + 34, label_y + 8),
+                fill=color,
+                width=5,
+            )
+            draw.text(
+                (forecast_left + 42, label_y - 3),
+                PREDICTION_SEGMENT_LABELS[segment_id],
+                font=_font(16, True),
+                fill=color,
+            )
+        for label, fraction in (("Near", 0.12), ("Mid", 0.50), ("Later", 0.88)):
+            x = forecast_left + (forecast_right - forecast_left) * fraction
+            draw.text((x - 22, chart_bottom - 48), label, font=_font(15), fill="#787b86")
+        structured_path_rendered = True
+
     if (
         prediction_phase
+        and not structured_path_rendered
         and len(primary_structure_values) >= 2
         and reveal_progress > 0
     ):

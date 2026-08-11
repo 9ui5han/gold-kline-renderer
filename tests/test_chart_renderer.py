@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.chart_renderer import render_tradingview_scene
+from app.chart_renderer import _observation_zones, render_tradingview_scene
 
 
 def _candles():
@@ -44,6 +44,20 @@ def _structure_scenario(scenario_id, prior, values):
 
 
 class ChartRendererTests(unittest.TestCase):
+    def test_singular_support_and_resistance_zones_are_supported(self):
+        analysis = {
+            "potential_buy_zone": {"low": 4323.31, "high": 4327.54},
+            "potential_sell_zone": {"low": 4339.4, "high": 4344.35},
+        }
+        self.assertEqual(
+            _observation_zones(analysis, "potential_buy_zones")[0]["low"],
+            4323.31,
+        )
+        self.assertEqual(
+            _observation_zones(analysis, "potential_sell_zones")[0]["high"],
+            4344.35,
+        )
+
     def test_real_renderer_writes_non_empty_rgb_frame(self):
         history = _candles()
         payload = {

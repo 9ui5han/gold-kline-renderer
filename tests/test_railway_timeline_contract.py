@@ -14,7 +14,13 @@ def request_payload():
         "data_as_of": "2026-08-10T19:00:00Z",
         "historical_candles": candles,
         "analysis_forecast": {},
-        "narration": {},
+        "narration": {"subtitle_cues": [
+            {"start_sec": index, "end_sec": index + 1, "text": segment_id,
+             "segment_id": segment_id, "parent_segment_id": segment_id}
+            for index, segment_id in enumerate([
+                "resistance_break", "resistance_hold", "support_break", "support_hold",
+            ])
+        ]},
         "timeline": {
             "schema_version": "media-timeline-v1",
             "history_ratio": 0.20,

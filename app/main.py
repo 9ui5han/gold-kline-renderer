@@ -253,6 +253,21 @@ class RenderRequest(BaseModel):
         Dify 已经在正式视频请求节点校验一次；这里保留同一份最小契约，
         防止旧 DSL、手工请求或错误连线绕过 Dify 后让渲染器静默退回空预测。
         """
+        if self.timeline.get("visual_sync_strategy") == "segment-id-v1":
+            expected_ids = set(self.timeline.get("prediction_segment_ids") or [])
+            cue_ids = {
+                re.sub(
+                    r"_\d+$", "",
+                    str(cue.get("parent_segment_id") or cue.get("segment_id") or ""),
+                )
+                for cue in self.narration.get("subtitle_cues") or []
+                if isinstance(cue, dict)
+            }
+            missing = sorted(expected_ids - cue_ids)
+            if missing:
+                raise ValueError(
+                    f"narration.subtitle_cues缺少segment_id:{','.join(missing)}"
+                )
         if self.style.forecast_mode != "structure_paths":
             return self
 

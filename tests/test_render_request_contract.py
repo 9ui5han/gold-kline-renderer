@@ -20,6 +20,25 @@ def _history():
 
 
 class RenderRequestContractTests(unittest.TestCase):
+    def test_segment_sync_rejects_subtitles_without_segment_ids(self):
+        data = {
+            "request_id": "missing-cue-ids", "timeframe": "15m",
+            "data_as_of": "2026-08-04T04:45:00Z",
+            "historical_candles": _history(), "analysis_forecast": {},
+            "narration": {"subtitle_cues": [{"start_sec": 0, "end_sec": 1, "text": "test"}]},
+            "timeline": {
+                "schema_version": "media-timeline-v1",
+                "visual_sync_strategy": "segment-id-v1",
+                "history_source_candles": 90, "history_window_candles": 70,
+                "history_freeze_segment": "technical_evidence",
+                "prediction_segment_ids": [
+                    "resistance_break", "resistance_hold", "support_break", "support_hold",
+                ],
+            },
+        }
+        with self.assertRaisesRegex(ValidationError, "subtitle_cues"):
+            main.RenderRequest.model_validate(data)
+
     def test_structure_path_mode_rejects_empty_forecast_paths(self):
         with self.assertRaisesRegex(ValidationError, "forecast_paths"):
             main.RenderRequest(
