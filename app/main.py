@@ -174,6 +174,7 @@ class RenderRequest(BaseModel):
     analysis_forecast: dict[str, Any]
     forecast_paths: dict[str, Any] = Field(default_factory=dict)
     narration: dict[str, Any]
+    timeline: dict[str, Any] = Field(default_factory=dict)
     audio_url: str = ""
     video: VideoOptions = Field(default_factory=VideoOptions)
     style: StyleOptions = Field(default_factory=StyleOptions)
@@ -196,6 +197,31 @@ class RenderRequest(BaseModel):
         if not value.startswith(("https://", "http://")):
             raise ValueError("audio_url必须是HTTP(S)地址")
         return value
+
+    @field_validator("timeline", mode="before")
+    @classmethod
+    def validate_timeline_contract(cls, value: Any) -> dict[str, Any]:
+        """Preserve the Dify media timeline and enforce its stage tolerance."""
+        if value in (None, ""):
+            return {}
+        if not isinstance(value, dict):
+            raise ValueError("timeline必须是对象")
+        timeline = dict(value)
+        if timeline.get("schema_version") != "media-timeline-v1":
+            raise ValueError("timeline.schema_version无效")
+        tolerance = timeline.get("stage_word_tolerance", 0)
+        if (
+            isinstance(tolerance, bool)
+            or not isinstance(tolerance, int)
+            or not 0 <= tolerance <= 7
+        ):
+            raise ValueError("timeline.stage_word_tolerance无效")
+        timeline["stage_word_tolerance"] = tolerance
+        strategy = timeline.get("stage_budget_strategy", "legacy-unspecified")
+        if strategy not in {"legacy-unspecified", "shared-total-cap-v1"}:
+            raise ValueError("timeline.stage_budget_strategy无效")
+        timeline["stage_budget_strategy"] = strategy
+        return timeline
 
     @model_validator(mode="after")
     def validate_forecast_contract(self):
