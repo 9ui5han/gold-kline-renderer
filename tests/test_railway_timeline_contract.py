@@ -12,6 +12,7 @@ def request_payload():
         "request_id": "timeline-contract-test",
         "timeframe": "15m",
         "data_as_of": "2026-08-10T19:00:00Z",
+        "platform_profile": "tiktok",
         "historical_candles": candles,
         "analysis_forecast": {},
         "narration": {"subtitle_cues": [
@@ -39,6 +40,23 @@ def request_payload():
 
 
 class RailwayTimelineContractTests(unittest.TestCase):
+    def test_preserves_tiktok_platform_for_safe_layout(self):
+        model = RenderRequest.model_validate(request_payload())
+        self.assertEqual(model.platform_profile, "tiktok")
+        self.assertEqual(model.model_dump()["platform_profile"], "tiktok")
+
+    def test_normalizes_tiktok_platform_case_and_whitespace(self):
+        payload = request_payload()
+        payload["platform_profile"] = " TikTok "
+        model = RenderRequest.model_validate(payload)
+        self.assertEqual(model.model_dump()["platform_profile"], "tiktok")
+
+    def test_rejects_tiktok_with_non_tiktok_dimensions(self):
+        payload = request_payload()
+        payload["video"] = {"width": 1080, "height": 1280}
+        with self.assertRaisesRegex(ValueError, "1080x1920"):
+            RenderRequest.model_validate(payload)
+
     def test_preserves_stage_word_tolerance(self):
         model = RenderRequest.model_validate(request_payload())
         self.assertEqual(model.model_dump()["timeline"]["stage_word_tolerance"], 7)

@@ -86,9 +86,14 @@ MIN_TTS_AUDIO_SECONDS = float(
 MAX_TTS_AUDIO_SECONDS = float(
     os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
 )
-MAX_TTS_TARGET_OVERRUN_SECONDS = max(
+MAX_TTS_TARGET_DRIFT_SECONDS = max(
     0.0,
-    float(os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "5")),
+    float(
+        os.getenv(
+            "MAX_TTS_TARGET_DRIFT_SECONDS",
+            os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "5"),
+        )
+    ),
 )
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
@@ -168,6 +173,7 @@ class RenderRequest(BaseModel):
     symbol: str = "XAUUSD"
     timeframe: str
     data_as_of: str
+    platform_profile: Literal["tiktok", "youtube", "x", "custom"] = "custom"
     duration_target_sec: float = Field(
         default=90.0,
         ge=MIN_RENDER_AUDIO_SECONDS,
@@ -182,6 +188,11 @@ class RenderRequest(BaseModel):
     audio_url: str = ""
     video: VideoOptions = Field(default_factory=VideoOptions)
     style: StyleOptions = Field(default_factory=StyleOptions)
+
+    @field_validator("platform_profile", mode="before")
+    @classmethod
+    def normalize_platform_profile(cls, value: Any) -> str:
+        return str(value or "custom").strip().lower()
 
     @field_validator("historical_candles")
     @classmethod
@@ -253,6 +264,11 @@ class RenderRequest(BaseModel):
         Dify 已经在正式视频请求节点校验一次；这里保留同一份最小契约，
         防止旧 DSL、手工请求或错误连线绕过 Dify 后让渲染器静默退回空预测。
         """
+        if self.platform_profile == "tiktok" and (
+            self.video.width,
+            self.video.height,
+        ) != (1080, 1920):
+            raise ValueError("TikTok视频尺寸必须是1080x1920")
         if self.timeline.get("visual_sync_strategy") == "segment-id-v1":
             expected_ids = set(self.timeline.get("prediction_segment_ids") or [])
             cue_ids = {
@@ -1086,30 +1102,22 @@ def normalize_audio_to_target_duration(
     output_path: Path,
     target_duration_sec: float,
 ) -> tuple[float, float]:
-    """轻微变速；成片可比计划时长最多长5秒，不截断尾音。"""
+    """轻微自然变速；成片与计划时长允许双向小幅偏差。"""
     raw_duration = probe_duration(input_path)
     if not math.isfinite(raw_duration) or raw_duration <= 0:
         raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
     target = float(target_duration_sec)
     requested_ratio = raw_duration / target
-    if requested_ratio < 0.97:
-        raise RuntimeError(
-            "TTS_NARRATION_LENGTH_MISMATCH:"
-            f"raw={raw_duration:.3f};target={target:.3f};"
-            f"word_multiplier={target / raw_duration:.4f};"
-            "allowed_tempo=0.97-1.03;"
-            f"allowed_overrun_sec={MAX_TTS_TARGET_OVERRUN_SECONDS:.3f}"
-        )
-    ratio = min(requested_ratio, 1.03)
+    ratio = min(max(requested_ratio, 0.97), 1.03)
     output_target = raw_duration / ratio
-    if output_target > target + MAX_TTS_TARGET_OVERRUN_SECONDS:
+    if abs(output_target - target) > MAX_TTS_TARGET_DRIFT_SECONDS:
         raise RuntimeError(
             "TTS_NARRATION_LENGTH_MISMATCH:"
             f"raw={raw_duration:.3f};target={target:.3f};"
             f"clamped={output_target:.3f};"
             f"word_multiplier={target / raw_duration:.4f};"
             "allowed_tempo=0.97-1.03;"
-            f"allowed_overrun_sec={MAX_TTS_TARGET_OVERRUN_SECONDS:.3f}"
+            f"allowed_drift_sec={MAX_TTS_TARGET_DRIFT_SECONDS:.3f}"
         )
     filter_chain = _atempo_filter_for_ratio(ratio)
     run_command(

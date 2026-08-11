@@ -311,9 +311,16 @@ def _draw_educational_notice(
     right: float,
     center_y: float,
 ) -> tuple[float, float, float, float]:
-    """Draw plain persistent text between chart and subtitles."""
-    face = _font(16, True)
+    """Draw plain persistent text inside the chart's reserved top lane."""
+    available_width = max(1.0, right - left - 6)
+    face = _font(18, True)
     bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
+    if bbox[2] - bbox[0] > available_width:
+        face = _font(17, True)
+        bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
+    if bbox[2] - bbox[0] > available_width:
+        face = _font(16, True)
+        bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
     text_x = (left + right - text_width) / 2
@@ -729,7 +736,7 @@ def _scenario_text(value: str) -> str:
 
 def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int]:
     """Keep critical TikTok content outside platform overlay areas."""
-    if str(platform or "").lower() == "tiktok" and (width, height) == (1080, 1920):
+    if str(platform or "").strip().lower() == "tiktok" and (width, height) == (1080, 1920):
         return {
             "safe_top": round(height * 0.135),
             "safe_bottom": height - round(height * 0.25),
@@ -1302,10 +1309,10 @@ def render_tradingview_scene(
     pmax += price_span * 0.06
 
     def py(value: float) -> float:
-        return chart_bottom - 34 - (
+        return chart_bottom - 78 - (
             (float(value) - pmin)
             / max(pmax - pmin, 0.01)
-            * (chart_bottom - chart_top - 68)
+            * (chart_bottom - chart_top - 112)
         )
 
     # The grey axis numbers share the same right-side lane as support,
@@ -1327,7 +1334,7 @@ def render_tradingview_scene(
     protected_label_positions = _spread_label_positions(
         protected_true_positions,
         chart_top + 28,
-        chart_bottom - 28,
+        chart_bottom - 78,
     )
 
     # TradingView-like grid and right price scale.
@@ -1625,7 +1632,7 @@ def render_tradingview_scene(
             )
         for label, fraction in (("Near", 0.12), ("Mid", 0.50), ("Later", 0.88)):
             x = forecast_left + (forecast_right - forecast_left) * fraction
-            draw.text((x - 22, chart_bottom - 48), label, font=_font(15), fill="#787b86")
+            draw.text((x - 22, chart_bottom - 78), label, font=_font(15), fill="#787b86")
         structured_path_rendered = True
 
     if (
@@ -1839,7 +1846,7 @@ def render_tradingview_scene(
                 + (forecast_right - forecast_left) * fraction
             )
             draw.text(
-                (x - 22, chart_bottom - 48),
+                (x - 22, chart_bottom - 78),
                 label,
                 font=_font(15),
                 fill="#787b86",
@@ -2001,7 +2008,7 @@ def render_tradingview_scene(
             ):
                 x = forecast_x1 + (forecast_x2 - forecast_x1) * fraction
                 draw.text(
-                    (x - 22, chart_bottom - 48),
+                    (x - 22, chart_bottom - 78),
                     label,
                     font=_font(15),
                     fill="#787b86",
@@ -2022,7 +2029,7 @@ def render_tradingview_scene(
     label_positions = _spread_label_positions(
         [desired_y for desired_y, _, _, _ in right_labels],
         chart_top + 28,
-        chart_bottom - 28,
+        chart_bottom - 78,
         minimum_gap=62,
     )
     for (desired_y, color, text, price), y in zip(
@@ -2078,12 +2085,6 @@ def render_tradingview_scene(
         subtitle_right - subtitle_left - 54,
         max_lines=2,
     )
-    _draw_educational_notice(
-        draw,
-        subtitle_left,
-        subtitle_right,
-        subtitle_top - 30,
-    )
     draw.rounded_rectangle(
         (subtitle_left, subtitle_top, subtitle_right, subtitle_bottom),
         radius=20,
@@ -2100,6 +2101,16 @@ def render_tradingview_scene(
             font=subtitle_face,
             fill="#131722",
         )
+
+    # Persistent disclosure stays in the chart footer requested by the user.
+    # Price projection and right-side labels stop above this reserved strip;
+    # external date labels start below the chart border.
+    _draw_educational_notice(
+        draw,
+        chart_left,
+        chart_right,
+        chart_bottom - 38,
+    )
 
     # Draw the real-data header last on an opaque layer so no chart, label or
     # subtitle can cover exact historical values.
