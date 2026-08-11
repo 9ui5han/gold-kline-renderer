@@ -19,13 +19,26 @@ class RendererEnglishUtcTests(unittest.TestCase):
     def test_header_time_is_explicit_utc(self):
         self.assertEqual(
             renderer._header_time_label("2026-08-06T14:30:00Z"),
-            "2026-08-06 14:30 UTC",
+            "Aug 06, 2026 14:30 UTC",
         )
 
     def test_offset_time_is_converted_to_utc(self):
         self.assertEqual(
             renderer._header_time_label("2026-08-06T22:30:00+08:00"),
-            "2026-08-06 14:30 UTC",
+            "Aug 06, 2026 14:30 UTC",
+        )
+
+    def test_video_header_uses_dynamic_market_contract(self):
+        self.assertEqual(
+            renderer._video_title("15m"),
+            "Gold 15m Scenario Review",
+        )
+        self.assertEqual(
+            renderer._latest_closed_candle_label(
+                "XAUUSD",
+                "2026-08-06T22:30:00+08:00",
+            ),
+            "XAUUSD · Latest closed candle · Aug 06, 2026 14:30 UTC",
         )
 
     def test_axis_time_uses_english_month(self):

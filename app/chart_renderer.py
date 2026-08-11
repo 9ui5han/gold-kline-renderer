@@ -137,9 +137,20 @@ def _utc_datetime(value: str) -> datetime:
 
 def _header_time_label(value: str) -> str:
     try:
-        return _utc_datetime(value).strftime("%Y-%m-%d %H:%M UTC")
+        return _utc_datetime(value).strftime("%b %d, %Y %H:%M UTC")
     except Exception:
         return str(value or "")
+
+
+def _video_title(timeframe: str) -> str:
+    return f"Gold {str(timeframe or '').strip()} Scenario Review"
+
+
+def _latest_closed_candle_label(symbol: str, data_as_of: str) -> str:
+    return (
+        f"{str(symbol or '').strip()} · Latest closed candle · "
+        f"{_header_time_label(data_as_of)}"
+    )
 
 
 def _axis_time_label(value: str) -> str:
@@ -2106,14 +2117,16 @@ def render_tradingview_scene(
     )
     draw.text(
         (52, header_top + 24),
-        f"{payload['symbol']} · {payload['timeframe']}",
+        _video_title(payload["timeframe"]),
         font=title_face,
         fill="#131722",
     )
     draw.text(
         (52, header_top + 72),
-        f"{VIDEO_LABELS['candle_time']}: "
-        f"{_header_time_label(latest.get('time', ''))}",
+        _latest_closed_candle_label(
+            payload["symbol"],
+            payload["data_as_of"],
+        ),
         font=meta_face,
         fill="#787b86",
     )
