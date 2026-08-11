@@ -88,7 +88,7 @@ MAX_TTS_AUDIO_SECONDS = float(
 )
 MAX_TTS_TARGET_OVERRUN_SECONDS = max(
     0.0,
-    float(os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "3")),
+    float(os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "5")),
 )
 QWEN3_TTS_MAX_INPUT_BYTES = int(
     os.getenv("QWEN3_TTS_MAX_INPUT_BYTES", "540")
@@ -1086,7 +1086,7 @@ def normalize_audio_to_target_duration(
     output_path: Path,
     target_duration_sec: float,
 ) -> tuple[float, float]:
-    """轻微变速；成片可比计划时长最多长3秒，不截断尾音。"""
+    """轻微变速；成片可比计划时长最多长5秒，不截断尾音。"""
     raw_duration = probe_duration(input_path)
     if not math.isfinite(raw_duration) or raw_duration <= 0:
         raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
