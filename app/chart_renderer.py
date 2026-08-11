@@ -311,27 +311,20 @@ def _draw_educational_notice(
     right: float,
     center_y: float,
 ) -> tuple[float, float, float, float]:
-    """Draw a persistent one-line notice between chart and subtitles."""
+    """Draw plain persistent text between chart and subtitles."""
     face = _font(16, True)
     bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
-    x1, x2 = left, right
-    y1, y2 = center_y - 18, center_y + 18
-    draw.rounded_rectangle(
-        (x1, y1, x2, y2),
-        radius=10,
-        fill="#fff7df",
-        outline="#f0c35a",
-        width=1,
-    )
+    text_x = (left + right - text_width) / 2
+    text_y = center_y - text_height / 2 - bbox[1]
     draw.text(
-        ((x1 + x2 - text_width) / 2, center_y - text_height / 2 - bbox[1]),
+        (text_x, text_y),
         EDUCATIONAL_NOTICE,
         font=face,
         fill="#7a5200",
     )
-    return x1, y1, x2, y2
+    return text_x, center_y - text_height / 2, text_x + text_width, center_y + text_height / 2
 
 
 def _dashed_line(
@@ -964,6 +957,17 @@ def _visible_segment_paths(
     return visible
 
 
+def _subtitle_display_chunks(text: str, max_words: int = 11) -> list[str]:
+    """Split a long aligned cue into complete sequential display pages."""
+    words = str(text or "").split()
+    if not words:
+        return []
+    return [
+        " ".join(words[index:index + max_words])
+        for index in range(0, len(words), max_words)
+    ]
+
+
 def _subtitle_at(
     narration: dict[str, Any],
     current_time: float,
@@ -977,7 +981,21 @@ def _subtitle_at(
         start = float(cue.get("start_sec") or 0)
         end = float(cue.get("end_sec") or 0)
         if start <= subtitle_time < end:
-            return str(cue.get("text") or "")
+            chunks = _subtitle_display_chunks(str(cue.get("text") or ""))
+            if not chunks:
+                return ""
+            total_words = sum(len(chunk.split()) for chunk in chunks)
+            cue_progress = (subtitle_time - start) / max(end - start, 0.001)
+            elapsed_words = min(
+                total_words - 1,
+                max(0, int(cue_progress * total_words)),
+            )
+            cursor = 0
+            for chunk in chunks:
+                cursor += len(chunk.split())
+                if elapsed_words < cursor:
+                    return chunk
+            return chunks[-1]
 
     # 已提供正式时间轴时，时间轴外（例如口播结束后的尾帧）必须没有字幕。
     # 不能退回显示最后一段旁白，否则结尾会残留风险提示文字。
@@ -1226,13 +1244,8 @@ def render_tradingview_scene(
 
     image = Image.new("RGB", (width, height), "#ffffff")
     draw = ImageDraw.Draw(image)
-    if is_tiktok_safe:
-        # Safe zones keep the same visual surface; only critical content is
-        # excluded from them. A faint grid avoids visible blank borders.
-        for grid_y in range(0, height + 1, 120):
-            draw.line((0, grid_y, width, grid_y), fill="#f7f8fa", width=1)
-        for grid_x in range(0, width + 1, 120):
-            draw.line((grid_x, 0, grid_x, height), fill="#f7f8fa", width=1)
+    # TikTok overlay areas intentionally remain plain white. Critical content
+    # is drawn only inside resolve_safe_layout().
 
     title_face = _font(36, True)
     meta_face = _font(24)
@@ -2054,25 +2067,25 @@ def render_tradingview_scene(
 
     # Compact subtitle area; narration and timing are preserved unchanged.
     subtitle = _subtitle_at(narration, current_time, progress)
+    subtitle_left = safe["safe_left"] if is_tiktok_safe else 48
+    subtitle_top = safe["safe_bottom"] - 158 if is_tiktok_safe else height - 215
+    subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
+    subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
     subtitle_lines = _wrap_text(
         draw,
         subtitle,
         subtitle_face,
-        width - 150,
+        subtitle_right - subtitle_left - 54,
         max_lines=2,
     )
-    subtitle_top = safe["safe_bottom"] - 158 if is_tiktok_safe else height - 215
-    subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
-    subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
-    notice_left = safe["safe_left"] if is_tiktok_safe else 48
     _draw_educational_notice(
         draw,
-        notice_left,
+        subtitle_left,
         subtitle_right,
-        subtitle_top - 32,
+        subtitle_top - 30,
     )
     draw.rounded_rectangle(
-        (48, subtitle_top, subtitle_right, subtitle_bottom),
+        (subtitle_left, subtitle_top, subtitle_right, subtitle_bottom),
         radius=20,
         fill="#f4f4f6",
         outline="#d9dce3",
@@ -2082,7 +2095,7 @@ def render_tradingview_scene(
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((48 + subtitle_right - text_width) / 2, subtitle_top + 25 + line_no * 52),
+            ((subtitle_left + subtitle_right - text_width) / 2, subtitle_top + 25 + line_no * 52),
             line,
             font=subtitle_face,
             fill="#131722",
@@ -2106,23 +2119,24 @@ def render_tradingview_scene(
     header_top = safe["safe_top"] if is_tiktok_safe else 0
     header_bottom = header_top + 168
     header_right = safe["safe_right"] if is_tiktok_safe else width
+    header_left = safe["safe_left"] if is_tiktok_safe else 0
     draw.rectangle(
-        (0, header_top, header_right, header_bottom),
+        (header_left, header_top, header_right, header_bottom),
         fill="#ffffff",
     )
     draw.line(
-        (0, header_bottom - 1, header_right, header_bottom - 1),
+        (header_left, header_bottom - 1, header_right, header_bottom - 1),
         fill="#d9dce3",
         width=2,
     )
     draw.text(
-        (52, header_top + 24),
+        (header_left + 18, header_top + 24),
         _video_title(payload["timeframe"]),
         font=title_face,
         fill="#131722",
     )
     draw.text(
-        (52, header_top + 72),
+        (header_left + 18, header_top + 72),
         _latest_closed_candle_label(
             payload["symbol"],
             payload["data_as_of"],
@@ -2137,7 +2151,7 @@ def render_tradingview_scene(
         f"C {_price(latest['close'])}"
     )
     draw.text(
-        (52, header_top + 112),
+        (header_left + 18, header_top + 112),
         real_ohlc,
         font=meta_face,
         fill="#131722",

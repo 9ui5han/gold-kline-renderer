@@ -3,7 +3,7 @@ import unittest
 from pydantic import ValidationError
 
 from app import main
-from app.chart_renderer import _subtitle_at
+from app.chart_renderer import _subtitle_at, _subtitle_display_chunks
 
 
 def _history():
@@ -21,6 +21,28 @@ def _history():
 
 
 class RenderDurationContractTests(unittest.TestCase):
+    def test_long_subtitle_is_paginated_without_dropping_words(self):
+        text = (
+            "If resistance holds after confirmation the conditional path may move "
+            "toward support while later follow-through remains necessary for continuation"
+        )
+        chunks = _subtitle_display_chunks(text)
+        self.assertEqual(" ".join(chunks), text)
+        self.assertTrue(all(len(chunk.split()) <= 11 for chunk in chunks))
+
+        narration = {
+            "subtitle_cues": [{"start_sec": 0, "end_sec": 12, "text": text}]
+        }
+        total_words = len(text.split())
+        cursor = 0
+        displayed = set()
+        for chunk in chunks:
+            midpoint = cursor + len(chunk.split()) / 2
+            second = 12 * midpoint / total_words
+            displayed.add(_subtitle_at(narration, second, progress=second / 12))
+            cursor += len(chunk.split())
+        self.assertEqual(displayed, set(chunks))
+
     def test_render_request_accepts_duration_up_to_900_seconds(self):
         payload = main.RenderRequest(
             request_id="fractional-duration",

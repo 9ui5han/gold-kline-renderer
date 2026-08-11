@@ -25,13 +25,16 @@ class TikTokSafeLayoutTests(unittest.TestCase):
 
     def test_persistent_notice_stays_inside_tiktok_safe_width(self):
         image = Image.new("RGB", (1080, 1920), "#ffffff")
-        box = _draw_educational_notice(ImageDraw.Draw(image), 65, 852, 1250)
+        draw = ImageDraw.Draw(image)
+        box = _draw_educational_notice(draw, 65, 852, 1250)
         self.assertEqual(
             EDUCATIONAL_NOTICE,
             "Educational market observation · Conditional scenarios, not trading signals",
         )
         self.assertGreaterEqual(box[0], 65)
         self.assertLessEqual(box[2], 864)
+        # There is no pill/background box: nearby pixels remain plain white.
+        self.assertEqual(image.getpixel((65, 1250)), (255, 255, 255))
 
 
 if __name__ == "__main__":
