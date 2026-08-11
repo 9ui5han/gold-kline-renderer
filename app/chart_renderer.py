@@ -33,8 +33,8 @@ VIDEO_LABELS = {
     "candle_time": "Candle Time",
     "support": "Support",
     "resistance": "Resistance",
-    "key_support_zone": "Key Support Zone",
-    "key_resistance_zone": "Key Resistance Zone",
+    "key_support_zone": "Support",
+    "key_resistance_zone": "Resistance",
     "bullish_fvg": "Bullish FVG",
     "bearish_fvg": "Bearish FVG",
     "primary": "Primary",
@@ -255,6 +255,40 @@ def _round_rect_label(
         font=face,
         fill=text_fill,
     )
+
+
+def _stacked_price_label(
+    draw: ImageDraw.ImageDraw,
+    x: float,
+    y: float,
+    name: str,
+    price: str,
+    face: ImageFont.FreeTypeFont,
+    fill: str,
+) -> None:
+    """Draw a right-aligned two-line level tag: name above, price below."""
+    name_box = draw.textbbox((0, 0), name, font=face)
+    price_box = draw.textbbox((0, 0), price, font=face)
+    width = max(name_box[2] - name_box[0], price_box[2] - price_box[0])
+    line_height = max(
+        name_box[3] - name_box[1],
+        price_box[3] - price_box[1],
+    )
+    pad_x, pad_y, gap = 13, 7, 2
+    box_width = width + pad_x * 2
+    box_height = line_height * 2 + pad_y * 2 + gap
+    x1, x2 = x - box_width, x
+    y1, y2 = y - box_height / 2, y + box_height / 2
+    draw.rounded_rectangle((x1, y1, x2, y2), radius=8, fill=fill)
+    for line_index, (text, bbox) in enumerate(((name, name_box), (price, price_box))):
+        text_width = bbox[2] - bbox[0]
+        text_y = y1 + pad_y + line_index * (line_height + gap) - bbox[1]
+        draw.text(
+            (x1 + (box_width - text_width) / 2, text_y),
+            text,
+            font=face,
+            fill="#ffffff",
+        )
 
 
 def _dashed_line(
@@ -661,10 +695,10 @@ def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int
     """Keep critical TikTok content outside platform overlay areas."""
     if str(platform or "").lower() == "tiktok" and (width, height) == (1080, 1920):
         return {
-            "safe_top": round(height * 0.12),
-            "safe_bottom": height - round(height * 0.22),
-            "safe_right": width - round(width * 0.15),
-            "safe_left": round(width * 0.05),
+            "safe_top": round(height * 0.135),
+            "safe_bottom": height - round(height * 0.25),
+            "safe_right": width - round(width * 0.20),
+            "safe_left": round(width * 0.06),
         }
     return {
         "safe_top": 0,
@@ -1200,8 +1234,8 @@ def render_tradingview_scene(
             primary_structure_values + alternate_structure_values
         ):
             prices.append(float(value))
-        for _, path, _ in cumulative_segment_paths:
-            for _, value, _ in _structure_path_values({"path_points": path}):
+        for _, segment_path, _ in cumulative_segment_paths:
+            for _, value, _ in _structure_path_values({"path_points": segment_path}):
                 prices.append(float(value))
     if not prices:
         prices = [0.0, 1.0]
@@ -1264,14 +1298,6 @@ def render_tradingview_scene(
                 font=axis_face,
                 fill="#787b86",
             )
-    # One explicit timezone marker applies to every x-axis timestamp.
-    draw.text(
-        (price_axis_x + 8, time_axis_y - 28),
-        VIDEO_LABELS["utc"],
-        font=axis_face,
-        fill="#787b86",
-    )
-
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
     history_end_x = chart_left + chart_width * 0.76
@@ -1382,14 +1408,14 @@ def render_tradingview_scene(
         zone_specs = (
             (
                 "potential_buy_zones",
-                "#ede1f7",
-                "#8653a6",
+                "#e8f0ff",
+                "#2962ff",
                 VIDEO_LABELS["key_support_zone"],
             ),
             (
                 "potential_sell_zones",
-                "#f1e3f6",
-                "#9c4dcc",
+                "#fff2dc",
+                "#f59e0b",
                 VIDEO_LABELS["key_resistance_zone"],
             ),
         )
@@ -1490,7 +1516,7 @@ def render_tradingview_scene(
                 (
                     (fvg_y1 + fvg_y2) / 2,
                     fvg_color,
-                    fvg_name,
+                    "FVG",
                 )
             )
 
@@ -1501,10 +1527,10 @@ def render_tradingview_scene(
         forecast_left = history_end_x + 4
         forecast_right = chart_right - 18
         legend_y = chart_top + 62
-        for legend_index, (segment_id, path, path_progress) in enumerate(
+        for legend_index, (segment_id, segment_path, path_progress) in enumerate(
             cumulative_segment_paths
         ):
-            values = _structure_path_values({"path_points": path})
+            values = _structure_path_values({"path_points": segment_path})
             points = [
                 (
                     forecast_left + ratio * (forecast_right - forecast_left),
@@ -1928,18 +1954,22 @@ def render_tradingview_scene(
     # Support and resistance keep their own colours. BOS/CHOCH are intentionally
     # hidden until the project has a complete confirmation engine.
     right_labels = [
-        (py(float(level)), color, f"{name} {_price(level)}")
+        (py(float(level)), color, name, _price(level))
         for level, color, name in levels_to_show
     ]
     last_close = float(visible_history[-1]["close"])
-    right_labels.append((py(last_close), "#787b86", _price(last_close)))
-    right_labels.extend(extra_right_labels)
+    right_labels.append((py(last_close), "#787b86", _price(last_close), None))
+    right_labels.extend(
+        (desired_y, color, text, None)
+        for desired_y, color, text in extra_right_labels
+    )
     label_positions = _spread_label_positions(
-        [desired_y for desired_y, _, _ in right_labels],
+        [desired_y for desired_y, _, _, _ in right_labels],
         chart_top + 28,
         chart_bottom - 28,
+        minimum_gap=62,
     )
-    for (desired_y, color, text), y in zip(
+    for (desired_y, color, text, price), y in zip(
         right_labels,
         label_positions,
     ):
@@ -1954,15 +1984,20 @@ def render_tradingview_scene(
                 fill=color,
                 width=2,
             )
-        _round_rect_label(
-            draw,
-            label_right,
-            y,
-            text,
-            axis_face,
-            color,
-            anchor="rm",
-        )
+        if price is not None:
+            _stacked_price_label(
+                draw, label_right, y, text, price, axis_face, color,
+            )
+        else:
+            _round_rect_label(
+                draw,
+                label_right,
+                y,
+                text,
+                axis_face,
+                color,
+                anchor="rm",
+            )
 
     # Current real price line and label.
     last_y = py(last_close)
