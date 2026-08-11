@@ -3137,6 +3137,25 @@ def build_scene_intervals(
     return intervals
 
 
+def media_file_stem(payload: dict[str, Any], unique_id: str) -> str:
+    """Build a short URL-safe filename from the visible video title."""
+    timeframe = re.sub(
+        r"[^a-z0-9]+", "-", str(payload.get("timeframe") or "market").lower()
+    ).strip("-") or "market"
+    try:
+        parsed = datetime.fromisoformat(
+            str(payload.get("data_as_of") or "").replace("Z", "+00:00")
+        )
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        timestamp = parsed.astimezone(timezone.utc).strftime("%Y%m%d-%H%M")
+    except (TypeError, ValueError):
+        timestamp = "unknown-time"
+    short_id = re.sub(r"[^a-zA-Z0-9]", "", str(unique_id or ""))[:8].lower()
+    short_id = short_id or uuid.uuid4().hex[:8]
+    return f"gold-{timeframe}-scenario-review-{timestamp}-{short_id}"
+
+
 def render_job(job_id: str, payload: dict[str, Any]) -> None:
     job_dir = WORK_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
@@ -3178,7 +3197,8 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
             scene_paths.append(scene_path)
             update_job(job_id, progress=15 + int((index + 1) / scene_count * 50))
 
-        thumbnail_name = f"{job_id}-thumbnail.png"
+        media_stem = media_file_stem(payload, job_id)
+        thumbnail_name = f"{media_stem}-thumbnail.png"
         thumbnail_path = MEDIA_DIR / thumbnail_name
         thumbnail_path.write_bytes(scene_paths[-1].read_bytes())
 
@@ -3195,7 +3215,7 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         rows.append(f"file '{scene_paths[-1].resolve()}'")
         concat_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
-        output_name = f"{job_id}-tiktok.mp4"
+        output_name = f"{media_stem}.mp4"
         output_path = MEDIA_DIR / output_name
         update_job(job_id, progress=70)
         run_command(
@@ -3290,10 +3310,11 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
             current_time_sec=(start_sec + end_sec) / 2,
         )
 
-    thumbnail_name = f"test-{render_id}-thumbnail.png"
+    media_stem = media_file_stem(payload, render_id)
+    thumbnail_name = f"{media_stem}-thumbnail.png"
     thumbnail_path = MEDIA_DIR / thumbnail_name
     thumbnail_path.write_bytes((work_dir / f"frame-{frame_count - 1:03}.png").read_bytes())
-    output_name = f"test-{render_id}.mp4"
+    output_name = f"{media_stem}.mp4"
     output_path = MEDIA_DIR / output_name
     concat_path = work_dir / "scenes.txt"
     rows = []
