@@ -21,8 +21,8 @@ def request_payload():
             "stage_word_tolerance": 7,
             "stage_budget_strategy": "adaptive-shared-total-v2",
             "visual_sync_strategy": "segment-id-v1",
-            "history_source_candles": 60,
-            "history_window_candles": 40,
+            "history_source_candles": 90,
+            "history_window_candles": 70,
             "history_freeze_segment": "technical_evidence",
             "prediction_segment_ids": [
                 "resistance_break", "resistance_hold",
@@ -65,7 +65,7 @@ class RailwayTimelineContractTests(unittest.TestCase):
 
     def test_rejects_invalid_segment_visual_window(self):
         payload = request_payload()
-        payload["timeline"]["history_window_candles"] = 41
+        payload["timeline"]["history_window_candles"] = 71
         with self.assertRaises(ValueError):
             RenderRequest.model_validate(payload)
 

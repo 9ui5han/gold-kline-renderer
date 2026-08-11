@@ -29,16 +29,17 @@ class SegmentVisualSyncTests(unittest.TestCase):
         }]}
         self.assertEqual(_segment_state(narration, 25), ("support_break", 0.5))
 
-    def test_recent_sixty_feed_a_rolling_forty_candle_window(self):
+    def test_recent_ninety_feed_a_rolling_seventy_candle_window(self):
         history = candles(200)
-        start = _history_window(history, 0, 20, 60, 40)
-        middle = _history_window(history, 10, 20, 60, 40)
-        frozen = _history_window(history, 20, 20, 60, 40)
-        self.assertEqual(len(start), 40)
-        self.assertEqual(start[0]["time"], "140")
-        self.assertEqual(len(middle), 40)
-        self.assertGreater(int(middle[0]["time"]), 140)
-        self.assertEqual([item["time"] for item in frozen], [str(i) for i in range(160, 200)])
+        start = _history_window(history, 0, 20, 90, 70)
+        middle = _history_window(history, 10, 20, 90, 70)
+        frozen = _history_window(history, 20, 20, 90, 70)
+        self.assertEqual(len(start), 8)
+        self.assertEqual(start[0]["time"], "110")
+        self.assertGreater(len(middle), len(start))
+        self.assertLessEqual(len(middle), 70)
+        self.assertEqual(middle[0]["time"], "110")
+        self.assertEqual([item["time"] for item in frozen], [str(i) for i in range(130, 200)])
 
     def test_prediction_path_reveals_by_segment_progress(self):
         points = [(0.0, 0.0), (10.0, 10.0), (20.0, 0.0)]

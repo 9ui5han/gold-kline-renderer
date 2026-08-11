@@ -766,12 +766,13 @@ def _history_window(
     source_count: int,
     window_count: int,
 ) -> list[dict[str, Any]]:
-    """Animate a recent rolling window; calculations still use full history."""
+    """Reveal recent candles quickly, then roll while keeping the latest window."""
     source = list(history[-max(source_count, window_count):])
-    if len(source) <= window_count:
-        return source
+    if not source:
+        return []
     progress = max(0.0, min(1.0, current_time / max(freeze_start_sec, 0.1)))
-    end_position = window_count + progress * (len(source) - window_count)
+    initial_count = min(8, len(source), window_count)
+    end_position = initial_count + progress * (len(source) - initial_count)
     full_end = int(math.floor(end_position))
     start = max(0, full_end - window_count)
     visible = list(source[start:full_end])
@@ -780,7 +781,7 @@ def _history_window(
         visible.append(_partial_candle(source[full_end], fraction))
         if len(visible) > window_count:
             visible = visible[-window_count:]
-    return visible or source[:window_count]
+    return visible or source[:initial_count]
 
 
 def _partial_polyline(
@@ -893,8 +894,9 @@ def render_tradingview_scene(
     all_history = payload["historical_candles"]
     timeline = payload.get("timeline") or {}
     segment_sync = timeline.get("visual_sync_strategy") == "segment-id-v1"
-    history_source_count = int(timeline.get("history_source_candles") or 60)
-    history_window_count = int(timeline.get("history_window_candles") or 40)
+    history_source_count = int(timeline.get("history_source_candles") or 90)
+    history_window_count = int(timeline.get("history_window_candles") or 70)
+    history_scale_source = list(all_history[-history_source_count:])
     history = list(all_history[-history_window_count:])
     narration = payload["narration"]
     active_segment_id, active_segment_progress = _segment_state(
@@ -1102,8 +1104,10 @@ def render_tradingview_scene(
     )
 
     scale_candles = (
-        history
-        if not prediction_phase or primary_structure_values
+        history_scale_source
+        if not prediction_phase
+        else history
+        if primary_structure_values
         else visible_history + forecast_all
     )
     prices = [

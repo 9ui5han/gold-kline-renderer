@@ -233,9 +233,9 @@ class RenderRequest(BaseModel):
             raise ValueError("timeline.visual_sync_strategy无效")
         timeline["visual_sync_strategy"] = visual_sync
         if visual_sync == "segment-id-v1":
-            if timeline.get("history_source_candles") != 60:
+            if timeline.get("history_source_candles") != 90:
                 raise ValueError("timeline.history_source_candles无效")
-            if timeline.get("history_window_candles") != 40:
+            if timeline.get("history_window_candles") != 70:
                 raise ValueError("timeline.history_window_candles无效")
             if timeline.get("history_freeze_segment") != "technical_evidence":
                 raise ValueError("timeline.history_freeze_segment无效")
