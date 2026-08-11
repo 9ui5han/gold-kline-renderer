@@ -20,6 +20,14 @@ def request_payload():
             "history_ratio": 0.20,
             "stage_word_tolerance": 7,
             "stage_budget_strategy": "shared-total-cap-v1",
+            "visual_sync_strategy": "segment-id-v1",
+            "history_source_candles": 60,
+            "history_window_candles": 40,
+            "history_freeze_segment": "technical_evidence",
+            "prediction_segment_ids": [
+                "resistance_break", "resistance_hold",
+                "support_break", "support_hold",
+            ],
         },
     }
 
@@ -31,6 +39,10 @@ class RailwayTimelineContractTests(unittest.TestCase):
         self.assertEqual(
             model.model_dump()["timeline"]["stage_budget_strategy"],
             "shared-total-cap-v1",
+        )
+        self.assertEqual(
+            model.model_dump()["timeline"]["visual_sync_strategy"],
+            "segment-id-v1",
         )
 
     def test_rejects_tolerance_over_seven(self):
@@ -48,6 +60,18 @@ class RailwayTimelineContractTests(unittest.TestCase):
     def test_rejects_unknown_budget_strategy(self):
         payload = request_payload()
         payload["timeline"]["stage_budget_strategy"] = "independent-stage-caps"
+        with self.assertRaises(ValueError):
+            RenderRequest.model_validate(payload)
+
+    def test_rejects_invalid_segment_visual_window(self):
+        payload = request_payload()
+        payload["timeline"]["history_window_candles"] = 41
+        with self.assertRaises(ValueError):
+            RenderRequest.model_validate(payload)
+
+    def test_rejects_incomplete_prediction_segment_map(self):
+        payload = request_payload()
+        payload["timeline"]["prediction_segment_ids"] = ["support_break"]
         with self.assertRaises(ValueError):
             RenderRequest.model_validate(payload)
 

@@ -32,11 +32,11 @@ def payload(cues=None):
 
 
 class TimelineRenderIntervalTests(unittest.TestCase):
-    def test_uses_aligned_technical_evidence_end(self):
+    def test_freezes_at_aligned_technical_evidence_start(self):
         data = payload([
             {"segment_id": "technical_evidence", "start_sec": 8, "end_sec": 18}
         ])
-        self.assertEqual(resolve_history_end_sec(data, 120), 18)
+        self.assertEqual(resolve_history_end_sec(data, 120), 8)
 
     def test_falls_back_to_twenty_percent(self):
         self.assertEqual(resolve_history_end_sec(payload(), 120), 24)

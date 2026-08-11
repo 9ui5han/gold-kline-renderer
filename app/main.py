@@ -221,6 +221,22 @@ class RenderRequest(BaseModel):
         if strategy not in {"legacy-unspecified", "shared-total-cap-v1"}:
             raise ValueError("timeline.stage_budget_strategy无效")
         timeline["stage_budget_strategy"] = strategy
+        visual_sync = timeline.get("visual_sync_strategy", "legacy-time-ratio")
+        if visual_sync not in {"legacy-time-ratio", "segment-id-v1"}:
+            raise ValueError("timeline.visual_sync_strategy无效")
+        timeline["visual_sync_strategy"] = visual_sync
+        if visual_sync == "segment-id-v1":
+            if timeline.get("history_source_candles") != 60:
+                raise ValueError("timeline.history_source_candles无效")
+            if timeline.get("history_window_candles") != 40:
+                raise ValueError("timeline.history_window_candles无效")
+            if timeline.get("history_freeze_segment") != "technical_evidence":
+                raise ValueError("timeline.history_freeze_segment无效")
+            if timeline.get("prediction_segment_ids") != [
+                "resistance_break", "resistance_hold",
+                "support_break", "support_hold",
+            ]:
+                raise ValueError("timeline.prediction_segment_ids无效")
         return timeline
 
     @model_validator(mode="after")
@@ -272,6 +288,29 @@ class RenderRequest(BaseModel):
                     f"forecast_paths.{item.get('scenario_id', 'unknown')}存在未解析路径节点"
                 )
 
+        visual_branches = paths.get("segment_paths")
+        if visual_branches is not None:
+            expected_ids = {
+                "resistance_break", "resistance_hold",
+                "support_break", "support_hold",
+            }
+            if not isinstance(visual_branches, dict) or set(visual_branches) != expected_ids:
+                raise ValueError("forecast_paths.segment_paths字段无效")
+            for segment_id, points in visual_branches.items():
+                if not isinstance(points, list) or len(points) != 3:
+                    raise ValueError(f"forecast_paths.segment_paths.{segment_id}节点无效")
+                for point in points:
+                    if not isinstance(point, dict):
+                        raise ValueError(f"forecast_paths.segment_paths.{segment_id}存在无效对象")
+                    try:
+                        value = float(point["resolved_value"])
+                        ratio = float(point["time_ratio"])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError(
+                            f"forecast_paths.segment_paths.{segment_id}数值无效"
+                        ) from exc
+                    if not math.isfinite(value) or not math.isfinite(ratio) or not 0 <= ratio <= 1:
+                        raise ValueError(f"forecast_paths.segment_paths.{segment_id}数值无效")
         return self
 
 
@@ -685,6 +724,7 @@ def parse_minimax_sentence_units(
                 {
                     "order": len(units) + 1,
                     "segment_id": f"{segment_id}_{sentence_index}",
+                    "parent_segment_id": segment_id,
                     "text": sentence,
                     "speed": speed,
                     "pause_after_ms": pause_value if is_last else internal_pause,
@@ -1119,6 +1159,9 @@ def build_qwen_segment_bounds(
         bounds.append(
             {
                 "segment_id": segment["segment_id"],
+                "parent_segment_id": str(
+                    segment.get("parent_segment_id") or segment["segment_id"]
+                ),
                 "order": segment["order"],
                 "text": segment["text"],
                 "start_sec": round(cursor_sec * scale, 3),
@@ -2092,6 +2135,11 @@ def build_segment_boundary_subtitle_cues(
                 "end_sec": end_sec,
                 "text": text,
                 "segment_id": str(bound.get("segment_id") or ""),
+                "parent_segment_id": str(
+                    bound.get("parent_segment_id")
+                    or bound.get("segment_id")
+                    or ""
+                ),
             }
         )
 
@@ -2966,12 +3014,15 @@ def download_audio(url: str, target: Path) -> None:
 
 
 def resolve_history_end_sec(payload: dict[str, Any], duration: float) -> float:
-    """Use an aligned segment boundary, then fall back to 20% of real audio."""
+    """Freeze history when technical evidence starts; keep a safe fallback."""
     narration = payload.get("narration") or {}
     for cue in narration.get("subtitle_cues") or []:
-        if str(cue.get("segment_id") or "") == "technical_evidence":
+        cue_segment_id = str(
+            cue.get("parent_segment_id") or cue.get("segment_id") or ""
+        )
+        if cue_segment_id == "technical_evidence":
             try:
-                return min(float(duration), max(0.1, float(cue["end_sec"])))
+                return min(float(duration), max(0.1, float(cue["start_sec"])))
             except (KeyError, TypeError, ValueError):
                 break
     timeline = payload.get("timeline") or {}

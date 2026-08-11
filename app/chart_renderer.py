@@ -677,6 +677,143 @@ def _history_end_sec(payload: dict[str, Any], duration: float) -> float:
     return max(0.1, duration * ratio)
 
 
+HISTORY_SEGMENT_IDS = {"opening", "context", "technical_evidence"}
+PREDICTION_SEGMENT_IDS = {
+    "resistance_break", "resistance_hold", "support_break", "support_hold",
+}
+
+
+def _segment_state(
+    narration: dict[str, Any],
+    current_time: float,
+) -> tuple[str, float]:
+    """Return the aligned segment id and progress, holding it through pauses."""
+    cues = [
+        cue for cue in narration.get("subtitle_cues") or []
+        if isinstance(cue, dict) and str(cue.get("segment_id") or "")
+    ]
+    cues.sort(key=lambda cue: float(cue.get("start_sec") or 0))
+    selected = None
+    for cue in cues:
+        if float(cue.get("start_sec") or 0) <= current_time:
+            selected = cue
+        else:
+            break
+    if selected is None:
+        return "", 0.0
+    start = float(selected.get("start_sec") or 0)
+    end = max(start + 0.001, float(selected.get("end_sec") or start))
+    progress = max(0.0, min(1.0, (current_time - start) / (end - start)))
+    segment_id = str(
+        selected.get("parent_segment_id")
+        or selected.get("segment_id")
+        or ""
+    )
+    if segment_id not in HISTORY_SEGMENT_IDS | PREDICTION_SEGMENT_IDS | {"macro_event", "closing"}:
+        segment_id = re.sub(r"_\d+$", "", segment_id)
+    return segment_id, progress
+
+
+def _segment_start_sec(
+    narration: dict[str, Any],
+    segment_id: str,
+    fallback: float,
+) -> float:
+    for cue in narration.get("subtitle_cues") or []:
+        cue_segment_id = str(
+            cue.get("parent_segment_id") or cue.get("segment_id") or ""
+        )
+        if cue_segment_id == segment_id or re.sub(r"_\d+$", "", cue_segment_id) == segment_id:
+            try:
+                return max(0.1, float(cue["start_sec"]))
+            except (KeyError, TypeError, ValueError):
+                break
+    return max(0.1, float(fallback))
+
+
+def _latest_prediction_segment_id(
+    narration: dict[str, Any],
+    current_time: float,
+) -> str:
+    """Return the most recent branch cue so macro pauses keep its final path."""
+    latest_id = ""
+    latest_start = -1.0
+    for cue in narration.get("subtitle_cues") or []:
+        if not isinstance(cue, dict):
+            continue
+        try:
+            start = float(cue.get("start_sec") or 0)
+        except (TypeError, ValueError):
+            continue
+        segment_id = str(
+            cue.get("parent_segment_id") or cue.get("segment_id") or ""
+        )
+        segment_id = re.sub(r"_\d+$", "", segment_id)
+        if (
+            segment_id in PREDICTION_SEGMENT_IDS
+            and start <= current_time
+            and start >= latest_start
+        ):
+            latest_id = segment_id
+            latest_start = start
+    return latest_id
+
+
+def _history_window(
+    history: list[dict[str, Any]],
+    current_time: float,
+    freeze_start_sec: float,
+    source_count: int,
+    window_count: int,
+) -> list[dict[str, Any]]:
+    """Animate a recent rolling window; calculations still use full history."""
+    source = list(history[-max(source_count, window_count):])
+    if len(source) <= window_count:
+        return source
+    progress = max(0.0, min(1.0, current_time / max(freeze_start_sec, 0.1)))
+    end_position = window_count + progress * (len(source) - window_count)
+    full_end = int(math.floor(end_position))
+    start = max(0, full_end - window_count)
+    visible = list(source[start:full_end])
+    fraction = end_position - full_end
+    if full_end < len(source) and fraction > 0:
+        visible.append(_partial_candle(source[full_end], fraction))
+        if len(visible) > window_count:
+            visible = visible[-window_count:]
+    return visible or source[:window_count]
+
+
+def _partial_polyline(
+    points: list[tuple[float, float]],
+    progress: float,
+) -> list[tuple[float, float]]:
+    """Reveal a polyline continuously over one aligned narration segment."""
+    if len(points) < 2 or progress <= 0:
+        return points[:1]
+    if progress >= 1:
+        return points
+    scaled = progress * (len(points) - 1)
+    completed = int(math.floor(scaled))
+    fraction = scaled - completed
+    visible = list(points[:completed + 1])
+    start = points[completed]
+    end = points[min(completed + 1, len(points) - 1)]
+    visible.append((
+        start[0] + (end[0] - start[0]) * fraction,
+        start[1] + (end[1] - start[1]) * fraction,
+    ))
+    return visible
+
+
+def _segment_visual_path(
+    forecast_paths: dict[str, Any],
+    segment_id: str,
+) -> list[dict[str, Any]]:
+    paths = forecast_paths.get("segment_paths") or {}
+    value = paths.get(segment_id)
+    return list(value) if isinstance(value, list) else []
+
+
 def _subtitle_at(
     narration: dict[str, Any],
     current_time: float,
@@ -753,7 +890,23 @@ def render_tradingview_scene(
     progress = max(0.0, min(1.0, current_time / max(duration, 0.1)))
 
     analysis = payload["analysis_forecast"]
-    history = payload["historical_candles"]
+    all_history = payload["historical_candles"]
+    timeline = payload.get("timeline") or {}
+    segment_sync = timeline.get("visual_sync_strategy") == "segment-id-v1"
+    history_source_count = int(timeline.get("history_source_candles") or 60)
+    history_window_count = int(timeline.get("history_window_candles") or 40)
+    history = list(all_history[-history_window_count:])
+    narration = payload["narration"]
+    active_segment_id, active_segment_progress = _segment_state(
+        narration,
+        current_time,
+    )
+    visual_segment_id = active_segment_id
+    if segment_sync and active_segment_id == "macro_event":
+        visual_segment_id = (
+            _latest_prediction_segment_id(narration, current_time)
+            or active_segment_id
+        )
     selected = _scenario(analysis, payload["style"]["scenario"])
     show_alternate_path = bool(
         payload["style"].get("show_alternate_path", True)
@@ -763,6 +916,25 @@ def render_tradingview_scene(
     ranked_structure_scenarios = _rank_structure_scenarios(
         forecast_paths
     )
+    active_segment_path = _segment_visual_path(
+        forecast_paths,
+        visual_segment_id,
+    )
+    if (
+        segment_sync
+        and visual_segment_id in PREDICTION_SEGMENT_IDS
+        and active_segment_path
+    ):
+        visual_scenario_id = {
+            "resistance_break": "up",
+            "resistance_hold": "down",
+            "support_break": "down",
+            "support_hold": "up",
+        }[visual_segment_id]
+        ranked_structure_scenarios = [{
+            "scenario_id": visual_scenario_id,
+            "path_points": active_segment_path,
+        }]
     raw_primary_structure_values = (
         _structure_path_values(ranked_structure_scenarios[0])
         if ranked_structure_scenarios
@@ -805,7 +977,6 @@ def render_tradingview_scene(
         else [],
     )
 
-    narration = payload["narration"]
     support_start_sec = _cue_start(
         narration,
         ("support", "Support"),
@@ -817,65 +988,82 @@ def render_tradingview_scene(
         duration * 0.40,
     )
     level_start_sec = min(support_start_sec, resistance_start_sec)
-    prediction_start_sec = _cue_start(
-        narration,
-        (
-            "base scenario",
-            "prediction phase",
-            "future path",
-            "next we show",
-            "conditional path",
-            "forecast path",
-            "structure path",
-            "next five hours",
-        ),
-        duration * 0.62,
-    )
-    prediction_start = max(
-        0.05,
-        min(0.90, prediction_start_sec / max(duration, 0.1)),
-    )
-    prediction_phase = progress >= prediction_start
-    if prediction_phase:
+    if segment_sync:
+        prediction_phase = (
+            active_segment_id in PREDICTION_SEGMENT_IDS
+            or active_segment_id in {"macro_event", "closing"}
+        )
+        reveal_progress = (
+            active_segment_progress
+            if active_segment_id in PREDICTION_SEGMENT_IDS
+            else 1.0 if prediction_phase else 0.0
+        )
+    else:
+        prediction_start_sec = _cue_start(
+            narration,
+            (
+                "base scenario", "prediction phase", "future path",
+                "next we show", "conditional path", "forecast path",
+                "structure path", "next five hours",
+            ),
+            duration * 0.62,
+        )
+        prediction_start = max(
+            0.05,
+            min(0.90, prediction_start_sec / max(duration, 0.1)),
+        )
+        prediction_phase = progress >= prediction_start
         reveal_progress = max(
             0.0,
             min(1.0, (progress - prediction_start) / 0.28),
-        )
-        forecast_position = min(
-            float(len(forecast_all)),
-            reveal_progress * len(forecast_all),
-        )
-    else:
-        forecast_position = 0.0
+        ) if prediction_phase else 0.0
+    forecast_position = min(
+        float(len(forecast_all)),
+        reveal_progress * len(forecast_all),
+    ) if prediction_phase else 0.0
 
     if prediction_phase:
         # Keep every real candle in its original slot. The forecast uses a
         # right-side area reserved from the beginning of the video.
         visible_history = list(history)
     else:
-        # Reveal the real market chronologically with the narration.
-        initial_history_count = min(8, len(history))
-        history_reveal_end_sec = _history_end_sec(payload, duration)
-        history_reveal = max(
-            0.0,
-            min(1.0, current_time / history_reveal_end_sec),
-        )
-        history_position = min(
-            float(len(history)),
-            initial_history_count
-            + history_reveal
-            * max(len(history) - initial_history_count, 0),
-        )
-        history_count = int(math.floor(history_position))
-        visible_history = list(history[:history_count])
-        history_fraction = history_position - history_count
-        if history_count < len(history) and history_fraction > 0:
-            visible_history.append(
-                _partial_candle(
-                    history[history_count],
-                    history_fraction,
-                )
+        if segment_sync:
+            freeze_start = _segment_start_sec(
+                narration,
+                str(timeline.get("history_freeze_segment") or "technical_evidence"),
+                _history_end_sec(payload, duration) * 0.65,
             )
+            if active_segment_id == "technical_evidence" or current_time >= freeze_start:
+                visible_history = list(history)
+            else:
+                visible_history = _history_window(
+                    all_history,
+                    current_time,
+                    freeze_start,
+                    history_source_count,
+                    history_window_count,
+                )
+        else:
+            # Backward-compatible reveal for old timeline contracts.
+            initial_history_count = min(8, len(history))
+            history_reveal_end_sec = _history_end_sec(payload, duration)
+            history_reveal = max(
+                0.0,
+                min(1.0, current_time / history_reveal_end_sec),
+            )
+            history_position = min(
+                float(len(history)),
+                initial_history_count
+                + history_reveal
+                * max(len(history) - initial_history_count, 0),
+            )
+            history_count = int(math.floor(history_position))
+            visible_history = list(history[:history_count])
+            history_fraction = history_position - history_count
+            if history_count < len(history) and history_fraction > 0:
+                visible_history.append(
+                    _partial_candle(history[history_count], history_fraction)
+                )
     # Forecast OHLC values stay internal. The screen only shows an abstract
     # bent trend arrow, never precise future candles, prices or timestamps.
     candles = visible_history
@@ -1251,11 +1439,15 @@ def render_tradingview_scene(
         )
         primary_points = _simplify_visual_polyline(primary_points)
         alternate_points = _simplify_visual_polyline(alternate_points)
-        # A structural prediction is a single conclusion, so show the whole
-        # line as soon as the prediction phase begins instead of drawing it
-        # slowly segment by segment.
-        visible_primary = primary_points
-        visible_alternate = alternate_points
+        if segment_sync and visual_segment_id in PREDICTION_SEGMENT_IDS:
+            visible_primary = _partial_polyline(
+                primary_points,
+                reveal_progress if active_segment_id in PREDICTION_SEGMENT_IDS else 1.0,
+            )
+            visible_alternate = []
+        else:
+            visible_primary = primary_points
+            visible_alternate = alternate_points
 
         branch_points: list[tuple[float, float]] = []
         branch_direction = ""
