@@ -55,6 +55,9 @@ VIDEO_LABELS = {
     "potential_trend_path": "Potential Trend Path",
     "utc": "UTC",
 }
+EDUCATIONAL_NOTICE = (
+    "Educational market observation · Conditional scenarios, not trading signals"
+)
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -289,6 +292,35 @@ def _stacked_price_label(
             font=face,
             fill="#ffffff",
         )
+
+
+def _draw_educational_notice(
+    draw: ImageDraw.ImageDraw,
+    left: float,
+    right: float,
+    center_y: float,
+) -> tuple[float, float, float, float]:
+    """Draw a persistent one-line notice between chart and subtitles."""
+    face = _font(16, True)
+    bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    x1, x2 = left, right
+    y1, y2 = center_y - 18, center_y + 18
+    draw.rounded_rectangle(
+        (x1, y1, x2, y2),
+        radius=10,
+        fill="#fff7df",
+        outline="#f0c35a",
+        width=1,
+    )
+    draw.text(
+        ((x1 + x2 - text_width) / 2, center_y - text_height / 2 - bbox[1]),
+        EDUCATIONAL_NOTICE,
+        font=face,
+        fill="#7a5200",
+    )
+    return x1, y1, x2, y2
 
 
 def _dashed_line(
@@ -1204,7 +1236,7 @@ def render_tradingview_scene(
     # Keep a wide right lane for price and market-structure names.
     label_right = safe["safe_right"] - 8 if is_tiktok_safe else width - 8
     chart_right = safe["safe_right"] - 170 if is_tiktok_safe else width - 220
-    chart_bottom = safe["safe_bottom"] - 210 if is_tiktok_safe else height - 280
+    chart_bottom = safe["safe_bottom"] - 250 if is_tiktok_safe else height - 280
     price_axis_x = chart_right
     time_axis_y = chart_bottom
     draw.rectangle(
@@ -2021,6 +2053,13 @@ def render_tradingview_scene(
     subtitle_top = safe["safe_bottom"] - 158 if is_tiktok_safe else height - 215
     subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
     subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
+    notice_left = safe["safe_left"] if is_tiktok_safe else 48
+    _draw_educational_notice(
+        draw,
+        notice_left,
+        subtitle_right,
+        subtitle_top - 32,
+    )
     draw.rounded_rectangle(
         (48, subtitle_top, subtitle_right, subtitle_bottom),
         radius=20,
