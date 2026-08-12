@@ -60,8 +60,8 @@ EDUCATIONAL_NOTICE = (
 )
 ANALYSIS_ZOOM_CANDLES = 28
 FORECAST_TURN_THRESHOLD_DEG = 13.0
-SUBTITLE_EN_FONT_SIZE = 45
-SUBTITLE_ZH_FONT_SIZE = 36
+SUBTITLE_EN_FONT_SIZE = 104
+SUBTITLE_ZH_FONT_SIZE = 72
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -2158,7 +2158,7 @@ def render_tradingview_scene(
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 61),
+            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 124),
             line,
             font=subtitle_face,
             fill="#131722",
@@ -2171,12 +2171,12 @@ def render_tradingview_scene(
             subtitle_right - subtitle_left - 54,
             max_lines=3,
         )
-        chinese_y = subtitle_top + 130
+        chinese_y = subtitle_top + 260
         for line_no, line in enumerate(chinese_lines):
             bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
             text_width = bbox[2] - bbox[0]
             draw.text(
-                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 50),
+                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 92),
                 line,
                 font=subtitle_zh_face,
                 fill="#4b5563",

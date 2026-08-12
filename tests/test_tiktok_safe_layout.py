@@ -13,8 +13,8 @@ from app.chart_renderer import (
 
 class TikTokSafeLayoutTests(unittest.TestCase):
     def test_reference_subtitle_sizes_are_used(self):
-        self.assertEqual(SUBTITLE_EN_FONT_SIZE, 52)
-        self.assertEqual(SUBTITLE_ZH_FONT_SIZE, 36)
+        self.assertEqual(SUBTITLE_EN_FONT_SIZE, 104)
+        self.assertEqual(SUBTITLE_ZH_FONT_SIZE, 72)
 
     def test_tiktok_uses_balanced_safe_area(self):
         box = resolve_safe_layout(1080, 1920, "tiktok")
