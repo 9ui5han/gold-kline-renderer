@@ -75,6 +75,28 @@ class RailwayTimelineContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RenderRequest.model_validate(payload)
 
+    def test_accepts_duration_calibrated_unified_v2(self):
+        payload = request_payload()
+        payload["timeline"]["stage_word_tolerance"] = 5
+        payload["timeline"]["stage_budget_strategy"] = (
+            "duration-calibrated-unified-v2"
+        )
+        payload["timeline"]["target_duration_sec"] = 80
+        payload["timeline"]["duration_tolerance_sec"] = 5
+        payload["timeline"]["min_audio_duration_sec"] = 75
+        payload["timeline"]["max_audio_duration_sec"] = 85
+
+        model = RenderRequest.model_validate(payload)
+        timeline = model.model_dump()["timeline"]
+
+        self.assertEqual(timeline["stage_word_tolerance"], 5)
+        self.assertEqual(
+            timeline["stage_budget_strategy"],
+            "duration-calibrated-unified-v2",
+        )
+        self.assertEqual(timeline["min_audio_duration_sec"], 75)
+        self.assertEqual(timeline["max_audio_duration_sec"], 85)
+
     def test_old_request_without_timeline_still_works(self):
         payload = request_payload()
         del payload["timeline"]

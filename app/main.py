@@ -238,6 +238,7 @@ class RenderRequest(BaseModel):
         if strategy not in {
             "legacy-unspecified", "shared-total-cap-v1",
             "adaptive-shared-total-v2",
+            "duration-calibrated-unified-v2",
         }:
             raise ValueError("timeline.stage_budget_strategy无效")
         timeline["stage_budget_strategy"] = strategy
