@@ -48,8 +48,8 @@ def _structure_scenario(scenario_id, prior, values):
 
 
 class ChartRendererTests(unittest.TestCase):
-    def test_analysis_zoom_uses_recent_12_candles(self):
-        self.assertEqual(ANALYSIS_ZOOM_CANDLES, 12)
+    def test_analysis_zoom_keeps_recent_28_candles_dense(self):
+        self.assertEqual(ANALYSIS_ZOOM_CANDLES, 28)
 
     def test_singular_support_and_resistance_zones_are_supported(self):
         analysis = {

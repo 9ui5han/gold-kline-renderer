@@ -58,9 +58,8 @@ VIDEO_LABELS = {
 EDUCATIONAL_NOTICE = (
     "Educational market observation · Conditional scenarios, not trading signals"
 )
-ANALYSIS_ZOOM_CANDLES = 12
+ANALYSIS_ZOOM_CANDLES = 28
 FORECAST_TURN_THRESHOLD_DEG = 13.0
-FORECAST_QUICK_REVEAL_SEC = 0.35
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -744,9 +743,10 @@ def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int
         return {
             "safe_top": round(height * 0.135),
             "safe_bottom": height - round(height * 0.25),
-            # User-requested compact TikTok right overlay reserve: 10% instead
-            # of the former 20%, while top/bottom/left reserves stay unchanged.
-            "safe_right": width - round(width * 0.10),
+            # The rendered video now uses the full width. TikTok's interface
+            # may overlay the right edge, but the user explicitly does not
+            # want a dedicated blank strip reserved in the source video.
+            "safe_right": width,
             "safe_left": round(width * 0.06),
         }
     return {
@@ -957,16 +957,9 @@ def _visible_segment_paths(
         start = intervals[0][0]
         if current_time < start:
             continue
-        elapsed_active = sum(
-            max(0.0, min(current_time, end) - start)
-            for start, end in intervals
-            if current_time >= start
-        )
-        progress = elapsed_active / FORECAST_QUICK_REVEAL_SEC
-        if progress >= 1.0 - 1e-9:
-            progress = 1.0
-        else:
-            progress = max(0.0, progress)
+        # Show the complete path as soon as its narration segment starts.
+        # This keeps segment timing while removing the slow drawing animation.
+        progress = 1.0
         path = _segment_visual_path(forecast_paths, segment_id)
         if path:
             visible.append((segment_id, path, progress))
@@ -1238,8 +1231,8 @@ def render_tradingview_scene(
     ) if prediction_phase else 0.0
 
     if prediction_phase:
-        # Analysis close-up: show only recent closed candles so the chart and
-        # the conditional paths are materially larger on a phone screen.
+        # Analysis close-up: retain enough recent closed candles for a dense
+        # chart while enlarging price action and conditional paths.
         visible_history = list(history[-ANALYSIS_ZOOM_CANDLES:])
     else:
         if segment_sync:
@@ -1288,15 +1281,14 @@ def render_tradingview_scene(
     # TikTok overlay areas intentionally remain plain white. Critical content
     # is drawn only inside resolve_safe_layout().
 
-    title_face = _font(36, True)
-    meta_face = _font(24)
     axis_face = _font(20)
     label_face = _font(21, True)
-    subtitle_face = _font(30, True)
-    subtitle_zh_face = _font(27, True)
+    subtitle_face = _font(38, True)
+    subtitle_zh_face = _font(34, True)
 
     chart_left = max(48, safe["safe_left"])
-    chart_top = safe["safe_top"] + 104 if is_tiktok_safe else 104
+    # No symbol/time header: spend the released vertical space on the chart.
+    chart_top = safe["safe_top"] + 12 if is_tiktok_safe else 12
     # Reserve a dedicated lane on the right for exact price tags. Candles,
     # zones and the trend arrow never enter this lane.
     # Keep only half of the former right lane so the chart is easier to read.
@@ -2148,7 +2140,7 @@ def render_tradingview_scene(
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 43),
+            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 52),
             line,
             font=subtitle_face,
             fill="#131722",
@@ -2161,12 +2153,12 @@ def render_tradingview_scene(
             subtitle_right - subtitle_left - 54,
             max_lines=3,
         )
-        chinese_y = subtitle_top + 94
+        chinese_y = subtitle_top + 112
         for line_no, line in enumerate(chinese_lines):
             bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
             text_width = bbox[2] - bbox[0]
             draw.text(
-                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 39),
+                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 47),
                 line,
                 font=subtitle_zh_face,
                 fill="#4b5563",
@@ -2180,44 +2172,6 @@ def render_tradingview_scene(
         chart_left,
         chart_right,
         chart_bottom - 38,
-    )
-
-    # Draw the real-data header last on an opaque layer so no chart, label or
-    # subtitle can cover exact historical values.
-    # During the historical reveal, OHLC follows the latest candle currently
-    # visible on screen. Once prediction begins, it freezes at the last real
-    # candle because the trend arrow has no precise forecast OHLC.
-    latest = (
-        history[-1]
-        if prediction_phase
-        else visible_history[-1]
-    )
-    header_state = (
-        VIDEO_LABELS["last_closed_candle"]
-        if prediction_phase
-        else VIDEO_LABELS["current_view"]
-    )
-    header_top = safe["safe_top"] if is_tiktok_safe else 0
-    header_bottom = header_top + 88
-    header_right = safe["safe_right"] if is_tiktok_safe else width
-    header_left = safe["safe_left"] if is_tiktok_safe else 0
-    draw.rectangle(
-        (header_left, header_top, header_right, header_bottom),
-        fill="#ffffff",
-    )
-    draw.line(
-        (header_left, header_bottom - 1, header_right, header_bottom - 1),
-        fill="#d9dce3",
-        width=2,
-    )
-    draw.text(
-        (header_left + 18, header_top + 20),
-        _latest_closed_candle_label(
-            payload["symbol"],
-            payload["data_as_of"],
-        ),
-        font=title_face,
-        fill="#131722",
     )
 
     image.save(path, "PNG")

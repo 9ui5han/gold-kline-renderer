@@ -14,7 +14,7 @@ class TikTokSafeLayoutTests(unittest.TestCase):
         box = resolve_safe_layout(1080, 1920, "tiktok")
         self.assertEqual(box["safe_top"], 259)
         self.assertEqual(box["safe_bottom"], 1440)
-        self.assertEqual(box["safe_right"], 972)
+        self.assertEqual(box["safe_right"], 1080)
         self.assertEqual(box["safe_left"], 65)
 
     def test_tiktok_name_is_trimmed_and_case_insensitive(self):

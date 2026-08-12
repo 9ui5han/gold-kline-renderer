@@ -1,7 +1,6 @@
 import unittest
 
 from app.chart_renderer import (
-    FORECAST_QUICK_REVEAL_SEC,
     FORECAST_TURN_THRESHOLD_DEG,
     _history_window,
     _latest_prediction_segment_id,
@@ -116,7 +115,7 @@ class SegmentVisualSyncTests(unittest.TestCase):
         self.assertEqual(pause_start, 1.0)
         self.assertEqual(pause_middle, pause_start)
 
-    def test_path_finishes_its_quick_reveal_in_350ms(self):
+    def test_path_is_complete_immediately_when_segment_starts(self):
         narration = {"subtitle_cues": [{
             "segment_id": "support_break", "start_sec": 10, "end_sec": 20,
         }]}
@@ -125,12 +124,12 @@ class SegmentVisualSyncTests(unittest.TestCase):
             {"time_ratio": 1, "resolved_value": 1},
         ]}}
         halfway = _visible_segment_paths(
-            paths, narration, 10 + FORECAST_QUICK_REVEAL_SEC / 2,
+            paths, narration, 10.01,
         )[0][2]
         complete = _visible_segment_paths(
-            paths, narration, 10 + FORECAST_QUICK_REVEAL_SEC,
+            paths, narration, 10.02,
         )[0][2]
-        self.assertAlmostEqual(halfway, 0.5)
+        self.assertEqual(halfway, 1.0)
         self.assertEqual(complete, 1.0)
 
     def test_turns_below_thirteen_degrees_follow_the_existing_trend(self):
