@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TikTok 视频预览</title>
+  <link rel="stylesheet" href="./preview.css">
+</head>
+<body>
+  <main class="workspace">
+    <section class="controls" aria-label="预览设置">
+      <p class="eyebrow">GOLD K-LINE RENDERER</p>
+      <h1>TikTok 上传效果预览</h1>
+      <p class="intro">这里只模拟 TikTok 界面遮挡，不会修改、导出或覆盖原始 MP4。</p>
+
+      <label for="video-url">视频地址</label>
+      <div class="url-row">
+        <input id="video-url" type="url" placeholder="粘贴 Railway 返回的 video_url">
+        <button id="load-url" type="button">载入地址</button>
+      </div>
+
+      <div class="divider"><span>或者</span></div>
+      <label class="file-button" for="video-file">选择本地 MP4</label>
+      <input id="video-file" type="file" accept="video/mp4,video/*">
+
+      <div class="switches">
+        <label><input id="show-ui" type="checkbox" checked> 显示 TikTok 界面</label>
+        <label><input id="show-safe" type="checkbox" checked> 显示安全区提示</label>
+      </div>
+
+      <div class="notes">
+        <strong>检查重点</strong>
+        <span>右侧按钮不要挡住价格标签和预测线路。</span>
+        <span>底部文案不要挡住中文字幕。</span>
+        <span>顶部搜索栏不要挡住日期标题。</span>
+      </div>
+    </section>
+
+    <section class="phone-column">
+      <div class="phone" id="phone">
+        <video id="preview-video" playsinline controls loop></video>
+        <div class="empty-state" id="empty-state">
+          <strong>请选择视频</strong>
+          <span>支持 Railway 地址或本地 MP4</span>
+        </div>
+
+        <div class="safe-layer" id="safe-layer" aria-hidden="true">
+          <div class="unsafe unsafe-top">顶部界面遮挡区</div>
+          <div class="unsafe unsafe-right">右侧按钮遮挡区</div>
+          <div class="unsafe unsafe-bottom">底部文案和导航遮挡区</div>
+          <div class="safe-box">重要画面安全区</div>
+        </div>
+
+        <div class="tiktok-ui" id="tiktok-ui" aria-hidden="true">
+          <div class="top-bar"><span>Following</span><b>For You</b><span class="search">⌕</span></div>
+          <div class="actions">
+            <div class="avatar">AU</div>
+            <div><b>♥</b><span>12.8K</span></div>
+            <div><b>●</b><span>328</span></div>
+            <div><b>★</b><span>1,206</span></div>
+            <div><b>↗</b><span>Share</span></div>
+          </div>
+          <div class="caption">
+            <b>@xauusd_analysis</b>
+            <span>Gold market scenario review · Educational observation only</span>
+            <span>♫ original sound</span>
+          </div>
+          <div class="bottom-nav"><span>Home</span><span>Shop</span><b>＋</b><span>Inbox</span><span>Profile</span></div>
+        </div>
+      </div>
+      <p class="preview-note">虚线和红色遮挡提示只存在于此预览页面。</p>
+    </section>
+  </main>
+  <script src="./preview.js"></script>
+</body>
+</html>

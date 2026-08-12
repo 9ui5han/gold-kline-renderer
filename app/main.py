@@ -43,6 +43,8 @@ def resolve_data_dir() -> Path:
 DATA_DIR = resolve_data_dir()
 MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
+APP_DIR = Path(__file__).resolve().parent
+TIKTOK_PREVIEW_DIR = APP_DIR / "tiktok_preview"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -358,6 +360,11 @@ app = FastAPI(
     description="根据真实OHLCV、预测情景和302.AI语音生成TikTok竖屏MP4。",
 )
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
+app.mount(
+    "/preview/tiktok",
+    StaticFiles(directory=TIKTOK_PREVIEW_DIR, html=True),
+    name="tiktok-preview",
+)
 JOBS: dict[str, dict[str, Any]] = {}
 TTS_JOBS: dict[str, dict[str, Any]] = {}
 LOCK = threading.Lock()
