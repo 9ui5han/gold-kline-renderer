@@ -147,10 +147,7 @@ def _video_title(timeframe: str) -> str:
 
 
 def _latest_closed_candle_label(symbol: str, data_as_of: str) -> str:
-    return (
-        f"{str(symbol or '').strip()} · Latest closed candle · "
-        f"{_header_time_label(data_as_of)}"
-    )
+    return f"{str(symbol or '').strip()} · {_header_time_label(data_as_of)}"
 
 
 def _axis_time_label(value: str) -> str:
@@ -1287,13 +1284,14 @@ def render_tradingview_scene(
     subtitle_zh_face = _font(27, True)
 
     chart_left = max(48, safe["safe_left"])
-    chart_top = safe["safe_top"] + 188 if is_tiktok_safe else 188
+    chart_top = safe["safe_top"] + 104 if is_tiktok_safe else 104
     # Reserve a dedicated lane on the right for exact price tags. Candles,
     # zones and the trend arrow never enter this lane.
-    # Keep a wide right lane for price and market-structure names.
+    # Keep only half of the former right lane so the chart is easier to read.
     label_right = safe["safe_right"] - 8 if is_tiktok_safe else width - 8
-    chart_right = safe["safe_right"] - 170 if is_tiktok_safe else width - 220
-    chart_bottom = safe["safe_bottom"] - 250 if is_tiktok_safe else height - 280
+    chart_right = safe["safe_right"] - 85 if is_tiktok_safe else width - 110
+    # Reserve a clean lane below the time axis for borderless bilingual subtitles.
+    chart_bottom = safe["safe_bottom"] - 286 if is_tiktok_safe else height - 310
     price_axis_x = chart_right
     time_axis_y = chart_bottom
     draw.rectangle(
@@ -1389,7 +1387,9 @@ def render_tradingview_scene(
             )
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
-    history_end_x = chart_left + chart_width * 0.76
+    # During analysis, enlarge the prediction area from 24% to 40%.
+    history_end_ratio = 0.60 if prediction_phase else 0.76
+    history_end_x = chart_left + chart_width * history_end_ratio
     history_slot = (
         history_end_x - chart_left - 18
     ) / max(len(history), 1)
@@ -2098,11 +2098,11 @@ def render_tradingview_scene(
         dash=7,
     )
 
-    # Compact subtitle area; narration and timing are preserved unchanged.
+    # Subtitles sit below the chart time axis without a background board.
     subtitle = _subtitle_at(narration, current_time, progress)
     subtitle_zh = _chinese_subtitle_at(narration, current_time)
     subtitle_left = safe["safe_left"] if is_tiktok_safe else 48
-    subtitle_top = safe["safe_bottom"] - 242 if is_tiktok_safe else height - 285
+    subtitle_top = chart_bottom + 72
     subtitle_bottom = safe["safe_bottom"] - 12 if is_tiktok_safe else height - 38
     subtitle_right = safe["safe_right"] - 12 if is_tiktok_safe else width - 48
     subtitle_lines = _wrap_text(
@@ -2112,14 +2112,7 @@ def render_tradingview_scene(
         subtitle_right - subtitle_left - 54,
         max_lines=2,
     )
-    draw.rounded_rectangle(
-        (subtitle_left, subtitle_top, subtitle_right, subtitle_bottom),
-        radius=20,
-        fill="#f4f4f6",
-        outline="#d9dce3",
-        width=1,
-    )
-    english_y = subtitle_top + 18
+    english_y = subtitle_top
     for line_no, line in enumerate(subtitle_lines):
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
@@ -2137,7 +2130,7 @@ def render_tradingview_scene(
             subtitle_right - subtitle_left - 54,
             max_lines=2,
         )
-        chinese_y = subtitle_top + 112
+        chinese_y = subtitle_top + 94
         for line_no, line in enumerate(chinese_lines):
             bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
             text_width = bbox[2] - bbox[0]
@@ -2174,7 +2167,7 @@ def render_tradingview_scene(
         else VIDEO_LABELS["current_view"]
     )
     header_top = safe["safe_top"] if is_tiktok_safe else 0
-    header_bottom = header_top + 168
+    header_bottom = header_top + 88
     header_right = safe["safe_right"] if is_tiktok_safe else width
     header_left = safe["safe_left"] if is_tiktok_safe else 0
     draw.rectangle(
@@ -2187,40 +2180,13 @@ def render_tradingview_scene(
         width=2,
     )
     draw.text(
-        (header_left + 18, header_top + 24),
-        _video_title(payload["timeframe"]),
-        font=title_face,
-        fill="#131722",
-    )
-    draw.text(
-        (header_left + 18, header_top + 72),
+        (header_left + 18, header_top + 20),
         _latest_closed_candle_label(
             payload["symbol"],
             payload["data_as_of"],
         ),
-        font=meta_face,
-        fill="#787b86",
-    )
-    real_ohlc = (
-        f"O {_price(latest['open'])}   "
-        f"H {_price(latest['high'])}   "
-        f"L {_price(latest['low'])}   "
-        f"C {_price(latest['close'])}"
-    )
-    draw.text(
-        (header_left + 18, header_top + 112),
-        real_ohlc,
-        font=meta_face,
+        font=title_face,
         fill="#131722",
-    )
-    _round_rect_label(
-        draw,
-        safe["safe_right"] - 18 if is_tiktok_safe else width - 44,
-        header_top + 48,
-        header_state,
-        axis_face,
-        "#089981",
-        anchor="rm",
     )
 
     image.save(path, "PNG")

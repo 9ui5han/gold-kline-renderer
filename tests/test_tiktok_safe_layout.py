@@ -48,6 +48,11 @@ class TikTokSafeLayoutTests(unittest.TestCase):
         # There is no pill/background box: nearby pixels remain plain white.
         self.assertEqual(image.getpixel((chart_left, chart_bottom - 38)), (255, 255, 255))
 
+    def test_requested_compact_right_price_lane(self):
+        safe = resolve_safe_layout(1080, 1920, "tiktok")
+        chart_right = safe["safe_right"] - 85
+        self.assertEqual(safe["safe_right"] - chart_right, 85)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,7 +38,7 @@ class RendererEnglishUtcTests(unittest.TestCase):
                 "XAUUSD",
                 "2026-08-06T22:30:00+08:00",
             ),
-            "XAUUSD · Latest closed candle · Aug 06, 2026 14:30 UTC",
+            "XAUUSD · Aug 06, 2026 14:30 UTC",
         )
 
     def test_axis_time_uses_english_month(self):
