@@ -1,11 +1,14 @@
 import unittest
 
 from app.chart_renderer import (
+    FORECAST_QUICK_REVEAL_SEC,
+    FORECAST_TURN_THRESHOLD_DEG,
     _history_window,
     _latest_prediction_segment_id,
     _partial_polyline,
     _segment_state,
     _segment_visual_path,
+    _simplify_visual_polyline,
     _visible_segment_paths,
     PREDICTION_SEGMENT_COLORS,
 )
@@ -92,8 +95,7 @@ class SegmentVisualSyncTests(unittest.TestCase):
             ["resistance_break", "resistance_hold", "support_break"],
         )
         self.assertEqual([item[2] for item in during_third[:2]], [1.0, 1.0])
-        self.assertGreater(during_third[2][2], 0)
-        self.assertLess(during_third[2][2], 1)
+        self.assertEqual(during_third[2][2], 1.0)
         after_all = _visible_segment_paths(paths, narration, 60)
         self.assertEqual(len(after_all), 4)
         self.assertEqual(len(set(PREDICTION_SEGMENT_COLORS.values())), 4)
@@ -111,8 +113,32 @@ class SegmentVisualSyncTests(unittest.TestCase):
         ]}}
         pause_start = _visible_segment_paths(paths, narration, 12)[0][2]
         pause_middle = _visible_segment_paths(paths, narration, 13)[0][2]
-        self.assertEqual(pause_start, 0.5)
+        self.assertEqual(pause_start, 1.0)
         self.assertEqual(pause_middle, pause_start)
+
+    def test_path_finishes_its_quick_reveal_in_350ms(self):
+        narration = {"subtitle_cues": [{
+            "segment_id": "support_break", "start_sec": 10, "end_sec": 20,
+        }]}
+        paths = {"segment_paths": {"support_break": [
+            {"time_ratio": 0, "resolved_value": 2},
+            {"time_ratio": 1, "resolved_value": 1},
+        ]}}
+        halfway = _visible_segment_paths(
+            paths, narration, 10 + FORECAST_QUICK_REVEAL_SEC / 2,
+        )[0][2]
+        complete = _visible_segment_paths(
+            paths, narration, 10 + FORECAST_QUICK_REVEAL_SEC,
+        )[0][2]
+        self.assertAlmostEqual(halfway, 0.5)
+        self.assertEqual(complete, 1.0)
+
+    def test_turns_below_thirteen_degrees_follow_the_existing_trend(self):
+        self.assertEqual(FORECAST_TURN_THRESHOLD_DEG, 13.0)
+        shallow = [(0.0, 0.0), (100.0, 0.0), (200.0, 20.0)]
+        clear = [(0.0, 0.0), (100.0, 0.0), (150.0, 50.0)]
+        self.assertEqual(_simplify_visual_polyline(shallow), [shallow[0], shallow[2]])
+        self.assertEqual(_simplify_visual_polyline(clear), clear)
 
 
 if __name__ == "__main__":

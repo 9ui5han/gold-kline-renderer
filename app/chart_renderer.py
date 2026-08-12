@@ -59,6 +59,8 @@ EDUCATIONAL_NOTICE = (
     "Educational market observation · Conditional scenarios, not trading signals"
 )
 ANALYSIS_ZOOM_CANDLES = 12
+FORECAST_TURN_THRESHOLD_DEG = 13.0
+FORECAST_QUICK_REVEAL_SEC = 0.35
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -623,7 +625,7 @@ def _distance_to_segment(
 
 def _simplify_visual_polyline(
     points: list[tuple[float, float]],
-    angle_threshold_deg: float = 12.0,
+    angle_threshold_deg: float = FORECAST_TURN_THRESHOLD_DEG,
     deviation_threshold_px: float = 8.0,
 ) -> list[tuple[float, float]]:
     """Remove short, visually insignificant bends from a forecast line."""
@@ -656,15 +658,7 @@ def _simplify_visual_polyline(
             angle = math.degrees(
                 math.acos(max(-1.0, min(1.0, cosine)))
             )
-            deviation = _distance_to_segment(
-                current,
-                previous,
-                following,
-            )
-            if (
-                angle < angle_threshold_deg
-                and deviation < deviation_threshold_px
-            ):
+            if angle < angle_threshold_deg:
                 simplified.pop(index)
                 changed = True
                 break
@@ -963,13 +957,16 @@ def _visible_segment_paths(
         start = intervals[0][0]
         if current_time < start:
             continue
-        total_active = sum(end - start for start, end in intervals)
         elapsed_active = sum(
             max(0.0, min(current_time, end) - start)
             for start, end in intervals
             if current_time >= start
         )
-        progress = max(0.0, min(1.0, elapsed_active / max(total_active, 0.001)))
+        progress = elapsed_active / FORECAST_QUICK_REVEAL_SEC
+        if progress >= 1.0 - 1e-9:
+            progress = 1.0
+        else:
+            progress = max(0.0, progress)
         path = _segment_visual_path(forecast_paths, segment_id)
         if path:
             visible.append((segment_id, path, progress))
@@ -1510,12 +1507,8 @@ def render_tradingview_scene(
         current_time >= level_start_sec
         and payload["style"].get("show_observation_zones", True)
     ):
-        zone_start_index = max(len(visible_history) - 4, 0)
-        zone_x1 = px(zone_start_index)
-        zone_x2 = min(
-            chart_right - 6,
-            px(len(visible_history) + max(len(forecast_all), 6)),
-        )
+        zone_x1 = chart_left
+        zone_x2 = chart_right
         zone_specs = (
             (
                 "potential_buy_zones",
@@ -2110,6 +2103,31 @@ def render_tradingview_scene(
         width=1,
         dash=7,
     )
+
+    # Forecast arrows are the top chart layer: repaint their geometry after
+    # candles, zones, levels, price lines, and right-lane connectors.
+    if prediction_phase and cumulative_segment_paths:
+        forecast_left = history_end_x + 4
+        forecast_right = chart_right - 18
+        for segment_id, segment_path, path_progress in cumulative_segment_paths:
+            top_points = _simplify_visual_polyline([
+                (
+                    forecast_left + ratio * (forecast_right - forecast_left),
+                    py(value),
+                )
+                for ratio, value, _ in _structure_path_values(
+                    {"path_points": segment_path}
+                )
+            ])
+            top_points = _partial_polyline(top_points, path_progress)
+            if len(top_points) < 2:
+                continue
+            color = PREDICTION_SEGMENT_COLORS[segment_id]
+            draw.line(top_points, fill=color, width=5)
+            draw.polygon(
+                _arrow_head(top_points[-1], top_points[-2], size=17),
+                fill=color,
+            )
 
     # Subtitles sit below the chart time axis without a background board.
     subtitle = _subtitle_at(narration, current_time, progress)
