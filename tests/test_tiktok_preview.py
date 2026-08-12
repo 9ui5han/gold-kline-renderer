@@ -18,6 +18,9 @@ class TikTokPreviewTests(unittest.TestCase):
         self.assertIn('class="preview-stage"', response.text)
         self.assertIn('id="settings-panel"', response.text)
         self.assertIn('id="toggle-settings"', response.text)
+        self.assertIn('class="device-frame iphone-16-pro-max"', response.text)
+        self.assertIn('class="dynamic-island"', response.text)
+        self.assertIn('class="home-indicator"', response.text)
 
     def test_preview_assets_are_available(self):
         css = self.client.get("/preview/tiktok/preview.css")
@@ -26,6 +29,8 @@ class TikTokPreviewTests(unittest.TestCase):
         self.assertEqual(css.status_code, 200)
         self.assertIn("height: 100dvh", css.text)
         self.assertIn("max-height: 100dvh", css.text)
+        self.assertIn("aspect-ratio: 1320 / 2868", css.text)
+        self.assertIn("object-fit: contain", css.text)
         self.assertEqual(javascript.status_code, 200)
         self.assertIn("URL.createObjectURL", javascript.text)
         self.assertIn("aria-expanded", javascript.text)
