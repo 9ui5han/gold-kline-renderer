@@ -4,7 +4,15 @@ const fileInput = document.querySelector("#video-file");
 const emptyState = document.querySelector("#empty-state");
 const uiLayer = document.querySelector("#tiktok-ui");
 const safeLayer = document.querySelector("#safe-layer");
+const settingsPanel = document.querySelector("#settings-panel");
+const settingsToggle = document.querySelector("#toggle-settings");
 let localObjectUrl = "";
+
+settingsToggle.addEventListener("click", () => {
+  const isOpen = settingsToggle.getAttribute("aria-expanded") === "true";
+  settingsToggle.setAttribute("aria-expanded", String(!isOpen));
+  settingsPanel.classList.toggle("collapsed", isOpen);
+});
 
 function loadVideo(source) {
   if (!source) return;

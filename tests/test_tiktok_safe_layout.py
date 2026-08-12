@@ -4,12 +4,18 @@ from PIL import Image, ImageDraw
 
 from app.chart_renderer import (
     EDUCATIONAL_NOTICE,
+    SUBTITLE_EN_FONT_SIZE,
+    SUBTITLE_ZH_FONT_SIZE,
     _draw_educational_notice,
     resolve_safe_layout,
 )
 
 
 class TikTokSafeLayoutTests(unittest.TestCase):
+    def test_reference_subtitle_sizes_are_used(self):
+        self.assertEqual(SUBTITLE_EN_FONT_SIZE, 52)
+        self.assertEqual(SUBTITLE_ZH_FONT_SIZE, 36)
+
     def test_tiktok_uses_balanced_safe_area(self):
         box = resolve_safe_layout(1080, 1920, "tiktok")
         self.assertEqual(box["safe_top"], 259)

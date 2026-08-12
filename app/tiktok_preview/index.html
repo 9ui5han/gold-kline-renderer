@@ -7,8 +7,10 @@
   <link rel="stylesheet" href="./preview.css">
 </head>
 <body>
-  <main class="workspace">
-    <section class="controls" aria-label="预览设置">
+  <main class="preview-stage">
+    <button id="toggle-settings" class="settings-toggle" type="button" aria-expanded="false" aria-controls="settings-panel">☰ 预览设置</button>
+
+    <section class="controls collapsed" id="settings-panel" aria-label="预览设置">
       <p class="eyebrow">GOLD K-LINE RENDERER</p>
       <h1>TikTok 上传效果预览</h1>
       <p class="intro">这里只模拟 TikTok 界面遮挡，不会修改、导出或覆盖原始 MP4。</p>
@@ -36,7 +38,7 @@
       </div>
     </section>
 
-    <section class="phone-column">
+    <section class="video-shell" aria-label="TikTok 视频全屏预览">
       <div class="phone" id="phone">
         <video id="preview-video" playsinline controls loop></video>
         <div class="empty-state" id="empty-state">
@@ -68,8 +70,8 @@
           <div class="bottom-nav"><span>Home</span><span>Shop</span><b>＋</b><span>Inbox</span><span>Profile</span></div>
         </div>
       </div>
-      <p class="preview-note">虚线和红色遮挡提示只存在于此预览页面。</p>
     </section>
+    <p class="preview-note">虚线和红色遮挡提示只存在于此预览页面。</p>
   </main>
   <script src="./preview.js"></script>
 </body>

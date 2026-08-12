@@ -9,6 +9,7 @@ from app.chart_renderer import (
     _segment_visual_path,
     _simplify_visual_polyline,
     _visible_segment_paths,
+    _prediction_phase_paths,
     PREDICTION_SEGMENT_COLORS,
 )
 
@@ -24,6 +25,21 @@ def candles(count):
 
 
 class SegmentVisualSyncTests(unittest.TestCase):
+    def test_prediction_phase_starts_with_every_path_complete(self):
+        paths = {"segment_paths": {
+            segment_id: [
+                {"time_ratio": 0, "resolved_value": 1},
+                {"time_ratio": 1, "resolved_value": 2},
+            ]
+            for segment_id in PREDICTION_SEGMENT_COLORS
+        }}
+        visible = _prediction_phase_paths(paths)
+        self.assertEqual(
+            [item[0] for item in visible],
+            ["resistance_break", "resistance_hold", "support_break", "support_hold"],
+        )
+        self.assertEqual([item[2] for item in visible], [1.0, 1.0, 1.0, 1.0])
+
     def test_parent_segment_id_controls_visual_during_sentence_suffix(self):
         narration = {"subtitle_cues": [{
             "segment_id": "support_break_1",

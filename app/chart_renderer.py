@@ -60,6 +60,8 @@ EDUCATIONAL_NOTICE = (
 )
 ANALYSIS_ZOOM_CANDLES = 28
 FORECAST_TURN_THRESHOLD_DEG = 13.0
+SUBTITLE_EN_FONT_SIZE = 45
+SUBTITLE_ZH_FONT_SIZE = 36
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -966,6 +968,18 @@ def _visible_segment_paths(
     return visible
 
 
+def _prediction_phase_paths(
+    forecast_paths: dict[str, Any],
+) -> list[tuple[str, list[dict[str, Any]], float]]:
+    """Return every available prediction path fully visible."""
+    visible = []
+    for segment_id in PREDICTION_SEGMENT_ORDER:
+        path = _segment_visual_path(forecast_paths, segment_id)
+        if path:
+            visible.append((segment_id, path, 1.0))
+    return visible
+
+
 def _subtitle_display_chunks(text: str, max_words: int = 11) -> list[str]:
     """Split a long aligned cue into complete sequential display pages."""
     words = str(text or "").split()
@@ -1225,6 +1239,8 @@ def render_tradingview_scene(
             0.0,
             min(1.0, (progress - prediction_start) / 0.28),
         ) if prediction_phase else 0.0
+    if prediction_phase and segment_sync:
+        cumulative_segment_paths = _prediction_phase_paths(forecast_paths)
     forecast_position = min(
         float(len(forecast_all)),
         reveal_progress * len(forecast_all),
@@ -1283,8 +1299,8 @@ def render_tradingview_scene(
 
     axis_face = _font(20)
     label_face = _font(21, True)
-    subtitle_face = _font(38, True)
-    subtitle_zh_face = _font(34, True)
+    subtitle_face = _font(SUBTITLE_EN_FONT_SIZE, True)
+    subtitle_zh_face = _font(SUBTITLE_ZH_FONT_SIZE, True)
 
     chart_left = max(48, safe["safe_left"])
     # No symbol/time header: spend the released vertical space on the chart.
@@ -1358,7 +1374,7 @@ def render_tradingview_scene(
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
             protected_price_values.append(float(supports[0]))
-        if resistances and current_time >= resistance_start_sec:
+        if resistances and prediction_phase:
             protected_price_values.append(float(resistances[0]))
     protected_true_positions = [
         py(value) for value in protected_price_values
@@ -1473,7 +1489,7 @@ def render_tradingview_scene(
     levels_to_show = []
     if (
         payload["style"].get("show_support_resistance", True)
-        and current_time >= level_start_sec
+        and (current_time >= level_start_sec or prediction_phase)
     ):
         # Support and resistance run through the full chart.
         level_start_x = chart_left
@@ -1481,7 +1497,7 @@ def render_tradingview_scene(
         resistances = analysis.get("resistance_levels") or []
         if supports and current_time >= support_start_sec:
             levels_to_show.append((supports[0], "#2962ff", VIDEO_LABELS["support"]))
-        if resistances and current_time >= resistance_start_sec:
+        if resistances and prediction_phase:
             levels_to_show.append((resistances[0], "#f59e0b", VIDEO_LABELS["resistance"]))
 
         for level, color, name in levels_to_show:
@@ -1496,7 +1512,7 @@ def render_tradingview_scene(
 
     # Show source-backed support/resistance bands from technical analysis onward.
     if (
-        current_time >= level_start_sec
+        (current_time >= level_start_sec or prediction_phase)
         and payload["style"].get("show_observation_zones", True)
     ):
         zone_x1 = chart_left
@@ -1517,6 +1533,8 @@ def render_tradingview_scene(
         )
 
         for key, fill, outline, label in zone_specs:
+            if key == "potential_sell_zones" and not prediction_phase:
+                continue
             zones = _observation_zones(analysis, key)
             if not zones:
                 continue
@@ -2140,7 +2158,7 @@ def render_tradingview_scene(
         bbox = draw.textbbox((0, 0), line, font=subtitle_face)
         text_width = bbox[2] - bbox[0]
         draw.text(
-            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 52),
+            ((subtitle_left + subtitle_right - text_width) / 2, english_y + line_no * 61),
             line,
             font=subtitle_face,
             fill="#131722",
@@ -2153,12 +2171,12 @@ def render_tradingview_scene(
             subtitle_right - subtitle_left - 54,
             max_lines=3,
         )
-        chinese_y = subtitle_top + 112
+        chinese_y = subtitle_top + 130
         for line_no, line in enumerate(chinese_lines):
             bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
             text_width = bbox[2] - bbox[0]
             draw.text(
-                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 47),
+                ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 50),
                 line,
                 font=subtitle_zh_face,
                 fill="#4b5563",
