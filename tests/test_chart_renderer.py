@@ -5,7 +5,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.chart_renderer import _observation_zones, render_tradingview_scene
+from app.chart_renderer import (
+    ANALYSIS_ZOOM_CANDLES,
+    _observation_zones,
+    render_tradingview_scene,
+)
 
 
 def _candles():
@@ -44,6 +48,9 @@ def _structure_scenario(scenario_id, prior, values):
 
 
 class ChartRendererTests(unittest.TestCase):
+    def test_analysis_zoom_uses_recent_12_candles(self):
+        self.assertEqual(ANALYSIS_ZOOM_CANDLES, 12)
+
     def test_singular_support_and_resistance_zones_are_supported(self):
         analysis = {
             "potential_buy_zone": {"low": 4323.31, "high": 4327.54},

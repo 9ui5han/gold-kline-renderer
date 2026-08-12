@@ -58,6 +58,7 @@ VIDEO_LABELS = {
 EDUCATIONAL_NOTICE = (
     "Educational market observation · Conditional scenarios, not trading signals"
 )
+ANALYSIS_ZOOM_CANDLES = 12
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
@@ -212,7 +213,7 @@ def _wrap_text(
             lines.append(" ".join(current))
         return lines[:max_lines]
 
-    # 中文没有空格时按字符换行，但价格数字仍视为一个不可拆分单元。
+    # 中文没有空格时按字符换行，但价格数字与英文词仍视为不可拆分单元。
     units = re.findall(r"\d+(?:\.\d+)*|[A-Za-z]+(?:['’][A-Za-z]+)?|.", normalized)
     candidates = []
     for split_index in range(1, len(units)):
@@ -230,7 +231,19 @@ def _wrap_text(
         _, first, second = min(candidates, key=lambda item: item[0])
         return [first, second]
 
-    return [normalized]
+    # 两行放不下时逐行装入，避免旧逻辑把整句原样返回并画出屏幕。
+    lines: list[str] = []
+    current = ""
+    for unit in units:
+        trial = current + unit
+        if current and width(trial) > max_width:
+            lines.append(current.strip())
+            current = unit
+        else:
+            current = trial
+    if current:
+        lines.append(current.strip())
+    return lines[:max_lines]
 
 
 def _round_rect_label(
@@ -737,7 +750,9 @@ def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int
         return {
             "safe_top": round(height * 0.135),
             "safe_bottom": height - round(height * 0.25),
-            "safe_right": width - round(width * 0.20),
+            # User-requested compact TikTok right overlay reserve: 10% instead
+            # of the former 20%, while top/bottom/left reserves stay unchanged.
+            "safe_right": width - round(width * 0.10),
             "safe_left": round(width * 0.06),
         }
     return {
@@ -1226,9 +1241,9 @@ def render_tradingview_scene(
     ) if prediction_phase else 0.0
 
     if prediction_phase:
-        # Keep every real candle in its original slot. The forecast uses a
-        # right-side area reserved from the beginning of the video.
-        visible_history = list(history)
+        # Analysis close-up: show only recent closed candles so the chart and
+        # the conditional paths are materially larger on a phone screen.
+        visible_history = list(history[-ANALYSIS_ZOOM_CANDLES:])
     else:
         if segment_sync:
             freeze_start = _segment_start_sec(
@@ -1304,7 +1319,7 @@ def render_tradingview_scene(
     scale_candles = (
         history_scale_source
         if not prediction_phase
-        else history
+        else visible_history
         if primary_structure_values
         else visible_history + forecast_all
     )
@@ -1317,20 +1332,24 @@ def render_tradingview_scene(
         for zone_key in ("potential_buy_zones", "potential_sell_zones"):
             for zone in _observation_zones(analysis, zone_key):
                 prices.extend((float(zone["low"]), float(zone["high"])))
-        for _, value, _ in (
-            primary_structure_values + alternate_structure_values
-        ):
-            prices.append(float(value))
+        # Only currently visible paths affect the close-up camera. Hidden
+        # future branches must not zoom the price axis back out prematurely.
+        if not cumulative_segment_paths:
+            for _, value, _ in primary_structure_values:
+                prices.append(float(value))
         for _, segment_path, _ in cumulative_segment_paths:
-            for _, value, _ in _structure_path_values({"path_points": segment_path}):
+            for _, value, _ in _structure_path_values(
+                {"path_points": segment_path}
+            ):
                 prices.append(float(value))
     if not prices:
         prices = [0.0, 1.0]
 
     pmin, pmax = min(prices), max(prices)
     price_span = max(pmax - pmin, 0.01)
-    pmin -= price_span * 0.06
-    pmax += price_span * 0.06
+    camera_padding = 0.035 if prediction_phase else 0.06
+    pmin -= price_span * camera_padding
+    pmax += price_span * camera_padding
 
     def py(value: float) -> float:
         return chart_bottom - 78 - (
@@ -1390,9 +1409,12 @@ def render_tradingview_scene(
     # During analysis, enlarge the prediction area from 24% to 40%.
     history_end_ratio = 0.60 if prediction_phase else 0.76
     history_end_x = chart_left + chart_width * history_end_ratio
+    horizontal_history_count = (
+        len(visible_history) if prediction_phase else len(history)
+    )
     history_slot = (
         history_end_x - chart_left - 18
-    ) / max(len(history), 1)
+    ) / max(horizontal_history_count, 1)
     forecast_slot = (
         chart_right - history_end_x - 14
     ) / max(len(forecast_all), 1)
@@ -1403,8 +1425,8 @@ def render_tradingview_scene(
     body_width = max(3, min(10, int(history_slot * 0.68)))
 
     def px(index: int) -> float:
-        history_last_index = max(len(history) - 1, 1)
-        if index <= len(history) - 1:
+        history_last_index = max(horizontal_history_count - 1, 1)
+        if index <= horizontal_history_count - 1:
             return (
                 chart_left
                 + 10
@@ -1412,7 +1434,7 @@ def render_tradingview_scene(
                 * index
                 / history_last_index
             )
-        forecast_offset = index - (len(history) - 1)
+        forecast_offset = index - (horizontal_history_count - 1)
         return min(
             chart_right - 8,
             history_end_x + forecast_slot * forecast_offset,
@@ -1522,21 +1544,12 @@ def render_tradingview_scene(
                 outline=outline,
                 width=2,
             )
-            label_bbox = draw.textbbox(
-                (0, 0),
-                label,
-                font=label_face,
-            )
-            label_width = label_bbox[2] - label_bbox[0]
-            label_height = label_bbox[3] - label_bbox[1]
             draw.text(
-                (
-                    zone_x2 - 18 - label_width,
-                    (y1 + y2 - label_height) / 2 - label_bbox[1],
-                ),
+                ((zone_x1 + zone_x2) / 2, (y1 + y2) / 2),
                 label,
                 font=label_face,
                 fill=outline,
+                anchor="mm",
             )
 
     # Divider between real and forecast bars.
@@ -2128,7 +2141,7 @@ def render_tradingview_scene(
             subtitle_zh,
             subtitle_zh_face,
             subtitle_right - subtitle_left - 54,
-            max_lines=2,
+            max_lines=3,
         )
         chinese_y = subtitle_top + 94
         for line_no, line in enumerate(chinese_lines):
