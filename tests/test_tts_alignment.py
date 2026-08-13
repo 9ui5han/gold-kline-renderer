@@ -284,6 +284,56 @@ class TtsAlignmentTests(unittest.TestCase):
                 "First Second",
             )
 
+    def test_rejects_word_timing_outside_its_own_cue(self):
+        with self.assertRaisesRegex(RuntimeError, "WORD_ORDER_INVALID"):
+            main.validate_subtitle_cues(
+                [{
+                    "start_sec": 1.0,
+                    "end_sec": 2.0,
+                    "text": "First word",
+                    "word_timings": [
+                        {"text": "First", "start_sec": 0.5, "end_sec": 1.2},
+                        {"text": "word", "start_sec": 1.3, "end_sec": 1.8},
+                    ],
+                }],
+                2,
+                "First word",
+            )
+
+    def test_minimax_uses_word_alignment_when_the_service_is_available(self):
+        payload = main.TTSProxyRequest(
+            request_id="minimax-word-alignment",
+            text="First sentence. Second sentence.",
+            tts_provider="minimax",
+        )
+        cues = [{
+            "start_sec": 0.0,
+            "end_sec": 2.0,
+            "text": "First sentence. Second sentence.",
+            "word_timings": [
+                {"text": "First", "start_sec": 0.0, "end_sec": 0.4},
+                {"text": "sentence.", "start_sec": 0.4, "end_sec": 0.9},
+                {"text": "Second", "start_sec": 1.1, "end_sec": 1.5},
+                {"text": "sentence.", "start_sec": 1.5, "end_sec": 2.0},
+            ],
+        }]
+        with tempfile.TemporaryDirectory() as directory:
+            media_dir = Path(directory) / "media"
+            work_dir = Path(directory) / "work"
+            media_dir.mkdir()
+            work_dir.mkdir()
+            with patch.object(main, "AI302_API_KEY", "test-key"), patch.object(
+                main, "MEDIA_DIR", media_dir
+            ), patch.object(main, "WORK_DIR", work_dir), patch.object(
+                main, "generate_minimax_segmented_tts", return_value=[]
+            ), patch.object(main, "probe_duration", return_value=2.0), patch.object(
+                main, "align_audio_with_source_text", return_value=(cues, "en")
+            ):
+                result = main.create_tts_audio(payload)
+
+        self.assertEqual(result["alignment_method"], "source_text_word_alignment")
+        self.assertEqual(result["subtitle_cues"], cues)
+
     def test_caps_gap_driven_cue_duration_before_validation(self):
         text = (
             "One two three four five six seven. "
@@ -315,6 +365,13 @@ class TtsAlignmentTests(unittest.TestCase):
         self.assertLessEqual(
             cues[3]["end_sec"] - cues[3]["start_sec"],
             8.0,
+        )
+        self.assertIn("word_timings", cues[0])
+        self.assertEqual(cues[0]["word_timings"][0]["text"], source_words[0])
+        self.assertAlmostEqual(
+            cues[0]["word_timings"][1]["start_sec"],
+            alignment_words[1]["start"],
+            places=3,
         )
         self.assertEqual(
             " ".join(cue["text"] for cue in cues),

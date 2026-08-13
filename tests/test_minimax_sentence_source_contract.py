@@ -28,9 +28,11 @@ class MiniMaxSentenceSourceContractTests(unittest.TestCase):
         self.assertIn('data = result.get("data") or {}', self.source)
         self.assertIn('audio_url = str(data.get("audio") or "").strip()', self.source)
 
-    def test_minimax_uses_sentence_boundaries_for_subtitles(self):
+    def test_minimax_keeps_sentence_boundaries_only_as_alignment_fallback(self):
         self.assertIn("minimax_segment_bounds", self.source)
-        self.assertIn('alignment_method = "minimax_sentence_boundary_contract"', self.source)
+        self.assertIn('"minimax": minimax_segment_bounds', self.source)
+        self.assertIn('alignment_method = "source_text_word_alignment"', self.source)
+        self.assertIn('f"{payload.tts_provider}_segment_boundary_fallback"', self.source)
 
 
 if __name__ == "__main__":

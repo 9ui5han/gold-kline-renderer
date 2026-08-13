@@ -64,7 +64,9 @@ SUBTITLE_EN_FONT_SIZE = 104
 SUBTITLE_ZH_FONT_SIZE = 72
 AXIS_FONT_SIZE = 34
 CHART_LABEL_FONT_SIZE = 25
-REVIEW_CHINESE_FONT_SIZE = 46
+# The review band is deliberately shallow (the red-box area above the chart),
+# so this size allows two Chinese lines to stay completely inside it.
+REVIEW_CHINESE_FONT_SIZE = 34
 LEVEL_LABEL_MIN_FONT_SIZE = 26
 LEVEL_LABEL_MAX_FONT_SIZE = 48
 PREDICTION_HISTORY_END_RATIO = 0.40
@@ -345,7 +347,9 @@ def _level_label_face(
             draw.textbbox((0, 0), label, font=face)[2]
             for label in (VIDEO_LABELS["support"], VIDEO_LABELS["resistance"])
         )
-        if widest <= lane_width - 16:
+        # The coloured tag has horizontal padding on both sides; fitting only
+        # the glyphs would still let it spill into the fixed price axis.
+        if widest <= lane_width - 24:
             return face
     return _font(LEVEL_LABEL_MIN_FONT_SIZE, True)
 
@@ -587,6 +591,31 @@ def _arrow_head(
         end[1] - size * math.sin(angle + math.pi / 6),
     )
     return [end, left, right]
+
+
+def _draw_clean_arrow(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    color: str,
+    line_width: int,
+    head_size: float,
+) -> None:
+    """Draw one arrowhead only, with its body ending at the triangle base."""
+    if len(points) < 2:
+        return
+    end = points[-1]
+    previous = points[-2]
+    dx = end[0] - previous[0]
+    dy = end[1] - previous[1]
+    length = math.hypot(dx, dy)
+    if length <= 0.01:
+        return
+    body_end = (
+        end[0] - dx / length * head_size * 0.72,
+        end[1] - dy / length * head_size * 0.72,
+    )
+    draw.line([*points[:-1], body_end], fill=color, width=line_width)
+    draw.polygon(_arrow_head(end, previous, size=head_size), fill=color)
 
 
 def _rank_structure_scenarios(
@@ -1068,6 +1097,27 @@ def _subtitle_at(
         start = float(cue.get("start_sec") or 0)
         end = float(cue.get("end_sec") or 0)
         if start <= subtitle_time < end:
+            aligned_words = cue.get("word_timings") or []
+            if isinstance(aligned_words, list) and aligned_words:
+                latest_started_word = ""
+                for item in aligned_words:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        word_start = float(item["start_sec"])
+                        word_end = float(item["end_sec"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    word_text = str(item.get("text") or "").strip()
+                    if not word_text:
+                        continue
+                    if word_start <= subtitle_time < word_end:
+                        return word_text
+                    if word_start <= subtitle_time:
+                        latest_started_word = word_text
+                # Between real spoken words, hold the last spoken word rather
+                # than jumping ahead to the next one during a natural pause.
+                return latest_started_word
             words = _subtitle_display_chunks(str(cue.get("text") or ""))
             if not words:
                 return ""
@@ -1160,11 +1210,9 @@ def _subtitle_layout(
     english_y = min(height - 120, max(220, english_y))
     chart_top = safe["safe_top"] + 12 if is_tiktok_safe else 12
     chart_bottom = max(chart_top + 300, english_y - round(height * 0.095))
-    review_chinese_y = (
-        max(34, safe["safe_top"] - round(height * 0.085))
-        if is_tiktok_safe
-        else 34
-    )
+    # The review Chinese belongs in the dedicated blank band above the chart,
+    # centred in the visible area shown in the audit reference frame.
+    review_chinese_y = 34 if is_tiktok_safe else 34
     return {
         "chart_top": chart_top,
         "chart_bottom": chart_bottom,
@@ -1249,9 +1297,15 @@ def render_tradingview_scene(
         forecast_paths,
         visual_segment_id,
     )
+    # Only show the branch being explained right now. Keeping old branches on
+    # screen makes one arrow look like it has extra flat and pointed heads.
     cumulative_segment_paths = (
-        _visible_segment_paths(forecast_paths, narration, current_time)
-        if segment_sync
+        [(visual_segment_id, active_segment_path, 1.0)]
+        if (
+            segment_sync
+            and visual_segment_id in PREDICTION_SEGMENT_IDS
+            and active_segment_path
+        )
         else []
     )
     if (
@@ -1416,50 +1470,45 @@ def render_tradingview_scene(
     layout = _subtitle_layout(width, height, safe, is_tiktok_safe)
     chart_top = layout["chart_top"]
     chart_bottom = layout["chart_bottom"]
-    # Larger axis labels need a wider right-side lane.
-    label_right = safe["safe_right"] - 8 if is_tiktok_safe else width - 8
-    chart_right = safe["safe_right"] - 190 if is_tiktok_safe else width - 205
-    price_axis_x = chart_right
+    # Three fixed horizontal lanes: chart, coloured support/resistance tags,
+    # then grey price scale. They never share pixels or move with prediction.
+    safe_right = safe["safe_right"] if is_tiktok_safe else width
+    level_lane_width = max(150, round(width * 0.15))
+    price_lane_width = max(132, round(width * 0.13))
+    chart_right = safe_right - level_lane_width - price_lane_width - 14
+    level_lane_left = chart_right + 8
+    level_lane_right = level_lane_left + level_lane_width
+    price_axis_x = level_lane_right + 10
     time_axis_y = chart_bottom
-    draw.rectangle(
-        (chart_left, chart_top, chart_right, chart_bottom),
-        fill="#ffffff",
-        outline="#e0e3eb",
-        width=1,
-    )
+    # White canvas already supplies the chart background. Do not draw a frame.
 
-    scale_candles = (
-        history_scale_source
-        if not prediction_phase
-        else visible_history
-        if primary_structure_values
-        else visible_history + forecast_all
-    )
+    # Freeze the value range before the first frame. Otherwise the y-axis
+    # numbers change as future arrows appear, which makes the chart feel like
+    # both axes are moving.
+    scale_candles = history_scale_source or history or visible_history
     prices = [
         float(candle[key])
         for candle in scale_candles
         for key in ("high", "low")
     ]
-    if prediction_phase:
-        for zone_key in ("potential_buy_zones", "potential_sell_zones"):
-            for zone in _observation_zones(analysis, zone_key):
-                prices.extend((float(zone["low"]), float(zone["high"])))
-        # Only currently visible paths affect the close-up camera. Hidden
-        # future branches must not zoom the price axis back out prematurely.
-        if not cumulative_segment_paths:
-            for _, value, _ in primary_structure_values:
-                prices.append(float(value))
-        for _, segment_path, _ in cumulative_segment_paths:
-            for _, value, _ in _structure_path_values(
-                {"path_points": segment_path}
-            ):
-                prices.append(float(value))
+    for level_key in ("support_levels", "resistance_levels"):
+        prices.extend(float(value) for value in (analysis.get(level_key) or []))
+    for scenario in _rank_structure_scenarios(forecast_paths):
+        prices.extend(
+            value for _, value, _ in _structure_path_values(scenario)
+        )
+    prices.extend(
+        float(candle[key])
+        for candle in forecast_all
+        for key in ("high", "low")
+        if key in candle
+    )
     if not prices:
         prices = [0.0, 1.0]
 
     pmin, pmax = min(prices), max(prices)
     price_span = max(pmax - pmin, 0.01)
-    camera_padding = 0.035 if prediction_phase else 0.06
+    camera_padding = 0.06
     pmin -= price_span * camera_padding
     pmax += price_span * camera_padding
 
@@ -1470,49 +1519,19 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 112)
         )
 
-    # The grey axis numbers share the same right-side lane as support,
-    # resistance and current-price tags. Reserve space for every coloured
-    # numeric tag before drawing the grey scale numbers.
-    protected_price_values = [
-        float(visible_history[-1]["close"]),
-    ]
-    if payload["style"].get("show_support_resistance", True):
-        supports = analysis.get("support_levels") or []
-        resistances = analysis.get("resistance_levels") or []
-        if supports and current_time >= support_start_sec:
-            protected_price_values.append(float(supports[0]))
-        if resistances and prediction_phase:
-            protected_price_values.append(float(resistances[0]))
-    protected_true_positions = [
-        py(value) for value in protected_price_values
-    ]
-    protected_label_positions = _spread_label_positions(
-        protected_true_positions,
-        chart_top + 28,
-        chart_bottom - 78,
-    )
-
     # Keep only the useful price scale. Decorative horizontal grid lines are
     # intentionally omitted so candles and levels are the visual focus.
     for grid_index in range(6):
         fraction = grid_index / 5
         y = chart_top + 28 + fraction * (chart_bottom - chart_top - 62)
         value = pmax - fraction * (pmax - pmin)
-        # Never place a grey numeric scale label underneath or immediately
-        # beside a coloured numeric tag.
-        if not any(
-            abs(y - protected_y) < 30
-            for protected_y in (
-                protected_true_positions + protected_label_positions
-            )
-        ):
-            draw.text(
-                (price_axis_x + 8, y),
-                _price(value),
-                font=axis_face,
-                fill="#787b86",
-                anchor="lm",
-            )
+        draw.text(
+            (price_axis_x, y),
+            _price(value),
+            font=axis_face,
+            fill="#5f6470",
+            anchor="lm",
+        )
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
     # During prediction, start the forecast at 40% of the chart instead of
@@ -1550,22 +1569,15 @@ def render_tradingview_scene(
             history_end_x + forecast_slot * forecast_offset,
         )
 
-    # Draw only time labels, with no decorative vertical grid lines.
-    visible_width = max(
-        px(max(len(candles) - 1, 0)) - chart_left,
-        0,
-    )
-    time_marks = max(
-        2,
-        min(4, int(visible_width / 260) + 1),
-    )
-    if prediction_phase and camera_progress > 0.5:
-        first_time_index = max(len(visible_history) - 10, 0)
-        # Future timestamps are intentionally hidden.
-        last_time_index = max(len(visible_history) - 1, first_time_index)
-    else:
-        first_time_index = 0
-        last_time_index = max(len(candles) - 1, 0)
+    # Time labels are a fixed coordinate scale. They use fixed locations and
+    # a fixed historical range, so the x-axis cannot slide left while the
+    # forecast is moved into its earlier display area.
+    # Two well-spaced labels stay readable on a vertical short video. More
+    # labels would overlap each other at the fixed chart width.
+    time_marks = 2
+    axis_time_candles = history or candles
+    first_time_index = 0
+    last_time_index = max(len(axis_time_candles) - 1, 0)
     for mark_index in range(time_marks):
         candle_index = round(
             first_time_index
@@ -1573,13 +1585,20 @@ def render_tradingview_scene(
             * (last_time_index - first_time_index)
             / max(time_marks - 1, 1)
         )
-        x = px(candle_index)
-        if x < chart_left or x > chart_right:
-            continue
-        if candle_index < len(candles):
+        x = chart_left + chart_width * mark_index / max(time_marks - 1, 1)
+        if candle_index < len(axis_time_candles):
+            label = _time_label(axis_time_candles[candle_index].get("time", ""))
+            bbox = draw.textbbox((0, 0), label, font=axis_face)
+            half_width = (bbox[2] - bbox[0]) / 2
             draw.text(
-                (x, time_axis_y + 18),
-                _time_label(candles[candle_index].get("time", "")),
+                (
+                    min(
+                        chart_right - half_width,
+                        max(chart_left + half_width, x),
+                    ),
+                    time_axis_y + 18,
+                ),
+                label,
                 font=axis_face,
                 fill="#787b86",
                 anchor="ma",
@@ -1958,7 +1977,7 @@ def render_tradingview_scene(
     ]
     level_label_face = _level_label_face(
         draw,
-        label_right - chart_right,
+        level_lane_right - level_lane_left,
         chart_bottom - chart_top,
     )
     label_positions = _spread_label_positions(
@@ -1973,8 +1992,8 @@ def render_tradingview_scene(
     ):
         _centered_level_label(
             draw,
-            chart_right + 4,
-            label_right,
+            level_lane_left,
+            level_lane_right,
             y,
             text,
             str(price or ""),
@@ -2005,14 +2024,16 @@ def render_tradingview_scene(
                 active_segment_id,
                 current_time,
             )
-            draw.line(top_points, fill=color, width=line_width)
-            draw.polygon(
-                _arrow_head(top_points[-1], top_points[-2], size=head_size),
-                fill=color,
+            _draw_clean_arrow(
+                draw,
+                top_points,
+                color,
+                line_width,
+                head_size,
             )
 
-    # English is the only final-release subtitle. Chinese is optional and is
-    # placed above the chart solely for human review.
+    # The main output is an audit version: Chinese is above the chart and the
+    # English word is below it. render_job() also creates an English-only copy.
     if (payload.get("style") or {}).get("show_subtitles", True):
         subtitle = _subtitle_at(narration, current_time, progress)
         subtitle_zh = _chinese_subtitle_at(narration, current_time)
@@ -2036,7 +2057,7 @@ def render_tradingview_scene(
                 fill="#131722",
             )
         if subtitle_zh and (payload.get("style") or {}).get(
-            "show_review_chinese_subtitles", False,
+            "show_review_chinese_subtitles", True,
         ):
             chinese_lines = _wrap_text(
                 draw,
@@ -2050,7 +2071,7 @@ def render_tradingview_scene(
                 bbox = draw.textbbox((0, 0), line, font=subtitle_zh_face)
                 text_width = bbox[2] - bbox[0]
                 draw.text(
-                    ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 92),
+                    ((subtitle_left + subtitle_right - text_width) / 2, chinese_y + line_no * 62),
                     line,
                     font=subtitle_zh_face,
                     fill="#4b5563",

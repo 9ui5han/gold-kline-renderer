@@ -20,15 +20,24 @@ def _history():
 
 
 class RenderRequestContractTests(unittest.TestCase):
-    def test_subtitle_free_payload_keeps_timeline_and_disables_painting(self):
+    def test_chinese_subtitle_free_payload_keeps_english_subtitles(self):
         source = {
-            "style": {"theme": "light_tradingview", "show_subtitles": True},
+            "style": {
+                "theme": "light_tradingview",
+                "show_subtitles": True,
+                "show_review_chinese_subtitles": True,
+            },
             "narration": {"subtitle_cues": [{"text": "English", "chinese_text": "中文"}]},
         }
-        clean = main.subtitle_free_payload(source)
-        self.assertFalse(clean["style"]["show_subtitles"])
+        clean = main.chinese_subtitle_free_payload(source)
+        self.assertTrue(clean["style"]["show_subtitles"])
+        self.assertFalse(clean["style"]["show_review_chinese_subtitles"])
         self.assertTrue(source["style"]["show_subtitles"])
+        self.assertTrue(source["style"]["show_review_chinese_subtitles"])
         self.assertEqual(clean["narration"], source["narration"])
+
+    def test_review_render_defaults_to_top_chinese_subtitles(self):
+        self.assertTrue(main.StyleOptions().show_review_chinese_subtitles)
 
     def test_segment_sync_rejects_subtitles_without_segment_ids(self):
         data = {

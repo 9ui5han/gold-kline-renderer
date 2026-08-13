@@ -18,7 +18,7 @@ class TikTokSafeLayoutTests(unittest.TestCase):
     def test_reference_subtitle_sizes_are_used(self):
         self.assertEqual(SUBTITLE_EN_FONT_SIZE, 104)
         self.assertEqual(SUBTITLE_ZH_FONT_SIZE, 72)
-        self.assertEqual(REVIEW_CHINESE_FONT_SIZE, 46)
+        self.assertEqual(REVIEW_CHINESE_FONT_SIZE, 34)
         self.assertEqual(AXIS_FONT_SIZE, 34)
         self.assertEqual(CHART_LABEL_FONT_SIZE, 25)
 
@@ -62,8 +62,10 @@ class TikTokSafeLayoutTests(unittest.TestCase):
 
     def test_larger_axis_uses_a_readable_right_price_lane(self):
         safe = resolve_safe_layout(1080, 1920, "tiktok")
-        chart_right = safe["safe_right"] - 130
-        self.assertEqual(safe["safe_right"] - chart_right, 130)
+        level_lane_width = max(150, round(1080 * 0.15))
+        price_lane_width = max(132, round(1080 * 0.13))
+        chart_right = safe["safe_right"] - level_lane_width - price_lane_width - 14
+        self.assertEqual(safe["safe_right"] - chart_right, 316)
 
 
 if __name__ == "__main__":

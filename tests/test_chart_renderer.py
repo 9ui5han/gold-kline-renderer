@@ -71,6 +71,27 @@ class ChartRendererTests(unittest.TestCase):
         self.assertEqual(_subtitle_at(narration, 3.6, 0.0), "resistance")
         self.assertEqual(_subtitle_at(narration, 4.4, 0.0), "now")
 
+    def test_english_subtitle_uses_real_word_timestamps_when_available(self):
+        narration = {
+            "subtitle_cues": [{
+                "start_sec": 2.0,
+                "end_sec": 5.0,
+                "text": "Gold tests resistance now",
+                "word_timings": [
+                    {"text": "Gold", "start_sec": 2.0, "end_sec": 2.18},
+                    {"text": "tests", "start_sec": 2.18, "end_sec": 3.42},
+                    {"text": "resistance", "start_sec": 3.42, "end_sec": 3.75},
+                    {"text": "now", "start_sec": 4.62, "end_sec": 4.94},
+                ],
+            }]
+        }
+        self.assertEqual(_subtitle_at(narration, 2.10, 0.0), "Gold")
+        self.assertEqual(_subtitle_at(narration, 3.20, 0.0), "tests")
+        self.assertEqual(_subtitle_at(narration, 3.60, 0.0), "resistance")
+        # The natural pause before “now” must not show the word early.
+        self.assertEqual(_subtitle_at(narration, 4.20, 0.0), "resistance")
+        self.assertEqual(_subtitle_at(narration, 4.70, 0.0), "now")
+
     def test_only_active_prediction_arrow_uses_flash_style(self):
         inactive = _prediction_arrow_style("support_hold", "support_break", 4.0)
         active = _prediction_arrow_style("support_hold", "support_hold", 4.0)

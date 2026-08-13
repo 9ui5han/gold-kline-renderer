@@ -154,8 +154,8 @@ class StyleOptions(BaseModel):
     show_support_resistance: bool = True
     show_observation_zones: bool = True
     show_subtitles: bool = True
-    # 中文只用于人工审核预览；正式发布成片默认只保留英文字幕。
-    show_review_chinese_subtitles: bool = False
+    # 当前主成片用于人工审核，默认显示顶部中文；同时产出一份仅英文字幕版本。
+    show_review_chinese_subtitles: bool = True
     show_path_shadow: bool = False
     show_alternate_path: bool = True
     show_exact_forecast_prices: bool = False
@@ -2146,11 +2146,57 @@ def build_subtitle_cues(
         if cue_end <= cue_start:
             cue_end = min(float(audio_duration_sec), cue_start + 0.2)
 
+        word_timings: list[dict[str, Any]] = []
+        previous_word_end = cue_start
+        for source_index in range(
+            int(chunk["word_start"]),
+            int(chunk["word_end"]) + 1,
+        ):
+            word_start = max(
+                previous_word_end,
+                _source_word_time(
+                    source_index,
+                    False,
+                    len(source_words),
+                    matches,
+                    timing_words,
+                    speech_start,
+                    speech_end,
+                ),
+            )
+            word_end = max(
+                word_start + 0.02,
+                _source_word_time(
+                    source_index,
+                    True,
+                    len(source_words),
+                    matches,
+                    timing_words,
+                    speech_start,
+                    speech_end,
+                ),
+            )
+            word_end = min(cue_end, word_end)
+            if word_end <= word_start:
+                word_end = min(cue_end, word_start + 0.02)
+            word_timings.append(
+                {
+                    "text": source_words[source_index],
+                    "start_sec": round(word_start, 3),
+                    "end_sec": round(word_end, 3),
+                }
+            )
+            previous_word_end = word_end
+
         cues.append(
             {
                 "start_sec": round(cue_start, 3),
                 "end_sec": round(cue_end, 3),
                 "text": chunk["text"],
+                # Keep the original word-level alignment through to the
+                # renderer. The display layer must not re-divide a sentence
+                # evenly, because that visibly drifts from real speech.
+                "word_timings": word_timings,
             }
         )
         previous_start = cue_start
@@ -2182,11 +2228,27 @@ def build_segment_boundary_subtitle_cues(
             end_sec = round(float(bound["end_sec"]), 3)
         except (KeyError, TypeError, ValueError) as exc:
             raise RuntimeError(f"SUBTITLE_BOUNDARY_TIME_INVALID:{index}") from exc
+        words = text.split()
+        word_timings = []
+        if words:
+            # Some providers expose only the completed segment boundaries.
+            # This is an explicitly marked fallback; providers with WhisperX
+            # timings use build_subtitle_cues() above and never reach here.
+            word_duration = (end_sec - start_sec) / len(words)
+            word_timings = [
+                {
+                    "text": word,
+                    "start_sec": round(start_sec + word_duration * word_index, 3),
+                    "end_sec": round(start_sec + word_duration * (word_index + 1), 3),
+                }
+                for word_index, word in enumerate(words)
+            ]
         cues.append(
             {
                 "start_sec": start_sec,
                 "end_sec": end_sec,
                 "text": text,
+                "word_timings": word_timings,
                 "segment_id": str(bound.get("segment_id") or ""),
                 "parent_segment_id": str(
                     bound.get("parent_segment_id")
@@ -2250,6 +2312,35 @@ def validate_subtitle_cues(
             raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_AFTER_AUDIO:{index}")
         if end - start > max_cue_duration_sec:
             raise RuntimeError(f"SUBTITLE_ALIGNMENT_CUE_TOO_LONG:{index}")
+        word_timings = cue.get("word_timings")
+        if word_timings is not None:
+            if not isinstance(word_timings, list):
+                raise RuntimeError(f"SUBTITLE_ALIGNMENT_WORD_TIMINGS_INVALID:{index}")
+            previous_word_end = start
+            for word_index, word in enumerate(word_timings, start=1):
+                if not isinstance(word, dict) or not str(word.get("text") or "").strip():
+                    raise RuntimeError(
+                        f"SUBTITLE_ALIGNMENT_WORD_INVALID:{index}:{word_index}"
+                    )
+                try:
+                    word_start = float(word["start_sec"])
+                    word_end = float(word["end_sec"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"SUBTITLE_ALIGNMENT_WORD_TIME_INVALID:{index}:{word_index}"
+                    ) from exc
+                if (
+                    not math.isfinite(word_start)
+                    or not math.isfinite(word_end)
+                    or word_start < start - 0.05
+                    or word_end > end + 0.05
+                    or word_end <= word_start
+                    or word_start < previous_word_end - 0.05
+                ):
+                    raise RuntimeError(
+                        f"SUBTITLE_ALIGNMENT_WORD_ORDER_INVALID:{index}:{word_index}"
+                    )
+                previous_word_end = word_end
         previous_end = end
 
     if previous_end <= 0.0:
@@ -2471,81 +2562,48 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
             payload.target_duration_sec,
         )
 
-    alignment_method = (
-        "openai_tts_source_text_alignment_bounds"
-        if payload.tts_provider == "openai"
-        else (
-            "elevenlabs_v3_source_text_alignment_bounds"
-            if payload.tts_provider == "elevenlabs"
-            else (
-                "minimax_speech_2_8_turbo_sentence_bounds"
-                if payload.tts_provider == "minimax"
-                else (
-                    "indextts2_source_text_alignment_bounds"
-                    if payload.tts_provider == "indextts2"
-                    else (
-                        "glm_tts_source_text_alignment_bounds"
-                        if payload.tts_provider == "glm_tts"
-                        else (
-                            "qwen3_tts_source_text_alignment_bounds"
-                            if payload.tts_provider == "qwen3_tts"
-                            else "dubbingx_emotion_segments_source_text_alignment_bounds"
-                        )
-                    )
-                )
-            )
-        )
-    )
-
-    if payload.tts_provider == "minimax":
-        subtitle_cues = build_segment_boundary_subtitle_cues(
-            minimax_segment_bounds,
+    # All supported providers must use the same source-text word alignment.
+    # Segment boundaries alone cannot keep a one-word subtitle in sync with
+    # the actual syllable speed inside a generated sentence.
+    provider_segment_bounds = {
+        "elevenlabs": elevenlabs_segment_bounds,
+        "minimax": minimax_segment_bounds,
+        "qwen3_tts": qwen_segment_bounds,
+    }.get(payload.tts_provider, [])
+    try:
+        subtitle_cues, alignment_language = align_audio_with_source_text(
+            audio_path,
             duration_sec,
             payload.text,
         )
-        alignment_language = whisperx_language_for_text(payload.text)
-        alignment_method = "minimax_sentence_boundary_contract"
-    elif payload.tts_provider == "qwen3_tts":
-        subtitle_cues = build_segment_boundary_subtitle_cues(
-            qwen_segment_bounds,
-            duration_sec,
-            payload.text,
-        )
-        alignment_language = whisperx_language_for_text(payload.text)
-        alignment_method = "qwen3_segment_boundary_contract"
-    else:
-        try:
-            subtitle_cues, alignment_language = align_audio_with_source_text(
-                audio_path,
-                duration_sec,
-                payload.text,
-            )
-        except Exception as exc:
-            if payload.tts_provider != "elevenlabs" or not elevenlabs_segment_bounds:
-                logger.exception(
-                    "WHISPERX_ALIGNMENT_FAILED request_id=%s voice_id=%s audio=%s",
-                    payload.request_id,
-                    payload.voice_id,
-                    audio_name,
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail=str(exc),
-                ) from exc
-
-            logger.warning(
-                "WHISPERX_ALIGNMENT_FALLBACK request_id=%s audio=%s error=%s",
+        alignment_method = "source_text_word_alignment"
+    except Exception as exc:
+        if not provider_segment_bounds:
+            logger.exception(
+                "WHISPERX_ALIGNMENT_FAILED request_id=%s provider=%s audio=%s",
                 payload.request_id,
+                payload.tts_provider,
                 audio_name,
-                exc,
             )
-            subtitle_cues = build_segment_boundary_subtitle_cues(
-                elevenlabs_segment_bounds,
-                duration_sec,
-                payload.text,
-            )
-            alignment_language = whisperx_language_for_text(payload.text)
-            alignment_method = "elevenlabs_segment_boundary_fallback"
+            raise HTTPException(
+                status_code=502,
+                detail=str(exc),
+            ) from exc
+
+        logger.warning(
+            "WHISPERX_ALIGNMENT_FALLBACK request_id=%s provider=%s audio=%s error=%s",
+            payload.request_id,
+            payload.tts_provider,
+            audio_name,
+            exc,
+        )
+        subtitle_cues = build_segment_boundary_subtitle_cues(
+            provider_segment_bounds,
+            duration_sec,
+            payload.text,
+        )
+        alignment_language = whisperx_language_for_text(payload.text)
+        alignment_method = f"{payload.tts_provider}_segment_boundary_fallback"
 
     return {
         "status": "completed",
@@ -2676,7 +2734,9 @@ def create_render_job(payload: RenderRequest) -> dict[str, Any]:
         "progress": 0,
         "status_url": status_url,
         "video_url": "",
+        # Compatibility alias for the previously exposed companion-video key.
         "subtitle_free_video_url": "",
+        "chinese_subtitle_free_video_url": "",
         "thumbnail_url": "",
         "duration_sec": 0,
         "error_code": "",
@@ -3133,9 +3193,8 @@ def build_scene_intervals(
         if cursor < duration:
             intervals.append((cursor, duration))
 
-    # 逐词字幕使用最终旁白文本和真实字幕区间。逐词时间在每个已对齐
-    # cue 内均分，画面切换会精确落在每个单词的开始时刻；这避免一张
-    # 静态图片跨过两个英文单词而使字幕显得延迟。
+    # 逐词画面切换必须使用打轴接口返回的逐词开口时间。只有缺少逐词
+    # 时间的供应商兜底字幕才会使用句内均分的近似值。
     word_change_times: list[float] = []
     for cue in raw_cues:
         text = str(cue.get("text") or "").strip()
@@ -3144,11 +3203,26 @@ def build_scene_intervals(
         end = min(duration, float(cue.get("end_sec") or 0))
         if len(words) < 2 or end <= start:
             continue
-        word_duration = (end - start) / len(words)
-        word_change_times.extend(
-            start + word_duration * index
-            for index in range(1, len(words))
-        )
+        aligned_words = cue.get("word_timings") or []
+        aligned_change_times = []
+        if isinstance(aligned_words, list):
+            for item in aligned_words[1:]:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    word_start = float(item["start_sec"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if start < word_start < end:
+                    aligned_change_times.append(word_start)
+        if len(aligned_change_times) == len(words) - 1:
+            word_change_times.extend(aligned_change_times)
+        else:
+            word_duration = (end - start) / len(words)
+            word_change_times.extend(
+                start + word_duration * index
+                for index in range(1, len(words))
+            )
     word_change_times.sort()
 
     # The TradingView theme also animates candles. Keep its existing 0.1/0.2
@@ -3208,11 +3282,12 @@ def media_file_stem(payload: dict[str, Any], unique_id: str) -> str:
     return f"gold-{timeframe}-scenario-review-{timestamp}-{short_id}"
 
 
-def subtitle_free_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a render copy that keeps timing but paints no bilingual subtitles."""
+def chinese_subtitle_free_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a render copy that retains English subtitles but hides Chinese."""
     clean_payload = dict(payload)
     clean_style = dict(payload.get("style") or {})
-    clean_style["show_subtitles"] = False
+    clean_style["show_subtitles"] = True
+    clean_style["show_review_chinese_subtitles"] = False
     clean_payload["style"] = clean_style
     return clean_payload
 
@@ -3318,49 +3393,58 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         actual_duration = round(probe_duration(output_path), 3)
         validate_audio_video_duration(duration, actual_duration)
 
-        subtitle_free_payload_data = subtitle_free_payload(payload)
-        subtitle_free_scene_paths = []
+        chinese_subtitle_free_payload_data = chinese_subtitle_free_payload(payload)
+        chinese_subtitle_free_scene_paths = []
         for index, (start_sec, end_sec) in enumerate(scene_intervals):
-            scene_path = job_dir / f"subtitle-free-scene-{index:02}.png"
+            scene_path = job_dir / f"no-chinese-subtitle-scene-{index:02}.png"
             scene_renderer(
                 scene_path,
-                subtitle_free_payload_data,
+                chinese_subtitle_free_payload_data,
                 index,
                 scene_count,
                 current_time_sec=(start_sec + end_sec) / 2,
             )
-            subtitle_free_scene_paths.append(scene_path)
+            chinese_subtitle_free_scene_paths.append(scene_path)
             update_job(job_id, progress=70 + int((index + 1) / scene_count * 22))
 
-        subtitle_free_concat_path = job_dir / "subtitle-free-scenes.txt"
-        subtitle_free_rows = []
-        for scene_path, (start_sec, end_sec) in zip(subtitle_free_scene_paths, scene_intervals):
-            subtitle_free_rows.append(f"file '{scene_path.resolve()}'")
-            subtitle_free_rows.append(f"duration {max(0.001, end_sec - start_sec):.6f}")
-        subtitle_free_rows.append(f"file '{subtitle_free_scene_paths[-1].resolve()}'")
-        subtitle_free_concat_path.write_text(
-            "\n".join(subtitle_free_rows) + "\n", encoding="utf-8"
+        chinese_subtitle_free_concat_path = job_dir / "no-chinese-subtitle-scenes.txt"
+        chinese_subtitle_free_rows = []
+        for scene_path, (start_sec, end_sec) in zip(
+            chinese_subtitle_free_scene_paths, scene_intervals,
+        ):
+            chinese_subtitle_free_rows.append(f"file '{scene_path.resolve()}'")
+            chinese_subtitle_free_rows.append(f"duration {max(0.001, end_sec - start_sec):.6f}")
+        chinese_subtitle_free_rows.append(
+            f"file '{chinese_subtitle_free_scene_paths[-1].resolve()}'"
         )
-        subtitle_free_output_name = f"{media_stem}-no-subtitles.mp4"
-        subtitle_free_output_path = MEDIA_DIR / subtitle_free_output_name
+        chinese_subtitle_free_concat_path.write_text(
+            "\n".join(chinese_subtitle_free_rows) + "\n", encoding="utf-8"
+        )
+        chinese_subtitle_free_output_name = f"{media_stem}-no-chinese-subtitles.mp4"
+        chinese_subtitle_free_output_path = MEDIA_DIR / chinese_subtitle_free_output_name
         run_command([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
-            "-i", str(subtitle_free_concat_path), "-i", str(audio_path),
+            "-i", str(chinese_subtitle_free_concat_path), "-i", str(audio_path),
             "-t", f"{duration:.3f}",
             "-vf", f"fps={payload['video']['fps']},format=yuv420p",
             "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast",
             "-crf", "24", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
-            "-shortest", "-movflags", "+faststart", str(subtitle_free_output_path),
+            "-shortest", "-movflags", "+faststart", str(chinese_subtitle_free_output_path),
         ])
-        subtitle_free_duration = round(probe_duration(subtitle_free_output_path), 3)
-        validate_audio_video_duration(duration, subtitle_free_duration)
+        chinese_subtitle_free_duration = round(
+            probe_duration(chinese_subtitle_free_output_path), 3
+        )
+        validate_audio_video_duration(duration, chinese_subtitle_free_duration)
         update_job(
             job_id,
             status="completed",
             progress=100,
             video_url=f"{PUBLIC_BASE_URL}/media/{output_name}",
             subtitle_free_video_url=(
-                f"{PUBLIC_BASE_URL}/media/{subtitle_free_output_name}"
+                f"{PUBLIC_BASE_URL}/media/{chinese_subtitle_free_output_name}"
+            ),
+            chinese_subtitle_free_video_url=(
+                f"{PUBLIC_BASE_URL}/media/{chinese_subtitle_free_output_name}"
             ),
             thumbnail_url=f"{PUBLIC_BASE_URL}/media/{thumbnail_name}",
             duration_sec=actual_duration,
@@ -3482,6 +3566,7 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
         "render_id": render_id,
         "video_url": f"{PUBLIC_BASE_URL}/media/{output_name}",
         "subtitle_free_video_url": "",
+        "chinese_subtitle_free_video_url": "",
         "thumbnail_url": f"{PUBLIC_BASE_URL}/media/{thumbnail_name}",
         "duration_sec": actual_duration,
         "error_code": "",
