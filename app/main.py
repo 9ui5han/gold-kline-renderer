@@ -154,6 +154,8 @@ class StyleOptions(BaseModel):
     show_support_resistance: bool = True
     show_observation_zones: bool = True
     show_subtitles: bool = True
+    # 中文只用于人工审核预览；正式发布成片默认只保留英文字幕。
+    show_review_chinese_subtitles: bool = False
     show_path_shadow: bool = False
     show_alternate_path: bool = True
     show_exact_forecast_prices: bool = False
@@ -2674,6 +2676,7 @@ def create_render_job(payload: RenderRequest) -> dict[str, Any]:
         "progress": 0,
         "status_url": status_url,
         "video_url": "",
+        "subtitle_free_video_url": "",
         "thumbnail_url": "",
         "duration_sec": 0,
         "error_code": "",
@@ -3130,9 +3133,27 @@ def build_scene_intervals(
         if cursor < duration:
             intervals.append((cursor, duration))
 
-    # The TradingView theme animates candles against narration. Subdivide long
-    # subtitle intervals so the renderer receives a new visual state every
-    # fifth-second instead of holding one still image for an entire sentence.
+    # 逐词字幕使用最终旁白文本和真实字幕区间。逐词时间在每个已对齐
+    # cue 内均分，画面切换会精确落在每个单词的开始时刻；这避免一张
+    # 静态图片跨过两个英文单词而使字幕显得延迟。
+    word_change_times: list[float] = []
+    for cue in raw_cues:
+        text = str(cue.get("text") or "").strip()
+        words = text.split()
+        start = max(0.0, float(cue.get("start_sec") or 0))
+        end = min(duration, float(cue.get("end_sec") or 0))
+        if len(words) < 2 or end <= start:
+            continue
+        word_duration = (end - start) / len(words)
+        word_change_times.extend(
+            start + word_duration * index
+            for index in range(1, len(words))
+        )
+    word_change_times.sort()
+
+    # The TradingView theme also animates candles. Keep its existing 0.1/0.2
+    # second visual cadence, but cut a frame early whenever the next word
+    # begins so the English subtitle changes immediately.
     if payload.get("style", {}).get("theme") == "light_tradingview":
         animated_intervals: list[tuple[float, float]] = []
         history_end = resolve_history_end_sec(payload, duration)
@@ -3145,6 +3166,21 @@ def build_scene_intervals(
                 frame_end = min(end, frame_start + step_seconds)
                 if frame_start < history_end < frame_end:
                     frame_end = history_end
+                next_word_change = next(
+                    (
+                        value
+                        for value in word_change_times
+                        if value > frame_start + 1e-9
+                    ),
+                    None,
+                )
+                if (
+                    next_word_change is not None
+                    and next_word_change < frame_end - 1e-9
+                ):
+                    frame_end = next_word_change
+                if frame_end <= frame_start + 1e-9:
+                    frame_end = min(end, frame_start + 0.001)
                 animated_intervals.append((frame_start, frame_end))
                 frame_start = frame_end
 
@@ -3170,6 +3206,15 @@ def media_file_stem(payload: dict[str, Any], unique_id: str) -> str:
     short_id = re.sub(r"[^a-zA-Z0-9]", "", str(unique_id or ""))[:8].lower()
     short_id = short_id or uuid.uuid4().hex[:8]
     return f"gold-{timeframe}-scenario-review-{timestamp}-{short_id}"
+
+
+def subtitle_free_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return a render copy that keeps timing but paints no bilingual subtitles."""
+    clean_payload = dict(payload)
+    clean_style = dict(payload.get("style") or {})
+    clean_style["show_subtitles"] = False
+    clean_payload["style"] = clean_style
+    return clean_payload
 
 
 def render_job(job_id: str, payload: dict[str, Any]) -> None:
@@ -3272,11 +3317,51 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         )
         actual_duration = round(probe_duration(output_path), 3)
         validate_audio_video_duration(duration, actual_duration)
+
+        subtitle_free_payload_data = subtitle_free_payload(payload)
+        subtitle_free_scene_paths = []
+        for index, (start_sec, end_sec) in enumerate(scene_intervals):
+            scene_path = job_dir / f"subtitle-free-scene-{index:02}.png"
+            scene_renderer(
+                scene_path,
+                subtitle_free_payload_data,
+                index,
+                scene_count,
+                current_time_sec=(start_sec + end_sec) / 2,
+            )
+            subtitle_free_scene_paths.append(scene_path)
+            update_job(job_id, progress=70 + int((index + 1) / scene_count * 22))
+
+        subtitle_free_concat_path = job_dir / "subtitle-free-scenes.txt"
+        subtitle_free_rows = []
+        for scene_path, (start_sec, end_sec) in zip(subtitle_free_scene_paths, scene_intervals):
+            subtitle_free_rows.append(f"file '{scene_path.resolve()}'")
+            subtitle_free_rows.append(f"duration {max(0.001, end_sec - start_sec):.6f}")
+        subtitle_free_rows.append(f"file '{subtitle_free_scene_paths[-1].resolve()}'")
+        subtitle_free_concat_path.write_text(
+            "\n".join(subtitle_free_rows) + "\n", encoding="utf-8"
+        )
+        subtitle_free_output_name = f"{media_stem}-no-subtitles.mp4"
+        subtitle_free_output_path = MEDIA_DIR / subtitle_free_output_name
+        run_command([
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+            "-i", str(subtitle_free_concat_path), "-i", str(audio_path),
+            "-t", f"{duration:.3f}",
+            "-vf", f"fps={payload['video']['fps']},format=yuv420p",
+            "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast",
+            "-crf", "24", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+            "-shortest", "-movflags", "+faststart", str(subtitle_free_output_path),
+        ])
+        subtitle_free_duration = round(probe_duration(subtitle_free_output_path), 3)
+        validate_audio_video_duration(duration, subtitle_free_duration)
         update_job(
             job_id,
             status="completed",
             progress=100,
             video_url=f"{PUBLIC_BASE_URL}/media/{output_name}",
+            subtitle_free_video_url=(
+                f"{PUBLIC_BASE_URL}/media/{subtitle_free_output_name}"
+            ),
             thumbnail_url=f"{PUBLIC_BASE_URL}/media/{thumbnail_name}",
             duration_sec=actual_duration,
         )
@@ -3396,6 +3481,7 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
         "has_audio": bool(audio_url),
         "render_id": render_id,
         "video_url": f"{PUBLIC_BASE_URL}/media/{output_name}",
+        "subtitle_free_video_url": "",
         "thumbnail_url": f"{PUBLIC_BASE_URL}/media/{thumbnail_name}",
         "duration_sec": actual_duration,
         "error_code": "",

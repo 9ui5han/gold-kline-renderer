@@ -21,14 +21,13 @@ def _history():
 
 
 class RenderDurationContractTests(unittest.TestCase):
-    def test_long_subtitle_is_paginated_without_dropping_words(self):
+    def test_long_subtitle_reveals_one_aligned_word_at_a_time(self):
         text = (
             "If resistance holds after confirmation the conditional path may move "
             "toward support while later follow-through remains necessary for continuation"
         )
         chunks = _subtitle_display_chunks(text)
-        self.assertEqual(" ".join(chunks), text)
-        self.assertTrue(all(len(chunk.split()) <= 11 for chunk in chunks))
+        self.assertEqual(chunks, text.split())
 
         narration = {
             "subtitle_cues": [{"start_sec": 0, "end_sec": 12, "text": text}]
@@ -36,11 +35,11 @@ class RenderDurationContractTests(unittest.TestCase):
         total_words = len(text.split())
         cursor = 0
         displayed = set()
-        for chunk in chunks:
-            midpoint = cursor + len(chunk.split()) / 2
+        for word in chunks:
+            midpoint = cursor + 0.5
             second = 12 * midpoint / total_words
             displayed.add(_subtitle_at(narration, second, progress=second / 12))
-            cursor += len(chunk.split())
+            cursor += 1
         self.assertEqual(displayed, set(chunks))
 
     def test_render_request_accepts_duration_up_to_900_seconds(self):
@@ -122,7 +121,7 @@ class RenderDurationContractTests(unittest.TestCase):
 
         self.assertEqual(
             _subtitle_at(narration, 5.0, progress=0.9),
-            "Final risk cue.",
+            "risk",
         )
 
 

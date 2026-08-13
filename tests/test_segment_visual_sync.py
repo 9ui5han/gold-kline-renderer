@@ -10,6 +10,7 @@ from app.chart_renderer import (
     _simplify_visual_polyline,
     _visible_segment_paths,
     _prediction_phase_paths,
+    _prediction_arrow_style,
     PREDICTION_SEGMENT_COLORS,
 )
 
@@ -147,6 +148,20 @@ class SegmentVisualSyncTests(unittest.TestCase):
         )[0][2]
         self.assertEqual(halfway, 1.0)
         self.assertEqual(complete, 1.0)
+
+    def test_only_the_currently_narrated_arrow_flashes(self):
+        inactive = _prediction_arrow_style(
+            "support_break", "resistance_break", 10.0,
+        )
+        active_a = _prediction_arrow_style(
+            "support_break", "support_break", 10.0,
+        )
+        active_b = _prediction_arrow_style(
+            "support_break", "support_break", 10.12,
+        )
+        self.assertEqual(inactive[1:], (5, 17))
+        self.assertNotEqual(active_a[1:], inactive[1:])
+        self.assertNotEqual(active_a, active_b)
 
     def test_turns_below_thirteen_degrees_follow_the_existing_trend(self):
         self.assertEqual(FORECAST_TURN_THRESHOLD_DEG, 13.0)

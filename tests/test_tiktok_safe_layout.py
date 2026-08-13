@@ -3,7 +3,10 @@ import unittest
 from PIL import Image, ImageDraw
 
 from app.chart_renderer import (
+    AXIS_FONT_SIZE,
+    CHART_LABEL_FONT_SIZE,
     EDUCATIONAL_NOTICE,
+    REVIEW_CHINESE_FONT_SIZE,
     SUBTITLE_EN_FONT_SIZE,
     SUBTITLE_ZH_FONT_SIZE,
     _draw_educational_notice,
@@ -15,6 +18,9 @@ class TikTokSafeLayoutTests(unittest.TestCase):
     def test_reference_subtitle_sizes_are_used(self):
         self.assertEqual(SUBTITLE_EN_FONT_SIZE, 104)
         self.assertEqual(SUBTITLE_ZH_FONT_SIZE, 72)
+        self.assertEqual(REVIEW_CHINESE_FONT_SIZE, 46)
+        self.assertEqual(AXIS_FONT_SIZE, 34)
+        self.assertEqual(CHART_LABEL_FONT_SIZE, 25)
 
     def test_tiktok_uses_balanced_safe_area(self):
         box = resolve_safe_layout(1080, 1920, "tiktok")
@@ -54,10 +60,10 @@ class TikTokSafeLayoutTests(unittest.TestCase):
         # There is no pill/background box: nearby pixels remain plain white.
         self.assertEqual(image.getpixel((chart_left, chart_bottom - 38)), (255, 255, 255))
 
-    def test_requested_compact_right_price_lane(self):
+    def test_larger_axis_uses_a_readable_right_price_lane(self):
         safe = resolve_safe_layout(1080, 1920, "tiktok")
-        chart_right = safe["safe_right"] - 85
-        self.assertEqual(safe["safe_right"] - chart_right, 85)
+        chart_right = safe["safe_right"] - 130
+        self.assertEqual(safe["safe_right"] - chart_right, 130)
 
 
 if __name__ == "__main__":

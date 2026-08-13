@@ -7,6 +7,10 @@ from PIL import Image
 
 from app.chart_renderer import (
     ANALYSIS_ZOOM_CANDLES,
+    PREDICTION_HISTORY_END_RATIO,
+    _prediction_arrow_style,
+    _subtitle_at,
+    _subtitle_layout,
     _observation_zones,
     render_tradingview_scene,
 )
@@ -48,8 +52,36 @@ def _structure_scenario(scenario_id, prior, values):
 
 
 class ChartRendererTests(unittest.TestCase):
-    def test_analysis_zoom_keeps_recent_28_candles_dense(self):
-        self.assertEqual(ANALYSIS_ZOOM_CANDLES, 28)
+    def test_analysis_zoom_keeps_recent_24_candles_dense(self):
+        self.assertEqual(ANALYSIS_ZOOM_CANDLES, 24)
+
+    def test_prediction_area_starts_at_forty_percent_of_chart_width(self):
+        self.assertEqual(PREDICTION_HISTORY_END_RATIO, 0.40)
+
+    def test_english_subtitle_changes_one_word_at_a_time(self):
+        narration = {
+            "subtitle_cues": [{
+                "start_sec": 2.0,
+                "end_sec": 5.0,
+                "text": "Gold tests resistance now",
+            }]
+        }
+        self.assertEqual(_subtitle_at(narration, 2.0, 0.0), "Gold")
+        self.assertEqual(_subtitle_at(narration, 2.8, 0.0), "tests")
+        self.assertEqual(_subtitle_at(narration, 3.6, 0.0), "resistance")
+        self.assertEqual(_subtitle_at(narration, 4.4, 0.0), "now")
+
+    def test_only_active_prediction_arrow_uses_flash_style(self):
+        inactive = _prediction_arrow_style("support_hold", "support_break", 4.0)
+        active = _prediction_arrow_style("support_hold", "support_hold", 4.0)
+        self.assertEqual(inactive[1:], (5, 17))
+        self.assertNotEqual(active[1:], inactive[1:])
+
+    def test_layout_keeps_review_chinese_above_chart_and_english_below(self):
+        safe = {"safe_top": 259, "safe_bottom": 1440, "safe_left": 65, "safe_right": 1080}
+        layout = _subtitle_layout(1080, 1920, safe, True)
+        self.assertLess(layout["review_chinese_y"], layout["chart_top"])
+        self.assertGreater(layout["english_y"], layout["chart_bottom"])
 
     def test_singular_support_and_resistance_zones_are_supported(self):
         analysis = {
