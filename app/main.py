@@ -468,6 +468,13 @@ class TTSProxyRequest(BaseModel):
         ge=MIN_TTS_AUDIO_SECONDS,
         le=MAX_TTS_AUDIO_SECONDS,
     )
+    # 每次媒体任务可传入与主工作流一致的动态容差。未传入的旧请求
+    # 继续使用 Railway 环境变量的兼容默认值。
+    duration_tolerance_sec: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=30.0,
+    )
     style_prompt: str = Field(default="", max_length=2000)
     emotion_mode: Literal["auto", "neutral"] = "auto"
     narration_json: dict[str, Any] | str | None = None
@@ -1111,23 +1118,31 @@ def normalize_audio_to_target_duration(
     input_path: Path,
     output_path: Path,
     target_duration_sec: float,
+    duration_tolerance_sec: float | None = None,
 ) -> tuple[float, float]:
-    """轻微自然变速；成片与计划时长允许双向小幅偏差。"""
+    """轻微自然变速；容差优先使用本次主工作流传入的合同。"""
     raw_duration = probe_duration(input_path)
     if not math.isfinite(raw_duration) or raw_duration <= 0:
         raise RuntimeError("TTS_AUDIO_DURATION_INVALID")
     target = float(target_duration_sec)
+    allowed_drift = (
+        MAX_TTS_TARGET_DRIFT_SECONDS
+        if duration_tolerance_sec is None
+        else float(duration_tolerance_sec)
+    )
+    if not math.isfinite(allowed_drift) or allowed_drift < 0:
+        raise RuntimeError("TTS_TARGET_DURATION_TOLERANCE_INVALID")
     requested_ratio = raw_duration / target
     ratio = min(max(requested_ratio, 0.97), 1.03)
     output_target = raw_duration / ratio
-    if abs(output_target - target) > MAX_TTS_TARGET_DRIFT_SECONDS:
+    if abs(output_target - target) > allowed_drift:
         raise RuntimeError(
             "TTS_NARRATION_LENGTH_MISMATCH:"
             f"raw={raw_duration:.3f};target={target:.3f};"
             f"clamped={output_target:.3f};"
             f"word_multiplier={target / raw_duration:.4f};"
             "allowed_tempo=0.97-1.03;"
-            f"allowed_drift_sec={MAX_TTS_TARGET_DRIFT_SECONDS:.3f}"
+            f"allowed_drift_sec={allowed_drift:.3f}"
         )
     filter_chain = _atempo_filter_for_ratio(ratio)
     run_command(
@@ -1563,6 +1578,7 @@ def generate_minimax_segmented_tts(
                 combined_wav,
                 output_path,
                 float(payload.target_duration_sec),
+                payload.duration_tolerance_sec,
             )
         else:
             normalize_audio_to_wav(combined_wav, output_path)
@@ -1867,6 +1883,7 @@ def generate_qwen3_tts(
                 combined_wav,
                 output_path,
                 float(target_duration),
+                payload.duration_tolerance_sec,
             )
         else:
             normalize_audio_to_wav(combined_wav, output_path)
