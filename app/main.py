@@ -93,7 +93,7 @@ MAX_TTS_TARGET_DRIFT_SECONDS = max(
     float(
         os.getenv(
             "MAX_TTS_TARGET_DRIFT_SECONDS",
-            os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "5"),
+            os.getenv("MAX_TTS_TARGET_OVERRUN_SECONDS", "3"),
         )
     ),
 )
