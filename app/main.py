@@ -154,7 +154,7 @@ class StyleOptions(BaseModel):
     show_support_resistance: bool = True
     show_observation_zones: bool = True
     show_subtitles: bool = True
-    # 当前主成片用于人工审核，默认显示顶部中文；同时产出一份仅英文字幕版本。
+    # 当前主成片用于人工审核，默认显示顶部中文；同时产出一份无字幕版本。
     show_review_chinese_subtitles: bool = True
     show_path_shadow: bool = False
     show_alternate_path: bool = True
@@ -3300,10 +3300,10 @@ def media_file_stem(payload: dict[str, Any], unique_id: str) -> str:
 
 
 def chinese_subtitle_free_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """Return a render copy that retains English subtitles but hides Chinese."""
+    """Return a subtitle-free render copy without changing the main video."""
     clean_payload = dict(payload)
     clean_style = dict(payload.get("style") or {})
-    clean_style["show_subtitles"] = True
+    clean_style["show_subtitles"] = False
     clean_style["show_review_chinese_subtitles"] = False
     clean_payload["style"] = clean_style
     return clean_payload
