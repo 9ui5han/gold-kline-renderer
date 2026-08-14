@@ -95,7 +95,7 @@ class ChartRendererTests(unittest.TestCase):
     def test_only_active_prediction_arrow_uses_flash_style(self):
         inactive = _prediction_arrow_style("support_hold", "support_break", 4.0)
         active = _prediction_arrow_style("support_hold", "support_hold", 4.0)
-        self.assertEqual(inactive[1:], (5, 17))
+        self.assertEqual(inactive[1:], (7, 23))
         self.assertNotEqual(active[1:], inactive[1:])
 
     def test_layout_keeps_review_chinese_above_chart_and_english_below(self):

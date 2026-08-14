@@ -428,6 +428,28 @@ def _axis_level_text(
     return total_height
 
 
+def _axis_value_text(
+    draw: ImageDraw.ImageDraw,
+    lane_left: float,
+    lane_right: float,
+    center_y: float,
+    value: str,
+    face: ImageFont.FreeTypeFont,
+    fill: str,
+) -> float:
+    """Draw one coloured zone-boundary value in the protected price lane."""
+    bbox = draw.textbbox((0, 0), value, font=face)
+    center_x = (lane_left + lane_right) / 2
+    draw.text(
+        (center_x, center_y - (bbox[3] - bbox[1]) / 2 - bbox[1]),
+        value,
+        font=face,
+        fill=fill,
+        anchor="ma",
+    )
+    return bbox[3] - bbox[1]
+
+
 def _draw_educational_notice(
     draw: ImageDraw.ImageDraw,
     left: float,
@@ -1224,13 +1246,13 @@ def _prediction_arrow_style(
     """Flash only the path currently being explained by narration."""
     base_color = PREDICTION_SEGMENT_COLORS[segment_id]
     if segment_id != active_segment_id:
-        return base_color, 5, 17
+        return base_color, 7, 23
 
     pulse = (math.sin(float(current_time) * math.tau * 2.2) + 1.0) / 2.0
     return (
         _mix_hex_color(base_color, "#ffffff", 0.22 + pulse * 0.50),
-        6 + round(pulse * 4),
-        19 + round(pulse * 5),
+        8 + round(pulse * 4),
+        25 + round(pulse * 5),
     )
 
 
@@ -1585,12 +1607,49 @@ def render_tradingview_scene(
         safe_right - price_axis_x,
         chart_bottom - chart_top,
     )
-    right_labels = [
-        (py(float(level)), color, name, _price(level))
+    # Each observation band needs both of its actual price boundaries. When a
+    # boundary is also the named support/resistance level, the named label
+    # already includes that price, so do not print a duplicate number.
+    axis_labels = [
+        {
+            "kind": "level",
+            "value": float(level),
+            "color": color,
+            "name": name,
+            "price": _price(level),
+        }
         for level, color, name in levels_to_show
     ]
+    shown_values = [item["value"] for item in axis_labels]
+    for zone_key, color in (
+        ("potential_buy_zones", "#2962ff"),
+        ("potential_sell_zones", "#f59e0b"),
+    ):
+        for zone in _observation_zones(analysis, zone_key):
+            try:
+                boundaries = (float(zone["high"]), float(zone["low"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+            for boundary in boundaries:
+                if not math.isfinite(boundary) or any(
+                    abs(boundary - existing) < 0.005
+                    for existing in shown_values
+                ):
+                    continue
+                axis_labels.append(
+                    {
+                        "kind": "boundary",
+                        "value": boundary,
+                        "color": color,
+                        "name": "",
+                        "price": _price(boundary),
+                    }
+                )
+                shown_values.append(boundary)
+
+    axis_label_desired_y = [py(item["value"]) for item in axis_labels]
     label_positions = _spread_label_positions(
-        [desired_y for desired_y, _, _, _ in right_labels],
+        axis_label_desired_y,
         chart_top + 28,
         chart_bottom - 78,
         minimum_gap=max(66, axis_level_face.size * 2 + 14),
@@ -1720,9 +1779,12 @@ def render_tradingview_scene(
     # Key levels and their support/resistance observation zones appear after
     # the historical overview. The coloured bands are behind candles, lines
     # and arrows, so the complete price structure stays readable.
-    # Observation zones are structural context, so keep them present in every
-    # frame instead of hiding them before a particular narration segment.
-    zones_visible = payload["style"].get("show_observation_zones", True)
+    # Observation zones are intentionally reserved for the forecast phase.
+    # The historical-reading stage stays focused on the candles themselves.
+    zones_visible = (
+        payload["style"].get("show_observation_zones", True)
+        and prediction_phase
+    )
     if zones_visible:
         zone_draw = ImageDraw.Draw(image, "RGBA")
         for zone_key, fill, outline, label in (
@@ -1950,14 +2012,14 @@ def render_tradingview_scene(
             draw.line(
                 visible_alternate,
                 fill=alternate_color,
-                width=3,
+                width=5,
             )
             if len(visible_alternate) >= 2:
                 draw.polygon(
                     _arrow_head(
                         visible_alternate[-1],
                         visible_alternate[-2],
-                        size=14,
+                        size=19,
                     ),
                     fill=alternate_color,
                 )
@@ -1966,12 +2028,12 @@ def render_tradingview_scene(
             primary_color = "#00a86b"
             # The main forecast never changes style. The dashed line is a
             # separate conditional outcome generated from its level touch.
-            draw.line(visible_primary, fill=primary_color, width=5)
+            draw.line(visible_primary, fill=primary_color, width=8)
             draw.polygon(
                 _arrow_head(
                     visible_primary[-1],
                     visible_primary[-2],
-                    size=19,
+                    size=25,
                 ),
                 fill=primary_color,
             )
@@ -1983,7 +2045,7 @@ def render_tradingview_scene(
                         *visible_branch_points[1],
                     ),
                     fill=primary_color,
-                    width=3,
+                    width=5,
                     dash=8,
                 )
                 draw.polygon(
@@ -2113,37 +2175,48 @@ def render_tradingview_scene(
                     _arrow_head(
                         visible_alternate[-1],
                         visible_alternate[-2],
-                        size=14,
+                        size=19,
                     ),
                     fill="#e53935",
                 )
 
-            draw.line(visible_trend, fill=trend_color, width=5)
+            draw.line(visible_trend, fill=trend_color, width=8)
             draw.polygon(
                 _arrow_head(
                     visible_trend[-1],
                     visible_trend[-2],
-                    size=19,
+                    size=25,
                 ),
                 fill=trend_color,
             )
 
     # Support/resistance are the only non-axis labels retained on the chart.
     # Current-price, FVG and other auxiliary labels are intentionally removed.
-    for (desired_y, color, text, price), y in zip(
-        right_labels,
+    for axis_label, y in zip(
+        axis_labels,
         label_positions,
     ):
-        _axis_level_text(
-            draw,
-            price_axis_x,
-            safe_right,
-            y,
-            text,
-            str(price or ""),
-            axis_level_face,
-            color,
-        )
+        if axis_label["kind"] == "level":
+            _axis_level_text(
+                draw,
+                price_axis_x,
+                safe_right,
+                y,
+                axis_label["name"],
+                axis_label["price"],
+                axis_level_face,
+                axis_label["color"],
+            )
+        else:
+            _axis_value_text(
+                draw,
+                price_axis_x,
+                safe_right,
+                y,
+                axis_label["price"],
+                axis_level_face,
+                axis_label["color"],
+            )
 
     # Forecast arrows are the top chart layer: repaint their geometry after
     # candles, zones, levels, price lines, and right-lane connectors.
