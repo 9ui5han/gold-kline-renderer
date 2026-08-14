@@ -843,10 +843,9 @@ def resolve_safe_layout(width: int, height: int, platform: str) -> dict[str, int
         return {
             "safe_top": round(height * 0.135),
             "safe_bottom": height - round(height * 0.25),
-            # The rendered video now uses the full width. TikTok's interface
-            # may overlay the right edge, but the user explicitly does not
-            # want a dedicated blank strip reserved in the source video.
-            "safe_right": width,
+            # Keep the complete chart, price axis and level labels inside
+            # equal left/right margins, away from TikTok's right controls.
+            "safe_right": width - round(width * 0.06),
             "safe_left": round(width * 0.06),
         }
     return {
@@ -1493,6 +1492,12 @@ def render_tradingview_scene(
     ]
     for level_key in ("support_levels", "resistance_levels"):
         prices.extend(float(value) for value in (analysis.get(level_key) or []))
+    for zone_key in ("potential_buy_zones", "potential_sell_zones"):
+        for zone in _observation_zones(analysis, zone_key):
+            try:
+                prices.extend([float(zone["low"]), float(zone["high"])])
+            except (KeyError, TypeError, ValueError):
+                continue
     for scenario in _rank_structure_scenarios(forecast_paths):
         prices.extend(
             value for _, value, _ in _structure_path_values(scenario)
@@ -1519,12 +1524,29 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 112)
         )
 
-    # Keep only the useful price scale. Decorative horizontal grid lines are
-    # intentionally omitted so candles and levels are the visual focus.
+    # A price label must visibly point back to the chart. Keep the guides very
+    # light so they work as axis ticks rather than competing grid lines.
+    draw.line(
+        (chart_right, chart_top + 24, chart_right, chart_bottom),
+        fill="#d9dde5",
+        width=1,
+    )
     for grid_index in range(6):
         fraction = grid_index / 5
         y = chart_top + 28 + fraction * (chart_bottom - chart_top - 62)
         value = pmax - fraction * (pmax - pmin)
+        _dashed_line(
+            draw,
+            (chart_left, y, chart_right, y),
+            fill="#edf0f4",
+            width=1,
+            dash=5,
+        )
+        draw.line(
+            (chart_right - 9, y, chart_right + 9, y),
+            fill="#9aa1ad",
+            width=2,
+        )
         draw.text(
             (price_axis_x, y),
             _price(value),
@@ -1575,6 +1597,11 @@ def render_tradingview_scene(
     # Two well-spaced labels stay readable on a vertical short video. More
     # labels would overlap each other at the fixed chart width.
     time_marks = 2
+    draw.line(
+        (chart_left, time_axis_y, chart_right, time_axis_y),
+        fill="#d9dde5",
+        width=1,
+    )
     axis_time_candles = history or candles
     first_time_index = 0
     last_time_index = max(len(axis_time_candles) - 1, 0)
@@ -1590,6 +1617,12 @@ def render_tradingview_scene(
             label = _time_label(axis_time_candles[candle_index].get("time", ""))
             bbox = draw.textbbox((0, 0), label, font=axis_face)
             half_width = (bbox[2] - bbox[0]) / 2
+            tick_x = min(chart_right, max(chart_left, x))
+            draw.line(
+                (tick_x, time_axis_y, tick_x, time_axis_y + 10),
+                fill="#9aa1ad",
+                width=2,
+            )
             draw.text(
                 (
                     min(
@@ -1604,8 +1637,40 @@ def render_tradingview_scene(
                 anchor="ma",
             )
 
-    # Key level lines appear only after the historical overview. Their exact
-    # price tags are drawn again near the end so zones/arrows cannot cover them.
+    # Key levels and their support/resistance observation zones appear after
+    # the historical overview. The coloured bands are behind candles, lines
+    # and arrows, so the complete price structure stays readable.
+    # Observation zones are structural context, so keep them present in every
+    # frame instead of hiding them before a particular narration segment.
+    zones_visible = payload["style"].get("show_observation_zones", True)
+    if zones_visible:
+        zone_draw = ImageDraw.Draw(image, "RGBA")
+        for zone_key, fill, outline, label in (
+            ("potential_buy_zones", (41, 98, 255, 58), "#2962ff", "Support zone"),
+            ("potential_sell_zones", (245, 158, 11, 58), "#f59e0b", "Resistance zone"),
+        ):
+            for zone in _observation_zones(analysis, zone_key):
+                try:
+                    low = float(zone["low"])
+                    high = float(zone["high"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if not math.isfinite(low) or not math.isfinite(high) or low >= high:
+                    continue
+                top, bottom = sorted((py(high), py(low)))
+                zone_draw.rectangle(
+                    (chart_left, top, chart_right, bottom),
+                    fill=fill,
+                    outline=outline,
+                    width=2,
+                )
+                zone_draw.text(
+                    (chart_left + 12, top + 8),
+                    label,
+                    font=label_face,
+                    fill=outline,
+                )
+
     levels_to_show = []
     if (
         payload["style"].get("show_support_resistance", True)

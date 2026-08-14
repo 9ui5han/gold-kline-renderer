@@ -26,7 +26,7 @@ class TikTokSafeLayoutTests(unittest.TestCase):
         box = resolve_safe_layout(1080, 1920, "tiktok")
         self.assertEqual(box["safe_top"], 259)
         self.assertEqual(box["safe_bottom"], 1440)
-        self.assertEqual(box["safe_right"], 1080)
+        self.assertEqual(box["safe_right"], 1015)
         self.assertEqual(box["safe_left"], 65)
 
     def test_tiktok_name_is_trimmed_and_case_insensitive(self):
@@ -66,6 +66,7 @@ class TikTokSafeLayoutTests(unittest.TestCase):
         price_lane_width = max(132, round(1080 * 0.13))
         chart_right = safe["safe_right"] - level_lane_width - price_lane_width - 14
         self.assertEqual(safe["safe_right"] - chart_right, 316)
+        self.assertEqual(1080 - safe["safe_right"], safe["safe_left"])
 
 
 if __name__ == "__main__":
