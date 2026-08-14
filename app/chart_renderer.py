@@ -391,6 +391,43 @@ def _centered_level_label(
         )
 
 
+def _axis_level_text(
+    draw: ImageDraw.ImageDraw,
+    lane_left: float,
+    lane_right: float,
+    center_y: float,
+    name: str,
+    price: str,
+    face: ImageFont.FreeTypeFont,
+    fill: str,
+) -> float:
+    """Draw an unboxed level label in the price-axis lane and return its height."""
+    name_box = draw.textbbox((0, 0), name, font=face)
+    price_box = draw.textbbox((0, 0), price, font=face)
+    name_height = name_box[3] - name_box[1]
+    price_height = price_box[3] - price_box[1]
+    gap = 2
+    total_height = name_height + gap + price_height
+    center_x = (lane_left + lane_right) / 2
+    name_y = center_y - total_height / 2 - name_box[1]
+    price_y = center_y + total_height / 2 - price_height - price_box[1]
+    draw.text(
+        (center_x, name_y),
+        name,
+        font=face,
+        fill=fill,
+        anchor="ma",
+    )
+    draw.text(
+        (center_x, price_y),
+        price,
+        font=face,
+        fill=fill,
+        anchor="ma",
+    )
+    return total_height
+
+
 def _draw_educational_notice(
     draw: ImageDraw.ImageDraw,
     left: float,
@@ -1469,15 +1506,15 @@ def render_tradingview_scene(
     layout = _subtitle_layout(width, height, safe, is_tiktok_safe)
     chart_top = layout["chart_top"]
     chart_bottom = layout["chart_bottom"]
-    # Three fixed horizontal lanes: chart, coloured support/resistance tags,
-    # then grey price scale. They never share pixels or move with prediction.
+    # The price scale keeps a protected lane on the far right. Support and
+    # resistance tags sit in a narrow overlay at the chart edge, so the K-line
+    # itself can use the former wide tag lane without covering axis numbers.
     safe_right = safe["safe_right"] if is_tiktok_safe else width
-    level_lane_width = max(150, round(width * 0.15))
     price_lane_width = max(132, round(width * 0.13))
-    chart_right = safe_right - level_lane_width - price_lane_width - 14
-    level_lane_left = chart_right + 8
-    level_lane_right = level_lane_left + level_lane_width
-    price_axis_x = level_lane_right + 10
+    chart_right = safe_right - price_lane_width - 14
+    price_axis_x = chart_right + 20
+    level_lane_right = price_axis_x - 12
+    level_lane_left = max(chart_left, chart_right - max(112, round(width * 0.11)))
     time_axis_y = chart_bottom
     # White canvas already supplies the chart background. Do not draw a frame.
 
@@ -1524,6 +1561,42 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 112)
         )
 
+    # Level labels share the price-axis lane with the ordinary grey scale.
+    # Work out their final positions before drawing the scale, so a coloured
+    # Support/Resistance label can replace—not overlap—the nearby grey number.
+    levels_to_show = []
+    if (
+        payload["style"].get("show_support_resistance", True)
+        and (current_time >= level_start_sec or prediction_phase)
+    ):
+        supports = analysis.get("support_levels") or []
+        resistances = analysis.get("resistance_levels") or []
+        if supports and current_time >= support_start_sec:
+            levels_to_show.append(
+                (supports[0], "#2962ff", VIDEO_LABELS["support"])
+            )
+        if resistances and prediction_phase:
+            levels_to_show.append(
+                (resistances[0], "#f59e0b", VIDEO_LABELS["resistance"])
+            )
+
+    axis_level_face = _level_label_face(
+        draw,
+        safe_right - price_axis_x,
+        chart_bottom - chart_top,
+    )
+    right_labels = [
+        (py(float(level)), color, name, _price(level))
+        for level, color, name in levels_to_show
+    ]
+    label_positions = _spread_label_positions(
+        [desired_y for desired_y, _, _, _ in right_labels],
+        chart_top + 28,
+        chart_bottom - 78,
+        minimum_gap=max(66, axis_level_face.size * 2 + 14),
+    )
+    axis_level_clearance = max(30, axis_level_face.size * 1.55)
+
     # A price label must visibly point back to the chart. Keep the guides very
     # light so they work as axis ticks rather than competing grid lines.
     draw.line(
@@ -1547,13 +1620,20 @@ def render_tradingview_scene(
             fill="#9aa1ad",
             width=2,
         )
-        draw.text(
-            (price_axis_x, y),
-            _price(value),
-            font=axis_face,
-            fill="#5f6470",
-            anchor="lm",
-        )
+        # A coloured support/resistance name owns this vertical slot. Omitting
+        # the nearby grey scale number is clearer than letting either label
+        # cover the other.
+        if not any(
+            abs(y - level_y) < axis_level_clearance
+            for level_y in label_positions
+        ):
+            draw.text(
+                (price_axis_x, y),
+                _price(value),
+                font=axis_face,
+                fill="#5f6470",
+                anchor="lm",
+            )
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
     # During prediction, start the forecast at 40% of the chart instead of
@@ -1664,36 +1744,50 @@ def render_tradingview_scene(
                     outline=outline,
                     width=2,
                 )
+                # Keep the zone name genuinely inside its colour band. The
+                # type size follows the band height, so a broad support or
+                # resistance area reads as one centred visual unit instead of
+                # looking like a small caption pinned to its top-left corner.
+                zone_height = max(1, bottom - top)
+                preferred_size = max(18, min(64, round(zone_height * 0.62)))
+                zone_face = label_face
+                zone_box = zone_draw.textbbox((0, 0), label, font=zone_face)
+                for size in range(preferred_size, 17, -1):
+                    candidate = _font(size, True)
+                    candidate_box = zone_draw.textbbox(
+                        (0, 0), label, font=candidate
+                    )
+                    if (
+                        candidate_box[2] - candidate_box[0]
+                        <= chart_right - chart_left - 32
+                        and candidate_box[3] - candidate_box[1]
+                        <= zone_height - 14
+                    ):
+                        zone_face = candidate
+                        zone_box = candidate_box
+                        break
+                text_width = zone_box[2] - zone_box[0]
+                text_height = zone_box[3] - zone_box[1]
                 zone_draw.text(
-                    (chart_left + 12, top + 8),
+                    (
+                        chart_left + (chart_right - chart_left - text_width) / 2,
+                        top + (zone_height - text_height) / 2 - zone_box[1],
+                    ),
                     label,
-                    font=label_face,
+                    font=zone_face,
                     fill=outline,
                 )
 
-    levels_to_show = []
-    if (
-        payload["style"].get("show_support_resistance", True)
-        and (current_time >= level_start_sec or prediction_phase)
-    ):
-        # Support and resistance run through the full chart.
-        level_start_x = chart_left
-        supports = analysis.get("support_levels") or []
-        resistances = analysis.get("resistance_levels") or []
-        if supports and current_time >= support_start_sec:
-            levels_to_show.append((supports[0], "#2962ff", VIDEO_LABELS["support"]))
-        if resistances and prediction_phase:
-            levels_to_show.append((resistances[0], "#f59e0b", VIDEO_LABELS["resistance"]))
-
-        for level, color, name in levels_to_show:
-            y = py(float(level))
-            _dashed_line(
-                draw,
-                (level_start_x, y, chart_right, y),
-                fill=color,
-                width=3,
-                dash=10,
-            )
+    # Support and resistance run through the full chart.
+    for level, color, _name in levels_to_show:
+        y = py(float(level))
+        _dashed_line(
+            draw,
+            (chart_left, y, chart_right, y),
+            fill=color,
+            width=3,
+            dash=10,
+        )
 
     # Candles are the only chart-layer objects besides axis information,
     # support/resistance lines and the currently narrated prediction arrow.
@@ -2036,33 +2130,18 @@ def render_tradingview_scene(
 
     # Support/resistance are the only non-axis labels retained on the chart.
     # Current-price, FVG and other auxiliary labels are intentionally removed.
-    right_labels = [
-        (py(float(level)), color, name, _price(level))
-        for level, color, name in levels_to_show
-    ]
-    level_label_face = _level_label_face(
-        draw,
-        level_lane_right - level_lane_left,
-        chart_bottom - chart_top,
-    )
-    label_positions = _spread_label_positions(
-        [desired_y for desired_y, _, _, _ in right_labels],
-        chart_top + 28,
-        chart_bottom - 78,
-        minimum_gap=max(90, level_label_face.size * 2 + 22),
-    )
     for (desired_y, color, text, price), y in zip(
         right_labels,
         label_positions,
     ):
-        _centered_level_label(
+        _axis_level_text(
             draw,
-            level_lane_left,
-            level_lane_right,
+            price_axis_x,
+            safe_right,
             y,
             text,
             str(price or ""),
-            level_label_face,
+            axis_level_face,
             color,
         )
 
