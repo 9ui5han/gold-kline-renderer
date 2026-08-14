@@ -9,6 +9,7 @@ from app.chart_renderer import (
     ANALYSIS_ZOOM_CANDLES,
     PREDICTION_HISTORY_END_RATIO,
     _prediction_arrow_style,
+    _price_mention_time,
     _subtitle_at,
     _subtitle_layout,
     _observation_zones,
@@ -91,6 +92,22 @@ class ChartRendererTests(unittest.TestCase):
         # The natural pause before “now” must not show the word early.
         self.assertEqual(_subtitle_at(narration, 4.20, 0.0), "resistance")
         self.assertEqual(_subtitle_at(narration, 4.70, 0.0), "now")
+
+    def test_price_boundary_uses_the_real_spoken_word_time(self):
+        narration = {
+            "subtitle_cues": [{
+                "start_sec": 10.0,
+                "end_sec": 15.0,
+                "text": "Resistance runs from 4313 to 4376.",
+                "word_timings": [
+                    {"text": "4313", "start_sec": 11.2, "end_sec": 11.5},
+                    {"text": "4376.", "start_sec": 13.6, "end_sec": 13.9},
+                ],
+            }]
+        }
+        self.assertEqual(_price_mention_time(narration, 4313.0), 11.2)
+        self.assertEqual(_price_mention_time(narration, 4376.0), 13.6)
+        self.assertIsNone(_price_mention_time(narration, 4400.0))
 
     def test_only_active_prediction_arrow_uses_flash_style(self):
         inactive = _prediction_arrow_style("support_hold", "support_break", 4.0)

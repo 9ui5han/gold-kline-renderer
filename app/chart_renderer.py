@@ -1292,6 +1292,45 @@ def _cue_start(
     return max(0.0, float(fallback_sec))
 
 
+_SPOKEN_NUMBER_PATTERN = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _price_mention_time(
+    narration: dict[str, Any],
+    price: float,
+) -> float | None:
+    """Return the real spoken time for one exact price, if it is narrated."""
+    target = float(price)
+
+    def matches(value: Any) -> bool:
+        for token in _SPOKEN_NUMBER_PATTERN.findall(str(value or "")):
+            try:
+                if abs(float(token.replace(",", "")) - target) < 0.005:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    cues = sorted(
+        (
+            cue for cue in narration.get("subtitle_cues") or []
+            if isinstance(cue, dict)
+        ),
+        key=lambda cue: float(cue.get("start_sec") or 0),
+    )
+    for cue in cues:
+        for word in cue.get("word_timings") or []:
+            if not isinstance(word, dict) or not matches(word.get("text")):
+                continue
+            try:
+                return max(0.0, float(word["start_sec"]))
+            except (KeyError, TypeError, ValueError):
+                break
+        if matches(cue.get("text")):
+            return max(0.0, float(cue.get("start_sec") or 0))
+    return None
+
+
 def render_tradingview_scene(
     path: Path,
     payload: dict[str, Any],
@@ -1423,17 +1462,6 @@ def render_tradingview_scene(
         else [],
     )
 
-    support_start_sec = _cue_start(
-        narration,
-        ("support", "Support"),
-        duration * 0.34,
-    )
-    resistance_start_sec = _cue_start(
-        narration,
-        ("resistance", "Resistance"),
-        duration * 0.40,
-    )
-    level_start_sec = min(support_start_sec, resistance_start_sec)
     if segment_sync:
         prediction_phase = (
             active_segment_id in PREDICTION_SEGMENT_IDS
@@ -1583,64 +1611,67 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 112)
         )
 
-    # Level labels share the price-axis lane with the ordinary grey scale.
-    # Work out their final positions before drawing the scale, so a coloured
-    # Support/Resistance label can replace—not overlap—the nearby grey number.
-    levels_to_show = []
-    if (
-        payload["style"].get("show_support_resistance", True)
-        and (current_time >= level_start_sec or prediction_phase)
+    # A range is revealed one spoken boundary at a time. The first mentioned
+    # price creates its own lasting line; the second completes the coloured
+    # support/resistance area. This avoids showing information before it is
+    # actually said in the narration.
+    zone_states = []
+    for zone_key, color, label in (
+        ("potential_buy_zones", "#2962ff", "Support zone"),
+        ("potential_sell_zones", "#f59e0b", "Resistance zone"),
     ):
-        supports = analysis.get("support_levels") or []
-        resistances = analysis.get("resistance_levels") or []
-        if supports and current_time >= support_start_sec:
-            levels_to_show.append(
-                (supports[0], "#2962ff", VIDEO_LABELS["support"])
+        for zone in _observation_zones(analysis, zone_key):
+            try:
+                low = float(zone["low"])
+                high = float(zone["high"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if not math.isfinite(low) or not math.isfinite(high) or low >= high:
+                continue
+            low_mention_sec = _price_mention_time(narration, low)
+            high_mention_sec = _price_mention_time(narration, high)
+            low_visible = (
+                low_mention_sec is not None and current_time >= low_mention_sec
             )
-        if resistances and prediction_phase:
-            levels_to_show.append(
-                (resistances[0], "#f59e0b", VIDEO_LABELS["resistance"])
+            high_visible = (
+                high_mention_sec is not None and current_time >= high_mention_sec
+            )
+            zone_states.append(
+                {
+                    "key": zone_key,
+                    "color": color,
+                    "label": label,
+                    "low": low,
+                    "high": high,
+                    "low_visible": low_visible,
+                    "high_visible": high_visible,
+                    "complete": low_visible and high_visible,
+                }
             )
 
+    # Boundary values share the price-axis lane with the grey scale. Work out
+    # their final positions before drawing the scale, so each revealed value
+    # replaces—not overlaps—the nearby grey number.
     axis_level_face = _level_label_face(
         draw,
         safe_right - price_axis_x,
         chart_bottom - chart_top,
     )
-    # Each observation band needs both of its actual price boundaries. When a
-    # boundary is also the named support/resistance level, the named label
-    # already includes that price, so do not print a duplicate number.
-    axis_labels = [
-        {
-            "kind": "level",
-            "value": float(level),
-            "color": color,
-            "name": name,
-            "price": _price(level),
-        }
-        for level, color, name in levels_to_show
-    ]
-    shown_values = [item["value"] for item in axis_labels]
-    for zone_key, color in (
-        ("potential_buy_zones", "#2962ff"),
-        ("potential_sell_zones", "#f59e0b"),
-    ):
-        for zone in _observation_zones(analysis, zone_key):
-            try:
-                boundaries = (float(zone["high"]), float(zone["low"]))
-            except (KeyError, TypeError, ValueError):
-                continue
-            for boundary in boundaries:
-                if not math.isfinite(boundary) or any(
-                    abs(boundary - existing) < 0.005
-                    for existing in shown_values
-                ):
+    axis_labels = []
+    if payload["style"].get("show_support_resistance", True):
+        shown_values = []
+        for state in zone_states:
+            for boundary_key in ("high", "low"):
+                if not state[f"{boundary_key}_visible"]:
+                    continue
+                boundary = state[boundary_key]
+                if any(abs(boundary - existing) < 0.005 for existing in shown_values):
                     continue
                 axis_labels.append(
                     {
                         "kind": "boundary",
                         "value": boundary,
-                        "color": color,
+                        "color": state["color"],
                         "name": "",
                         "price": _price(boundary),
                     }
@@ -1781,75 +1812,69 @@ def render_tradingview_scene(
     # and arrows, so the complete price structure stays readable.
     # Observation zones are intentionally reserved for the forecast phase.
     # The historical-reading stage stays focused on the candles themselves.
-    zones_visible = (
-        payload["style"].get("show_observation_zones", True)
-        and prediction_phase
-    )
+    zones_visible = payload["style"].get("show_observation_zones", True)
     if zones_visible:
         zone_draw = ImageDraw.Draw(image, "RGBA")
-        for zone_key, fill, outline, label in (
-            ("potential_buy_zones", (41, 98, 255, 58), "#2962ff", "Support zone"),
-            ("potential_sell_zones", (245, 158, 11, 58), "#f59e0b", "Resistance zone"),
-        ):
-            for zone in _observation_zones(analysis, zone_key):
-                try:
-                    low = float(zone["low"])
-                    high = float(zone["high"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if not math.isfinite(low) or not math.isfinite(high) or low >= high:
-                    continue
-                top, bottom = sorted((py(high), py(low)))
-                zone_draw.rectangle(
-                    (chart_left, top, chart_right, bottom),
-                    fill=fill,
-                    outline=outline,
-                    width=2,
+        for state in zone_states:
+            if not (prediction_phase and state["complete"]):
+                continue
+            fill = (
+                (41, 98, 255, 58)
+                if state["key"] == "potential_buy_zones"
+                else (245, 158, 11, 58)
+            )
+            top, bottom = sorted((py(state["high"]), py(state["low"])))
+            zone_draw.rectangle(
+                (chart_left, top, chart_right, bottom),
+                fill=fill,
+                outline=state["color"],
+                width=2,
+            )
+            # Keep the zone name genuinely inside its colour band. The type
+            # size follows the band height, so it reads as one centred unit.
+            zone_height = max(1, bottom - top)
+            preferred_size = max(18, min(64, round(zone_height * 0.62)))
+            zone_face = label_face
+            zone_box = zone_draw.textbbox((0, 0), state["label"], font=zone_face)
+            for size in range(preferred_size, 17, -1):
+                candidate = _font(size, True)
+                candidate_box = zone_draw.textbbox(
+                    (0, 0), state["label"], font=candidate
                 )
-                # Keep the zone name genuinely inside its colour band. The
-                # type size follows the band height, so a broad support or
-                # resistance area reads as one centred visual unit instead of
-                # looking like a small caption pinned to its top-left corner.
-                zone_height = max(1, bottom - top)
-                preferred_size = max(18, min(64, round(zone_height * 0.62)))
-                zone_face = label_face
-                zone_box = zone_draw.textbbox((0, 0), label, font=zone_face)
-                for size in range(preferred_size, 17, -1):
-                    candidate = _font(size, True)
-                    candidate_box = zone_draw.textbbox(
-                        (0, 0), label, font=candidate
-                    )
-                    if (
-                        candidate_box[2] - candidate_box[0]
-                        <= chart_right - chart_left - 32
-                        and candidate_box[3] - candidate_box[1]
-                        <= zone_height - 14
-                    ):
-                        zone_face = candidate
-                        zone_box = candidate_box
-                        break
-                text_width = zone_box[2] - zone_box[0]
-                text_height = zone_box[3] - zone_box[1]
-                zone_draw.text(
-                    (
-                        chart_left + (chart_right - chart_left - text_width) / 2,
-                        top + (zone_height - text_height) / 2 - zone_box[1],
-                    ),
-                    label,
-                    font=zone_face,
-                    fill=outline,
-                )
+                if (
+                    candidate_box[2] - candidate_box[0]
+                    <= chart_right - chart_left - 32
+                    and candidate_box[3] - candidate_box[1]
+                    <= zone_height - 14
+                ):
+                    zone_face = candidate
+                    zone_box = candidate_box
+                    break
+            text_width = zone_box[2] - zone_box[0]
+            text_height = zone_box[3] - zone_box[1]
+            zone_draw.text(
+                (
+                    chart_left + (chart_right - chart_left - text_width) / 2,
+                    top + (zone_height - text_height) / 2 - zone_box[1],
+                ),
+                state["label"],
+                font=zone_face,
+                fill=state["color"],
+            )
 
-    # Support and resistance run through the full chart.
-    for level, color, _name in levels_to_show:
-        y = py(float(level))
-        _dashed_line(
-            draw,
-            (chart_left, y, chart_right, y),
-            fill=color,
-            width=3,
-            dash=10,
-        )
+    # Every spoken zone boundary receives its own lasting horizontal line.
+    for state in zone_states:
+        for boundary_key in ("high", "low"):
+            if not state[f"{boundary_key}_visible"]:
+                continue
+            y = py(state[boundary_key])
+            _dashed_line(
+                draw,
+                (chart_left, y, chart_right, y),
+                fill=state["color"],
+                width=3,
+                dash=10,
+            )
 
     # Candles are the only chart-layer objects besides axis information,
     # support/resistance lines and the currently narrated prediction arrow.
@@ -2009,33 +2034,24 @@ def render_tradingview_scene(
             and not alternate_duplicates_branch
         ):
             alternate_color = "#e53935"
-            draw.line(
+            _draw_clean_arrow(
+                draw,
                 visible_alternate,
-                fill=alternate_color,
-                width=5,
+                alternate_color,
+                line_width=5,
+                head_size=23,
             )
-            if len(visible_alternate) >= 2:
-                draw.polygon(
-                    _arrow_head(
-                        visible_alternate[-1],
-                        visible_alternate[-2],
-                        size=19,
-                    ),
-                    fill=alternate_color,
-                )
 
         if len(visible_primary) >= 2:
             primary_color = "#00a86b"
             # The main forecast never changes style. The dashed line is a
             # separate conditional outcome generated from its level touch.
-            draw.line(visible_primary, fill=primary_color, width=8)
-            draw.polygon(
-                _arrow_head(
-                    visible_primary[-1],
-                    visible_primary[-2],
-                    size=25,
-                ),
-                fill=primary_color,
+            _draw_clean_arrow(
+                draw,
+                visible_primary,
+                primary_color,
+                line_width=8,
+                head_size=30,
             )
             if len(visible_branch_points) == 2:
                 _dashed_line(
@@ -2166,28 +2182,20 @@ def render_tradingview_scene(
 
             # The alternate path is lighter and appears just after the primary.
             if len(visible_alternate) >= 2:
-                draw.line(
+                _draw_clean_arrow(
+                    draw,
                     visible_alternate,
-                    fill="#e53935",
-                    width=3,
-                )
-                draw.polygon(
-                    _arrow_head(
-                        visible_alternate[-1],
-                        visible_alternate[-2],
-                        size=19,
-                    ),
-                    fill="#e53935",
+                    "#e53935",
+                    line_width=5,
+                    head_size=23,
                 )
 
-            draw.line(visible_trend, fill=trend_color, width=8)
-            draw.polygon(
-                _arrow_head(
-                    visible_trend[-1],
-                    visible_trend[-2],
-                    size=25,
-                ),
-                fill=trend_color,
+            _draw_clean_arrow(
+                draw,
+                visible_trend,
+                trend_color,
+                line_width=8,
+                head_size=30,
             )
 
     # Support/resistance are the only non-axis labels retained on the chart.
