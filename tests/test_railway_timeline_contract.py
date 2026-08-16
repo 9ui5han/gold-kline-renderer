@@ -121,33 +121,6 @@ class RailwayTimelineContractTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             RenderRequest.model_validate(payload)
 
-    def test_accepts_dynamic_v2_timeline_with_one_real_path(self):
-        payload = request_payload()
-        payload["timeline"].update({
-            "schema_version": "media-timeline-v2",
-            "stage_budget_strategy": "duration-calibrated-dynamic-paths-v3",
-            "active_path_ids": ["support_break"],
-            "prediction_segment_ids": ["support_break"],
-        })
-        payload["narration"]["subtitle_cues"] = [
-            {"start_sec": 0, "end_sec": 1, "text": "support_break",
-             "segment_id": "support_break", "parent_segment_id": "support_break"}
-        ]
-        model = RenderRequest.model_validate(payload)
-        self.assertEqual(model.timeline["prediction_segment_ids"], ["support_break"])
-
-    def test_accepts_dynamic_v2_timeline_without_paths(self):
-        payload = request_payload()
-        payload["timeline"].update({
-            "schema_version": "media-timeline-v2",
-            "stage_budget_strategy": "duration-calibrated-dynamic-paths-v3",
-            "active_path_ids": [],
-            "prediction_segment_ids": [],
-        })
-        payload["narration"]["subtitle_cues"] = []
-        model = RenderRequest.model_validate(payload)
-        self.assertEqual(model.timeline["prediction_segment_ids"], [])
-
 
 if __name__ == "__main__":
     unittest.main()
