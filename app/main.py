@@ -229,7 +229,9 @@ class RenderRequest(BaseModel):
         if not isinstance(value, dict):
             raise ValueError("timeline必须是对象")
         timeline = dict(value)
-        if timeline.get("schema_version") != "media-timeline-v1":
+        if timeline.get("schema_version") not in {
+            "media-timeline-v1", "media-timeline-v2",
+        }:
             raise ValueError("timeline.schema_version无效")
         tolerance = timeline.get("stage_word_tolerance", 0)
         if (
@@ -244,6 +246,7 @@ class RenderRequest(BaseModel):
             "legacy-unspecified", "shared-total-cap-v1",
             "adaptive-shared-total-v2",
             "duration-calibrated-unified-v2",
+            "duration-calibrated-dynamic-paths-v3",
         }:
             raise ValueError("timeline.stage_budget_strategy无效")
         timeline["stage_budget_strategy"] = strategy
@@ -258,10 +261,15 @@ class RenderRequest(BaseModel):
                 raise ValueError("timeline.history_window_candles无效")
             if timeline.get("history_freeze_segment") != "technical_evidence":
                 raise ValueError("timeline.history_freeze_segment无效")
-            if timeline.get("prediction_segment_ids") != [
-                "resistance_break", "resistance_hold",
-                "support_break", "support_hold",
-            ]:
+            prediction_ids = timeline.get("prediction_segment_ids")
+            if (
+                not isinstance(prediction_ids, list)
+                or not prediction_ids
+                or not set(prediction_ids).issubset({
+                    "resistance_break", "resistance_hold",
+                    "support_break", "support_hold",
+                })
+            ):
                 raise ValueError("timeline.prediction_segment_ids无效")
         return timeline
 
