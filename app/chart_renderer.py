@@ -1669,24 +1669,8 @@ def render_tradingview_scene(
     axis_labels = []
     if payload["style"].get("show_support_resistance", True):
         shown_values = []
-        for state in zone_states:
-            for boundary_key in ("high", "low"):
-                if not state[f"{boundary_key}_visible"]:
-                    continue
-                boundary = state[boundary_key]
-                if any(abs(boundary - existing) < 0.005 for existing in shown_values):
-                    continue
-                axis_labels.append(
-                    {
-                        "kind": "boundary",
-                        "value": boundary,
-                        "color": state["color"],
-                        "name": "",
-                        "price": _price(boundary),
-                    }
-                )
-                shown_values.append(boundary)
         # 确认支撑/压力位标签：预测阶段全部显示，分析阶段按旁白提到显示。
+        # 观察区边界不再单独显示标签，避免与确认价位重复。
         for level_key, level_color in (
             ("support_levels", "#2962ff"),
             ("resistance_levels", "#f59e0b"),
@@ -1904,21 +1888,8 @@ def render_tradingview_scene(
                 fill=state["color"],
             )
 
-    # Every spoken zone boundary receives its own lasting horizontal line.
-    for state in zone_states:
-        for boundary_key in ("high", "low"):
-            if not state[f"{boundary_key}_visible"]:
-                continue
-            y = py(state[boundary_key])
-            _dashed_line(
-                draw,
-                (chart_left, y, chart_right, y),
-                fill=state["color"],
-                width=3,
-                dash=10,
-            )
-
     # 确认支撑/压力位线：预测阶段全部显示，分析阶段按旁白提到显示。
+    # 观察区边界不再单独画线，避免与确认价位线重复。
     for level_key, level_color in (
         ("support_levels", "#2962ff"),
         ("resistance_levels", "#f59e0b"),
