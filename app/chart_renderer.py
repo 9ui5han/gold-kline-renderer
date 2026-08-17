@@ -59,6 +59,8 @@ EDUCATIONAL_NOTICE = (
     "Educational market observation · Conditional scenarios, not trading signals"
 )
 ANALYSIS_ZOOM_CANDLES = 24
+# 镜头推进到该进度后，支撑/压力位线与区域才开始出现（0~1）。
+LEVELS_REVEAL_PROGRESS = 0.35
 FORECAST_TURN_THRESHOLD_DEG = 13.0
 SUBTITLE_EN_FONT_SIZE = 104
 SUBTITLE_ZH_FONT_SIZE = 72
@@ -931,6 +933,33 @@ def _history_end_sec(payload: dict[str, Any], duration: float) -> float:
     return max(0.1, duration * ratio)
 
 
+def _prediction_start_sec(
+    narration: dict[str, Any],
+    timeline: dict[str, Any],
+    duration: float,
+) -> float:
+    """预测阶段开始的镜头时间：第一个预测段旁白开始的时间点。"""
+    paths_start = str(timeline.get("paths_start_segment") or "").strip()
+    cues = narration.get("subtitle_cues") or []
+    if not isinstance(cues, list):
+        cues = []
+    for cue in cues:
+        if not isinstance(cue, dict):
+            continue
+        segment_id = str(
+            cue.get("parent_segment_id") or cue.get("segment_id") or ""
+        ).strip()
+        if segment_id not in PREDICTION_SEGMENT_IDS:
+            continue
+        if paths_start and segment_id != paths_start:
+            continue
+        try:
+            return max(0.0, float(cue.get("start_sec") or 0))
+        except (TypeError, ValueError):
+            break
+    return _history_end_sec({"narration": narration, "timeline": timeline}, duration) * 0.75
+
+
 HISTORY_SEGMENT_IDS = {"opening", "context", "technical_evidence"}
 PREDICTION_SEGMENT_IDS = {
     "resistance_break", "resistance_hold", "support_break", "support_hold",
@@ -1495,10 +1524,28 @@ def render_tradingview_scene(
         reveal_progress * len(forecast_all),
     ) if prediction_phase else 0.0
 
+    # 预测阶段开始的镜头推进进度：进入预测段后的前 1.5 秒内从 0 平滑到 1。
+    # 用于 K 线窗口平滑放大、价位线与区域随推进逐步出现。
+    camera_progress = 0.0
     if prediction_phase:
-        # Analysis close-up: retain enough recent closed candles for a dense
-        # chart while enlarging price action and conditional paths.
-        visible_history = list(history[-ANALYSIS_ZOOM_CANDLES:])
+        prediction_start_sec = _prediction_start_sec(narration, timeline, duration)
+        camera_progress = max(
+            0.0,
+            min(1.0, (current_time - prediction_start_sec) / 1.5),
+        )
+
+    if prediction_phase:
+        # 镜头推进：K 线窗口从分析阶段的窗口平滑过渡到最近 24 根（放大）。
+        if camera_progress >= 1.0:
+            visible_history = list(history[-ANALYSIS_ZOOM_CANDLES:])
+        else:
+            base_count = max(len(history), ANALYSIS_ZOOM_CANDLES)
+            target_count = ANALYSIS_ZOOM_CANDLES
+            transition_count = round(
+                base_count + (target_count - base_count) * camera_progress
+            )
+            transition_count = max(2, min(len(history), transition_count))
+            visible_history = list(history[-transition_count:])
     else:
         if segment_sync:
             freeze_start = _segment_start_sec(
@@ -1618,45 +1665,48 @@ def render_tradingview_scene(
         ("potential_buy_zones", "#2962ff", "Support zone"),
         ("potential_sell_zones", "#f59e0b", "Resistance zone"),
     ):
-        # 只有 1 个确认价位时构不成区间：该侧不显示观察区（色带）。
+        # 色带边界直接使用确认价位：上下两个确认支撑/压力位之间的区域。
+        # 只有 1 个确认价位时构不成区间，该侧不显示色带。
         level_key = (
             "support_levels"
             if zone_key == "potential_buy_zones"
             else "resistance_levels"
         )
-        level_count = len(
-            [value for value in (analysis.get(level_key) or []) if value is not None]
-        )
-        if level_count < 2:
+        levels = [
+            float(value)
+            for value in (analysis.get(level_key) or [])
+            if value is not None
+        ]
+        if len(levels) < 2:
             continue
-        for zone in _observation_zones(analysis, zone_key):
-            try:
-                low = float(zone["low"])
-                high = float(zone["high"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if not math.isfinite(low) or not math.isfinite(high) or low >= high:
-                continue
-            low_mention_sec = _price_mention_time(narration, low)
-            high_mention_sec = _price_mention_time(narration, high)
-            low_visible = prediction_phase or (
-                low_mention_sec is not None and current_time >= low_mention_sec
-            )
-            high_visible = prediction_phase or (
-                high_mention_sec is not None and current_time >= high_mention_sec
-            )
-            zone_states.append(
-                {
-                    "key": zone_key,
-                    "color": color,
-                    "label": label,
-                    "low": low,
-                    "high": high,
-                    "low_visible": low_visible,
-                    "high_visible": high_visible,
-                    "complete": low_visible and high_visible,
-                }
-            )
+        low, high = min(levels), max(levels)
+        if not math.isfinite(low) or not math.isfinite(high) or low >= high:
+            continue
+        low_mention_sec = _price_mention_time(narration, low)
+        high_mention_sec = _price_mention_time(narration, high)
+        # 镜头推进到约 35% 后，价位线与区域随画面一起出现；
+        # 分析阶段仍按旁白逐条显示。
+        levels_revealed = (
+            prediction_phase and camera_progress >= LEVELS_REVEAL_PROGRESS
+        )
+        low_visible = levels_revealed or (
+            low_mention_sec is not None and current_time >= low_mention_sec
+        )
+        high_visible = levels_revealed or (
+            high_mention_sec is not None and current_time >= high_mention_sec
+        )
+        zone_states.append(
+            {
+                "key": zone_key,
+                "color": color,
+                "label": label,
+                "low": low,
+                "high": high,
+                "low_visible": low_visible,
+                "high_visible": high_visible,
+                "complete": low_visible and high_visible,
+            }
+        )
 
     # Boundary values share the price-axis lane with the grey scale. Work out
     # their final positions before drawing the scale, so each revealed value
@@ -1752,9 +1802,12 @@ def render_tradingview_scene(
             )
     count = max(len(candles), 1)
     chart_width = chart_right - chart_left
-    # During prediction, start the forecast at 40% of the chart instead of
-    # 60%, shifting the full arrow area left by half of its former width.
-    history_end_ratio = PREDICTION_HISTORY_END_RATIO if prediction_phase else 0.76
+    # 镜头推进时，历史 K 线占宽比例从 76% 平滑过渡到 40%，
+    # 与 K 线窗口放大同步，形成"缓慢推向左边"的效果。
+    if prediction_phase:
+        history_end_ratio = 0.76 + (PREDICTION_HISTORY_END_RATIO - 0.76) * camera_progress
+    else:
+        history_end_ratio = 0.76
     history_end_x = chart_left + chart_width * history_end_ratio
     horizontal_history_count = (
         len(visible_history) if prediction_phase else len(history)
