@@ -302,8 +302,8 @@ class RenderRequest(BaseModel):
             raise ValueError("forecast_paths.schema_version无效")
 
         scenarios = paths.get("scenarios")
-        if not isinstance(scenarios, list) or len(scenarios) != 3:
-            raise ValueError("forecast_paths.scenarios必须包含三个情景")
+        if not isinstance(scenarios, list) or not (1 <= len(scenarios) <= 3):
+            raise ValueError("forecast_paths.scenarios必须包含1到3个情景")
 
         scenario_ids = {
             item.get("scenario_id")
@@ -314,14 +314,18 @@ class RenderRequest(BaseModel):
         alternate = paths.get("alternate_scenario")
         if primary not in scenario_ids:
             raise ValueError("forecast_paths.primary_scenario不存在")
-        if alternate not in scenario_ids or alternate == primary:
+        # 只有一个情景时允许 alternate 与 primary 相同或省略；
+        # 多个情景时 alternate 必须是另一个有效情景。
+        if len(scenario_ids) >= 2 and (
+            alternate not in scenario_ids or alternate == primary
+        ):
             raise ValueError("forecast_paths.alternate_scenario无效")
 
         for item in scenarios:
             if not isinstance(item, dict):
                 raise ValueError("forecast_paths.scenarios包含无效对象")
             points = item.get("path_points")
-            if not isinstance(points, list) or not 3 <= len(points) <= 4:
+            if not isinstance(points, list) or not 2 <= len(points) <= 4:
                 raise ValueError(
                     f"forecast_paths.{item.get('scenario_id', 'unknown')}路径节点数量无效"
                 )
@@ -340,10 +344,14 @@ class RenderRequest(BaseModel):
                 "resistance_break", "resistance_hold",
                 "support_break", "support_hold",
             }
-            if not isinstance(visual_branches, dict) or set(visual_branches) != expected_ids:
+            # 允许缺失分支（partial 数据），但不得出现未知分支。
+            if (
+                not isinstance(visual_branches, dict)
+                or not set(visual_branches).issubset(expected_ids)
+            ):
                 raise ValueError("forecast_paths.segment_paths字段无效")
             for segment_id, points in visual_branches.items():
-                if not isinstance(points, list) or len(points) != 3:
+                if not isinstance(points, list) or not 2 <= len(points) <= 4:
                     raise ValueError(f"forecast_paths.segment_paths.{segment_id}节点无效")
                 for point in points:
                     if not isinstance(point, dict):
