@@ -1394,17 +1394,16 @@ def render_tradingview_scene(
         forecast_paths,
         visual_segment_id,
     )
-    # Only show the branch being explained right now. Keeping old branches on
-    # screen makes one arrow look like it has extra flat and pointed heads.
-    cumulative_segment_paths = (
-        [(visual_segment_id, active_segment_path, 1.0)]
-        if (
-            segment_sync
-            and visual_segment_id in PREDICTION_SEGMENT_IDS
-            and active_segment_path
+    # 预测段开始后，把存在真实路径的预测箭头一次性全部显示；
+    # 其余时间按当前旁白段显示对应路径。
+    if segment_sync and visual_segment_id in PREDICTION_SEGMENT_IDS:
+        cumulative_segment_paths = _prediction_phase_paths(forecast_paths)
+    else:
+        cumulative_segment_paths = (
+            [(visual_segment_id, active_segment_path, 1.0)]
+            if (segment_sync and active_segment_path)
+            else []
         )
-        else []
-    )
     if (
         segment_sync
         and visual_segment_id in PREDICTION_SEGMENT_IDS
@@ -1611,15 +1610,25 @@ def render_tradingview_scene(
             * (chart_bottom - chart_top - 112)
         )
 
-    # A range is revealed one spoken boundary at a time. The first mentioned
-    # price creates its own lasting line; the second completes the coloured
-    # support/resistance area. This avoids showing information before it is
-    # actually said in the narration.
+    # 分析阶段：区域按旁白逐条出现（旁白提到价格才显示）。
+    # 预测阶段开始后：压力/支撑位边界线与区域一次性全部显示，
+    # 不再等待旁白逐条提到。
     zone_states = []
     for zone_key, color, label in (
         ("potential_buy_zones", "#2962ff", "Support zone"),
         ("potential_sell_zones", "#f59e0b", "Resistance zone"),
     ):
+        # 只有 1 个确认价位时构不成区间：该侧不显示观察区（色带）。
+        level_key = (
+            "support_levels"
+            if zone_key == "potential_buy_zones"
+            else "resistance_levels"
+        )
+        level_count = len(
+            [value for value in (analysis.get(level_key) or []) if value is not None]
+        )
+        if level_count < 2:
+            continue
         for zone in _observation_zones(analysis, zone_key):
             try:
                 low = float(zone["low"])
@@ -1630,10 +1639,10 @@ def render_tradingview_scene(
                 continue
             low_mention_sec = _price_mention_time(narration, low)
             high_mention_sec = _price_mention_time(narration, high)
-            low_visible = (
+            low_visible = prediction_phase or (
                 low_mention_sec is not None and current_time >= low_mention_sec
             )
-            high_visible = (
+            high_visible = prediction_phase or (
                 high_mention_sec is not None and current_time >= high_mention_sec
             )
             zone_states.append(
@@ -1677,6 +1686,39 @@ def render_tradingview_scene(
                     }
                 )
                 shown_values.append(boundary)
+        # 确认支撑/压力位标签：预测阶段全部显示，分析阶段按旁白提到显示。
+        for level_key, level_color in (
+            ("support_levels", "#2962ff"),
+            ("resistance_levels", "#f59e0b"),
+        ):
+            for value in analysis.get(level_key) or []:
+                try:
+                    level_price = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(level_price):
+                    continue
+                mention_sec = _price_mention_time(narration, level_price)
+                if not (
+                    prediction_phase
+                    or (mention_sec is not None and current_time >= mention_sec)
+                ):
+                    continue
+                if any(
+                    abs(level_price - existing) < 0.005
+                    for existing in shown_values
+                ):
+                    continue
+                axis_labels.append(
+                    {
+                        "kind": "level",
+                        "value": level_price,
+                        "color": level_color,
+                        "name": "",
+                        "price": _price(level_price),
+                    }
+                )
+                shown_values.append(level_price)
 
     axis_label_desired_y = [py(item["value"]) for item in axis_labels]
     label_positions = _spread_label_positions(
@@ -1872,6 +1914,33 @@ def render_tradingview_scene(
                 draw,
                 (chart_left, y, chart_right, y),
                 fill=state["color"],
+                width=3,
+                dash=10,
+            )
+
+    # 确认支撑/压力位线：预测阶段全部显示，分析阶段按旁白提到显示。
+    for level_key, level_color in (
+        ("support_levels", "#2962ff"),
+        ("resistance_levels", "#f59e0b"),
+    ):
+        for value in analysis.get(level_key) or []:
+            try:
+                level_price = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(level_price):
+                continue
+            mention_sec = _price_mention_time(narration, level_price)
+            if not (
+                prediction_phase
+                or (mention_sec is not None and current_time >= mention_sec)
+            ):
+                continue
+            y = py(level_price)
+            _dashed_line(
+                draw,
+                (chart_left, y, chart_right, y),
+                fill=level_color,
                 width=3,
                 dash=10,
             )
