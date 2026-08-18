@@ -460,13 +460,13 @@ def _draw_educational_notice(
 ) -> tuple[float, float, float, float]:
     """Draw plain persistent text inside the chart's reserved top lane."""
     available_width = max(1.0, right - left - 6)
-    face = _font(18, True)
+    face = _font(25, True)
     bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
     if bbox[2] - bbox[0] > available_width:
-        face = _font(17, True)
+        face = _font(24, True)
         bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
     if bbox[2] - bbox[0] > available_width:
-        face = _font(16, True)
+        face = _font(23, True)
         bbox = draw.textbbox((0, 0), EDUCATIONAL_NOTICE, font=face)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
@@ -1885,6 +1885,10 @@ def render_tradingview_scene(
                 fill="#787b86",
                 anchor="ma",
             )
+
+    # 免责声明：放在横轴（时间轴）下方到字幕区之间的空白区域垂直居中。
+    notice_center_y = (time_axis_y + layout["english_y"]) / 2
+    _draw_educational_notice(draw, chart_left, chart_right, notice_center_y)
 
     # Key levels and their support/resistance observation zones appear after
     # the historical overview. The coloured bands are behind candles, lines
