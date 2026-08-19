@@ -166,7 +166,7 @@ def _latest_closed_candle_label(symbol: str, data_as_of: str) -> str:
 
 def _axis_time_label(value: str) -> str:
     try:
-        return _utc_datetime(value).strftime("%b %d %H:%M")
+        return (_utc_datetime(value) + timedelta(hours=8)).strftime("%b %d %H:%M")
     except Exception:
         return str(value or "")[:16]
 
@@ -1861,7 +1861,12 @@ def render_tradingview_scene(
             * (last_time_index - first_time_index)
             / max(time_marks - 1, 1)
         )
-        x = chart_left + chart_width * mark_index / max(time_marks - 1, 1)
+        # 最右标签（最后一根 K 线的日期时间）对齐到最后一根 K 线位置，
+        # 位于红色时间标注（横轴上方）的正下方。
+        if mark_index >= time_marks - 1:
+            x = px(max(horizontal_history_count - 1, 0))
+        else:
+            x = chart_left + chart_width * mark_index / max(time_marks - 1, 1)
         if candle_index < len(axis_time_candles):
             label = _time_label(axis_time_candles[candle_index].get("time", ""))
             bbox = draw.textbbox((0, 0), label, font=axis_face)
