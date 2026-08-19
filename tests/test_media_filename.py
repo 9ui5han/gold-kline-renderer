@@ -14,7 +14,7 @@ class MediaFilenameTests(unittest.TestCase):
         )
         self.assertEqual(
             stem,
-            "gold-15m-scenario-review-20260811-1445-a1b2c3d4",
+            "gold-15m-20260811-1445-a1b2",
         )
         self.assertLessEqual(len(stem), 64)
 
@@ -28,7 +28,7 @@ class MediaFilenameTests(unittest.TestCase):
         )
         self.assertEqual(
             stem,
-            "gold-1h-scenario-review-20260811-1445-abcdef12",
+            "gold-1h-20260811-1445-abcd",
         )
 
 

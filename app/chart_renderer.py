@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -1883,6 +1883,66 @@ def render_tradingview_scene(
                 label,
                 font=axis_face,
                 fill="#787b86",
+                anchor="ma",
+            )
+
+    # 新加坡时区（UTC+8）+ 周期：K 线图左上角标注。
+    timeframe_label = (
+        str(payload.get("timeframe") or "1h").strip().lower() or "1h"
+    )
+    tz_text = f"UTC+8 {timeframe_label}"
+    tz_face = _font(24, True)
+    tz_bbox = draw.textbbox((0, 0), tz_text, font=tz_face)
+    draw.text(
+        (chart_left + 10, chart_top + 8 - tz_bbox[1]),
+        tz_text,
+        font=tz_face,
+        fill="#1f2a44",
+    )
+
+    # 最后一根 K 线：标注新加坡时间 hh:mm，垂直虚线从该 K 线底端延伸到横轴。
+    last_index = max(horizontal_history_count - 1, 0)
+    if 0 <= last_index < len(candles):
+        last_candle = candles[last_index]
+        last_x = px(last_index)
+        try:
+            last_dt = _utc_datetime(str(last_candle.get("time") or ""))
+            last_label = (last_dt + timedelta(hours=8)).strftime("%H:%M")
+        except Exception:
+            last_label = ""
+        if last_label:
+            try:
+                low_y = py(float(last_candle.get("low") or 0))
+            except (TypeError, ValueError):
+                low_y = time_axis_y
+            low_y = max(chart_top + 2, min(time_axis_y - 2, low_y))
+            # 虚线到时间标注上方停止，不穿过标注文字。
+            dash_end = time_axis_y - 45
+            if dash_end > low_y:
+                y_cursor = low_y
+                while y_cursor < dash_end:
+                    seg_end = min(y_cursor + 6, dash_end)
+                    draw.line(
+                        (last_x, y_cursor, last_x, seg_end),
+                        fill="#9aa1ad",
+                        width=2,
+                    )
+                    y_cursor = seg_end + 6
+            last_face = _font(26, True)
+            last_box = draw.textbbox((0, 0), last_label, font=last_face)
+            last_half = (last_box[2] - last_box[0]) / 2
+            # 时间标注放在横轴上方，避开横轴刻度标签。
+            draw.text(
+                (
+                    min(
+                        chart_right - last_half,
+                        max(chart_left + last_half, last_x),
+                    ),
+                    time_axis_y - 26,
+                ),
+                last_label,
+                font=last_face,
+                fill="#e53935",
                 anchor="ma",
             )
 

@@ -3313,9 +3313,10 @@ def media_file_stem(payload: dict[str, Any], unique_id: str) -> str:
         timestamp = parsed.astimezone(timezone.utc).strftime("%Y%m%d-%H%M")
     except (TypeError, ValueError):
         timestamp = "unknown-time"
-    short_id = re.sub(r"[^a-zA-Z0-9]", "", str(unique_id or ""))[:8].lower()
-    short_id = short_id or uuid.uuid4().hex[:8]
-    return f"gold-{timeframe}-scenario-review-{timestamp}-{short_id}"
+    # 保留 4 位随机码，避免同一分钟多次渲染互相覆盖。
+    short_id = re.sub(r"[^a-zA-Z0-9]", "", str(unique_id or ""))[:4].lower()
+    short_id = short_id or uuid.uuid4().hex[:4]
+    return f"gold-{timeframe}-{timestamp}-{short_id}"
 
 
 def chinese_subtitle_free_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -3456,7 +3457,7 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
         chinese_subtitle_free_concat_path.write_text(
             "\n".join(chinese_subtitle_free_rows) + "\n", encoding="utf-8"
         )
-        chinese_subtitle_free_output_name = f"{media_stem}-no-chinese-subtitles.mp4"
+        chinese_subtitle_free_output_name = f"{media_stem}-无字幕.mp4"
         chinese_subtitle_free_output_path = MEDIA_DIR / chinese_subtitle_free_output_name
         run_command([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
