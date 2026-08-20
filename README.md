@@ -37,7 +37,7 @@ http://127.0.0.1:8000/docs
 | `MAX_AUDIO_MB` | `30` | 否 |
 | `MIN_RENDER_AUDIO_SECONDS` | `30` | 否 |
 | `MAX_RENDER_AUDIO_SECONDS` | `900` | 否 |
-| `MIN_TTS_AUDIO_SECONDS` | `30` | 否 |
+| `MIN_TTS_AUDIO_SECONDS` | `1` | 否；分段TTS允许1秒起，最终视频仍按视频时长合同校验 |
 | `MAX_TTS_AUDIO_SECONDS` | `900` | 否 |
 | `MAX_TTS_TARGET_DRIFT_SECONDS` | `3` | 否；轻微自然变速后允许成片与计划时长双向相差的最大秒数；未设置时兼容读取旧变量`MAX_TTS_TARGET_OVERRUN_SECONDS` |
 | `MAX_AUDIO_VIDEO_DRIFT_SECONDS` | `0.2` | 否 |

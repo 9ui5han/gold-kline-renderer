@@ -184,6 +184,21 @@ class TtsProfileTests(unittest.TestCase):
                     "request_id": "unverified-profile",
                     "text": "Gold holds support.",
                     "narrator_profile_id": "mm_finance_male_01",
+                    "narration_json": {
+                        "schema_version": "narration-tts-v2",
+                        "segments": [{
+                            "segment_id": "segment_01",
+                            "text": "Gold holds support.",
+                            "performance_plan": {
+                                "text": "Gold holds support.",
+                                "speed": 1.0,
+                                "pause_after_ms": 200,
+                                "cues": [],
+                            },
+                        }],
+                    },
+                    "target_duration_sec": 5,
+                    "duration_tolerance_sec": 1.5,
                 },
             )
 

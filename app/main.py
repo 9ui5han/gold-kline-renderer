@@ -17,7 +17,7 @@ import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageDraw, ImageFont
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .chart_renderer import render_tradingview_scene
 from .macro_context import MacroContextError, MacroContextService
@@ -92,7 +92,7 @@ MAX_AUDIO_VIDEO_DRIFT_SECONDS = float(
     os.getenv("MAX_AUDIO_VIDEO_DRIFT_SECONDS", "0.2")
 )
 MIN_TTS_AUDIO_SECONDS = float(
-    os.getenv("MIN_TTS_AUDIO_SECONDS", "30")
+    os.getenv("MIN_TTS_AUDIO_SECONDS", "1")
 )
 MAX_TTS_AUDIO_SECONDS = float(
     os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
@@ -571,6 +571,26 @@ class TTSProxyRequest(BaseModel):
     qwen3_voice: Literal["Elias"] = "Elias"
 
 
+class TTSJobV72Request(BaseModel):
+    """Strict public v7.2 contract used by the current Dify workflow."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    request_id: str = Field(min_length=1, max_length=100)
+    narrator_profile_id: str = Field(min_length=1, max_length=50)
+    text: str = Field(min_length=1, max_length=5000)
+    narration_json: dict[str, Any] | str
+    target_duration_sec: float = Field(
+        ge=MIN_TTS_AUDIO_SECONDS,
+        le=MAX_TTS_AUDIO_SECONDS,
+    )
+    duration_tolerance_sec: float = Field(ge=0.0, le=30.0)
+
+
+def v72_to_proxy_request(payload: TTSJobV72Request) -> TTSProxyRequest:
+    return TTSProxyRequest.model_validate(payload.model_dump())
+
+
 def _request_narration_object(
     payload: TTSProxyRequest,
 ) -> dict[str, Any] | None:
@@ -716,15 +736,28 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
         text = str(item.get("text") or item.get("spoken_text") or "").strip()
         if not text:
             continue
-        pause_value = item.get("pause_after_ms", 0)
+        performance = item.get("performance_plan") or {}
+        speed_value = performance.get(
+            "speed",
+            item.get("speed", payload.speed_ratio),
+        )
+        pause_value = performance.get(
+            "pause_after_ms",
+            item.get("pause_after_ms", 0),
+        )
         if isinstance(pause_value, bool):
             raise ValueError(f"ElevenLabs分段{index}的pause_after_ms不是整数")
         try:
+            speed = float(speed_value)
             pause_after_ms = int(pause_value)
         except (TypeError, ValueError) as exc:
             raise ValueError(
-                f"ElevenLabs分段{index}的pause_after_ms不是整数"
+                f"ElevenLabs分段{index}的speed或pause_after_ms无效"
             ) from exc
+        if not 0.90 <= speed <= 1.05:
+            raise ValueError(
+                f"ElevenLabs分段{index}的speed超出0.90至1.05"
+            )
         if not 0 <= pause_after_ms <= 650:
             raise ValueError(
                 f"ElevenLabs分段{index}的pause_after_ms超出0至650毫秒范围"
@@ -732,6 +765,7 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
         segments.append(
             {
                 "text": text,
+                "speed": speed,
                 "pause_after_ms": pause_after_ms,
                 "section": str(item.get("section") or "").strip().lower(),
             }
@@ -770,9 +804,20 @@ def parse_dubbingx_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
         text = str(item.get("text") or item.get("spoken_text") or "").strip()
         if not text:
             raise ValueError(f"DubbingX分段{index}文本为空")
+        performance = item.get("performance_plan") or {}
         try:
-            speed = float(item.get("speed", payload.speed_ratio))
-            pause_after_ms = int(item.get("pause_after_ms", 0))
+            speed = float(
+                performance.get(
+                    "speed",
+                    item.get("speed", payload.speed_ratio),
+                )
+            )
+            pause_after_ms = int(
+                performance.get(
+                    "pause_after_ms",
+                    item.get("pause_after_ms", 0),
+                )
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError(f"DubbingX分段{index}速度或停顿无效") from exc
         if not 0.90 <= speed <= 1.05:
@@ -900,7 +945,8 @@ def parse_minimax_sentence_units(
         if not sentences:
             raise ValueError(f"MiniMax分段{segment_index}没有有效句子")
 
-        raw_segment_speed = item.get("speed")
+        performance = item.get("performance_plan") or {}
+        raw_segment_speed = performance.get("speed", item.get("speed"))
         raw_effective_speed = item.get("effective_speed")
         if raw_segment_speed is None and raw_effective_speed is None:
             raise ValueError(f"MiniMax分段{segment_index}的speed不是数字")
@@ -939,7 +985,10 @@ def parse_minimax_sentence_units(
                 f"MiniMax分段{segment_index}的实际speed超出0.5至2.0范围"
             )
 
-        pause_value = item.get("pause_after_ms")
+        pause_value = performance.get(
+            "pause_after_ms",
+            item.get("pause_after_ms"),
+        )
         if isinstance(pause_value, bool) or not isinstance(pause_value, int):
             raise ValueError(
                 f"MiniMax分段{segment_index}的pause_after_ms不是整数"
@@ -2910,8 +2959,7 @@ def run_tts_job(job_id: str, payload: dict[str, Any]) -> None:
         )
 
 
-@app.post("/v1/tts-jobs", status_code=202, dependencies=[Depends(require_token)])
-def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
+def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
     try:
         payload = resolve_tts_request_profile(payload)
     except ProfileError as exc:
@@ -2922,29 +2970,33 @@ def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
-    job_id = str(uuid.uuid4())
-    status_url = f"{PUBLIC_BASE_URL}/v1/tts-jobs/{job_id}"
-    job = {
-        "job_id": job_id,
-        "request_id": payload.request_id,
-        "status": "queued",
-        "progress": 0,
-        "status_url": status_url,
-        "audio_url": "",
-        "duration_sec": 0,
-        "subtitle_cues": [],
-        "subtitle_count": 0,
-        "subtitle_alignment_valid": False,
-        "subtitle_alignment_error": "",
-        "alignment_language": "",
-        "alignment_method": "",
-        "format": "",
-        "error_code": "",
-        "error_message": "",
-        "created_at": now_iso(),
-        "updated_at": now_iso(),
-    }
     with LOCK:
+        for existing in TTS_JOBS.values():
+            if existing.get("request_id") == payload.request_id:
+                return dict(existing)
+
+        job_id = str(uuid.uuid4())
+        status_url = f"{PUBLIC_BASE_URL}/v1/tts-jobs/{job_id}"
+        job = {
+            "job_id": job_id,
+            "request_id": payload.request_id,
+            "status": "queued",
+            "progress": 0,
+            "status_url": status_url,
+            "audio_url": "",
+            "duration_sec": 0,
+            "subtitle_cues": [],
+            "subtitle_count": 0,
+            "subtitle_alignment_valid": False,
+            "subtitle_alignment_error": "",
+            "alignment_language": "",
+            "alignment_method": "",
+            "format": "",
+            "error_code": "",
+            "error_message": "",
+            "created_at": now_iso(),
+            "updated_at": now_iso(),
+        }
         TTS_JOBS[job_id] = job
 
     threading.Thread(
@@ -2953,6 +3005,21 @@ def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
         daemon=True,
     ).start()
     return job
+
+
+@app.post("/v1/tts-jobs", status_code=202, dependencies=[Depends(require_token)])
+def create_tts_job(payload: TTSJobV72Request) -> dict[str, Any]:
+    return enqueue_tts_job(v72_to_proxy_request(payload))
+
+
+@app.post(
+    "/v1/tts-jobs/legacy",
+    status_code=202,
+    dependencies=[Depends(require_token)],
+    deprecated=True,
+)
+def create_legacy_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
+    return enqueue_tts_job(payload)
 
 
 @app.get("/v1/tts-jobs/{job_id}", dependencies=[Depends(require_token)])
