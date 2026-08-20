@@ -33,7 +33,7 @@ http://127.0.0.1:8000/docs
 |---|---|---:|
 | `RENDER_SERVICE_TOKEN` | 一段至少32位随机字符串 | 是 |
 | `PUBLIC_BASE_URL` | 云平台给你的 `https://...` 域名 | 否 |
-| `DATA_DIR` | `/tmp/gold-video` | 否 |
+| `DATA_DIR` | 测试：`/tmp/gold-video`；正式：`/var/data/gold-video` | 否；正式环境必须挂载Render持久磁盘，保证TTS幂等记录跨重启保留 |
 | `MAX_AUDIO_MB` | `30` | 否 |
 | `MIN_RENDER_AUDIO_SECONDS` | `30` | 否 |
 | `MAX_RENDER_AUDIO_SECONDS` | `900` | 否 |
@@ -56,6 +56,8 @@ http://127.0.0.1:8000/docs
 
 Render免费实例可能休眠，且 `/tmp` 文件会在实例重建后丢失。测试阶段可以继续使用
 `DATA_DIR=/tmp/gold-video`；正式保存成片和宏观缓存时应改用Render持久磁盘或对象存储。
+正式TTS还会在 `DATA_DIR/tts-idempotency.json` 保存 `request_id`、请求指纹和任务状态；
+因此未挂载持久磁盘时只能用于无付费调用的测试，不能承诺重启后仍防止重复扣费。
 
 ## API
 

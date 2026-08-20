@@ -1,5 +1,6 @@
 import json
 import html
+import hashlib
 import logging
 import math
 import os
@@ -23,6 +24,7 @@ from .chart_renderer import render_tradingview_scene
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 from .tts_profiles import (
+    PERFORMANCE_SCHEMA_VERSION,
     PROFILE_SCHEMA_VERSION,
     ProfileError,
     build_profile_catalog,
@@ -97,6 +99,7 @@ MIN_TTS_AUDIO_SECONDS = float(
 MAX_TTS_AUDIO_SECONDS = float(
     os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
 )
+TTS_IDEMPOTENCY_PATH = DATA_DIR / "tts-idempotency.json"
 MAX_TTS_TARGET_DRIFT_SECONDS = max(
     0.0,
     float(
@@ -429,6 +432,50 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _load_tts_idempotency_registry() -> dict[str, Any]:
+    if not TTS_IDEMPOTENCY_PATH.exists():
+        return {}
+    try:
+        data = json.loads(TTS_IDEMPOTENCY_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError("TTS_IDEMPOTENCY_STORE_INVALID") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError("TTS_IDEMPOTENCY_STORE_INVALID")
+    return data
+
+
+def _save_tts_idempotency_registry(registry: dict[str, Any]) -> None:
+    TTS_IDEMPOTENCY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    temporary = TTS_IDEMPOTENCY_PATH.with_suffix(".tmp")
+    temporary.write_text(
+        json.dumps(registry, ensure_ascii=False, sort_keys=True),
+        encoding="utf-8",
+    )
+    temporary.replace(TTS_IDEMPOTENCY_PATH)
+
+
+def _tts_payload_fingerprint(payload: Any) -> str:
+    canonical = json.dumps(
+        payload.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _persist_tts_job_locked(
+    job: dict[str, Any],
+    payload_hash: str,
+) -> None:
+    registry = _load_tts_idempotency_registry()
+    registry[str(job["request_id"])] = {
+        "payload_hash": payload_hash,
+        "job": job,
+    }
+    _save_tts_idempotency_registry(registry)
+
+
 def update_job(job_id: str, **changes: Any) -> None:
     with LOCK:
         JOBS[job_id].update(changes)
@@ -439,6 +486,12 @@ def update_tts_job(job_id: str, **changes: Any) -> None:
     with LOCK:
         TTS_JOBS[job_id].update(changes)
         TTS_JOBS[job_id]["updated_at"] = now_iso()
+        job = dict(TTS_JOBS[job_id])
+        registry = _load_tts_idempotency_registry()
+        entry = registry.get(str(job.get("request_id")))
+        if isinstance(entry, dict):
+            entry["job"] = job
+            _save_tts_idempotency_registry(registry)
 
 
 @app.get("/health")
@@ -585,6 +638,56 @@ class TTSJobV72Request(BaseModel):
         le=MAX_TTS_AUDIO_SECONDS,
     )
     duration_tolerance_sec: float = Field(ge=0.0, le=30.0)
+
+    @model_validator(mode="after")
+    def validate_nested_performance_contract(self) -> "TTSJobV72Request":
+        raw = self.narration_json
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError("NARRATION_JSON_INVALID") from exc
+        if not isinstance(raw, dict):
+            raise ValueError("NARRATION_JSON_OBJECT_REQUIRED")
+        segments = raw.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise ValueError("NARRATION_SEGMENTS_REQUIRED")
+        texts = []
+        for index, segment in enumerate(segments, start=1):
+            if not isinstance(segment, dict):
+                raise ValueError(f"SEGMENT_{index}_OBJECT_REQUIRED")
+            if "speed" in segment or "pause_after_ms" in segment:
+                raise ValueError(f"SEGMENT_{index}_ROOT_PERFORMANCE_FORBIDDEN")
+            text = str(segment.get("text") or "").strip()
+            performance = segment.get("performance_plan")
+            if not text or not isinstance(performance, dict):
+                raise ValueError(f"SEGMENT_{index}_PERFORMANCE_REQUIRED")
+            required_plan_keys = {
+                "schema_version",
+                "segment_id",
+                "text",
+                "delivery",
+                "emotion",
+                "speed",
+                "pitch",
+                "energy",
+                "pause_after_ms",
+                "cues",
+            }
+            if set(performance) != required_plan_keys:
+                raise ValueError(f"SEGMENT_{index}_PERFORMANCE_SCHEMA_INVALID")
+            if performance.get("schema_version") != PERFORMANCE_SCHEMA_VERSION:
+                raise ValueError(f"SEGMENT_{index}_PERFORMANCE_SCHEMA_INVALID")
+            if str(performance.get("segment_id") or "") != str(
+                segment.get("segment_id") or ""
+            ):
+                raise ValueError(f"SEGMENT_{index}_PERFORMANCE_ID_MISMATCH")
+            validate_performance_plan(text, performance)
+            texts.append(text)
+        normalize = lambda value: re.sub(r"\s+", " ", value).strip()
+        if normalize(" ".join(texts)) != normalize(self.text):
+            raise ValueError("NARRATION_TEXT_MISMATCH")
+        return self
 
 
 def v72_to_proxy_request(payload: TTSJobV72Request) -> TTSProxyRequest:
@@ -2726,7 +2829,11 @@ def align_audio_with_source_text(
 
     return subtitle_cues, alignment_language
     
-@app.post("/v1/tts", dependencies=[Depends(require_token)])
+@app.post(
+    "/v1/tts",
+    dependencies=[Depends(require_token)],
+    deprecated=True,
+)
 def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
     try:
         payload = resolve_tts_request_profile(payload)
@@ -2978,10 +3085,23 @@ def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
             detail="服务器尚未设置AI302_API_KEY",
         )
 
+    payload_hash = _tts_payload_fingerprint(payload)
     with LOCK:
-        for existing in TTS_JOBS.values():
-            if existing.get("request_id") == payload.request_id:
-                return dict(existing)
+        registry = _load_tts_idempotency_registry()
+        existing = registry.get(payload.request_id)
+        if isinstance(existing, dict):
+            if existing.get("payload_hash") != payload_hash:
+                raise HTTPException(status_code=409, detail="REQUEST_ID_CONFLICT")
+            existing_job = existing.get("job")
+            if not isinstance(existing_job, dict):
+                raise HTTPException(
+                    status_code=503,
+                    detail="TTS_IDEMPOTENCY_STORE_INVALID",
+                )
+            job_id = str(existing_job.get("job_id") or "")
+            if job_id:
+                TTS_JOBS[job_id] = dict(existing_job)
+            return dict(existing_job)
 
         job_id = str(uuid.uuid4())
         status_url = f"{PUBLIC_BASE_URL}/v1/tts-jobs/{job_id}"
@@ -3006,6 +3126,7 @@ def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
             "updated_at": now_iso(),
         }
         TTS_JOBS[job_id] = job
+        _persist_tts_job_locked(job, payload_hash)
 
     start_tts_job_worker(job_id, payload)
     return job
