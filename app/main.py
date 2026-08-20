@@ -2959,6 +2959,14 @@ def run_tts_job(job_id: str, payload: dict[str, Any]) -> None:
         )
 
 
+def start_tts_job_worker(job_id: str, payload: TTSProxyRequest) -> None:
+    threading.Thread(
+        target=run_tts_job,
+        args=(job_id, payload.model_dump()),
+        daemon=True,
+    ).start()
+
+
 def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
     try:
         payload = resolve_tts_request_profile(payload)
@@ -2999,11 +3007,7 @@ def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
         }
         TTS_JOBS[job_id] = job
 
-    threading.Thread(
-        target=run_tts_job,
-        args=(job_id, payload.model_dump()),
-        daemon=True,
-    ).start()
+    start_tts_job_worker(job_id, payload)
     return job
 
 

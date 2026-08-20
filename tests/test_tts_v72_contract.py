@@ -99,7 +99,7 @@ class TtsV72ContractTests(unittest.TestCase):
             patch.object(main, "TOKEN", "unit-test-token"),
             patch.object(main, "AI302_API_KEY", "test-key"),
             patch.object(main, "resolve_tts_request_profile", return_value=resolved),
-            patch.object(main.threading, "Thread") as thread,
+            patch.object(main, "start_tts_job_worker") as start_worker,
             TestClient(main.app) as api,
         ):
             first = api.post(
@@ -116,7 +116,7 @@ class TtsV72ContractTests(unittest.TestCase):
         self.assertEqual(first.status_code, 202)
         self.assertEqual(second.status_code, 202)
         self.assertEqual(first.json()["job_id"], second.json()["job_id"])
-        self.assertEqual(thread.call_count, 1)
+        self.assertEqual(start_worker.call_count, 1)
 
 
 if __name__ == "__main__":
