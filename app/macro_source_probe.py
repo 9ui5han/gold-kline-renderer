@@ -8,6 +8,7 @@ upstream response bodies.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from dataclasses import dataclass
@@ -17,10 +18,14 @@ from typing import Any
 import httpx
 
 
-USER_AGENT = (
-    "GoldKlineMacroCalendar/1.0 "
-    "(+https://gold-kline-renderer-production.up.railway.app)"
-)
+def build_user_agent() -> str:
+    return os.getenv(
+        "MACRO_USER_AGENT",
+        "GoldKlineRender/2.0 (+https://gold-kline-renderer.onrender.com)",
+    ).strip()
+
+
+USER_AGENT = build_user_agent()
 CONNECT_TIMEOUT_SEC = 5.0
 READ_TIMEOUT_SEC = 12.0
 MAX_SAMPLE_CHARS = 160

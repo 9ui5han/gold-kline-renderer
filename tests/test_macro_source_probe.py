@@ -5,7 +5,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app import main
-from app.macro_source_probe import SOURCE_SPECS, probe_all_sources
+from app.macro_source_probe import SOURCE_SPECS, build_user_agent, probe_all_sources
 
 
 VALID_RESPONSES = {
@@ -47,6 +47,16 @@ def client_for(responses):
 
 
 class MacroSourceProbeTests(unittest.TestCase):
+    def test_render_user_agent_can_be_configured_without_railway_url(self):
+        with patch.dict(
+            "os.environ",
+            {"MACRO_USER_AGENT": "GoldKlineRender/2.0 contact@example.com"},
+        ):
+            value = build_user_agent()
+
+        self.assertEqual(value, "GoldKlineRender/2.0 contact@example.com")
+        self.assertNotIn("railway", value.lower())
+
     def test_all_official_sources_valid(self):
         with client_for(VALID_RESPONSES) as client:
             result = probe_all_sources(client)

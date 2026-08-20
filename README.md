@@ -25,7 +25,7 @@ http://127.0.0.1:8000/health
 http://127.0.0.1:8000/docs
 ```
 
-## 云端部署
+## Render云端部署
 
 把本目录作为一个独立 Git 仓库上传，然后在任意支持 Docker 的云平台部署。设置：
 
@@ -43,6 +43,8 @@ http://127.0.0.1:8000/docs
 | `MAX_AUDIO_VIDEO_DRIFT_SECONDS` | `0.2` | 否 |
 | `AI302_API_KEY` | 302.AI API Key | 是 |
 | `ELEVENLABS_MODEL_ID` | `eleven_v3` | 否 |
+| `TTS_PROFILE_CATALOG_JSON` | 自定义音色Profile的JSON数组；未填写时使用代码内文档候选 | 否；真实音色ID不是密钥 |
+| `MACRO_USER_AGENT` | `GoldKlineRender/2.0 (+https://你的Render域名)` | 否；用于Fed/BLS/BEA识别请求来源 |
 | `MACRO_CACHE_TTL_SEC` | `21600`（6小时） | 否 |
 | `MACRO_CACHE_MAX_STALE_SEC` | `172800`（48小时） | 否 |
 | `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
@@ -52,7 +54,37 @@ http://127.0.0.1:8000/docs
 
 部署完成后先访问 `https://你的域名/health`。返回 `{"status":"ok"}` 才能继续 Dify。
 
+Render免费实例可能休眠，且 `/tmp` 文件会在实例重建后丢失。测试阶段可以继续使用
+`DATA_DIR=/tmp/gold-video`；正式保存成片和宏观缓存时应改用Render持久磁盘或对象存储。
+
 ## API
+
+查看后端候选音色Profile（免费，不生成音频）：
+
+```http
+GET /v1/tts-profiles
+Authorization: Bearer <RENDER_SERVICE_TOKEN>
+```
+
+检查302.AI免费音色列表状态：
+
+```http
+GET /v1/tts-profiles/source-health
+Authorization: Bearer <RENDER_SERVICE_TOKEN>
+```
+
+该检查按302官方文档调用 `GET /elevenlabs/voices` 和
+`POST /dubbingx/v1/getTTSTimbreList`。MiniMax没有在本项目采用免费的302音色状态接口，
+因此只返回 `documentation_only`，必须通过用户确认后的极短付费试听才能标记为可用。
+
+正式Dify请求只需要提交统一的 `narrator_profile_id`。文档候选默认不能直接进入付费TTS；
+试听阶段可以显式提交 `allow_unverified_profile=true`。验证完成后，把对应Profile通过
+`TTS_PROFILE_CATALOG_JSON`覆盖为 `status=verified`。旧的 `tts_provider` 和平台专属音色ID
+继续保留为兼容回退。
+
+DubbingX会读取`narration_json.segments`中的逐段`speed`和`pause_after_ms`，验证分段文字
+拼接后与完整`text`一致，再调用302并由Render真实插入段后停顿。任何文字漂移、速度越界
+或停顿越界都会在付费请求前失败。
 
 验证免费官方宏观日历来源（只检查可访问性和最小响应结构，不判断涨跌）：
 
@@ -92,7 +124,8 @@ Content-Type: application/json
 `data_status`为`complete`、`partial`或`unavailable`；任何情况下
 `directional_bias`都固定为`not_calculated`。正常缓存6小时，来源刷新失败时最多
 回退到48小时内最后一次成功缓存并明确标记`stale=true`。缓存文件保存在
-`DATA_DIR`；Railway配置Volume时会随`RAILWAY_VOLUME_MOUNT_PATH`持久保存。
+`DATA_DIR`。Render免费实例使用`/tmp`时缓存可能在重启后丢失；配置持久磁盘后应把
+`DATA_DIR`指向挂载目录。旧`RAILWAY_VOLUME_MOUNT_PATH`只保留兼容，不是当前部署方式。
 
 当前最小可行性测试使用同步接口：
 
@@ -138,10 +171,10 @@ ElevenLabs 分段 TTS 同样要求 `narration_json.segments` 为非空数组，�
 与完整 `text` 一致；这能把 Dify 的空结果问题挡在付费语音请求之前。
 
 302.AI 的 ElevenLabs 请求默认使用官方文档列出的 `eleven_v3` 模型。
-如果在 Railway 中设置了 `ELEVENLABS_MODEL_ID`，只能填写 302.AI 官方模型列表中明确支持
+如果在 Render 中设置了 `ELEVENLABS_MODEL_ID`，只能填写 302.AI 官方模型列表中明确支持
 文字转语音的模型。切换模型前先用一小段文本试听，再决定是否用于完整视频。
 `AI302_API_KEY` 可以填写纯密钥，也可以误带一次 `Bearer ` 前缀，服务启动时会自动去除首尾空格
-并避免重复拼接鉴权前缀。修改 Railway 环境变量后必须重新部署，服务进程才会读取新值。
+并避免重复拼接鉴权前缀。修改 Render 环境变量后必须重新部署，服务进程才会读取新值。
 
 ## MiniMax Speech 2.8 Turbo 逐句节奏
 

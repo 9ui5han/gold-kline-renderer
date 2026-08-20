@@ -22,20 +22,29 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .chart_renderer import render_tradingview_scene
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
+from .tts_profiles import (
+    PROFILE_SCHEMA_VERSION,
+    ProfileError,
+    build_profile_catalog,
+    check_profile_sources,
+    compile_provider_settings,
+    resolve_profile,
+    validate_performance_plan,
+)
 
 
 logger = logging.getLogger("gold_kline_renderer")
 
 
 def resolve_data_dir() -> Path:
-    """Railway挂载Volume后自动把媒体写入其中。"""
-    volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
-    if volume_mount:
-        return Path(volume_mount) / "gold-video"
-
+    """Prefer an explicit Render DATA_DIR; keep Railway volume compatibility."""
     configured = os.getenv("DATA_DIR", "").strip()
     if configured:
         return Path(configured)
+
+    volume_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if volume_mount:
+        return Path(volume_mount) / "gold-video"
 
     return Path("/tmp/gold-video")
 
@@ -473,6 +482,38 @@ def macro_event_context(payload: MacroContextRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.get(
+    "/v1/tts-profiles",
+    dependencies=[Depends(require_token)],
+)
+def list_tts_profiles() -> dict[str, Any]:
+    profiles = sorted(
+        build_profile_catalog().values(),
+        key=lambda item: item["profile_id"],
+    )
+    return {
+        "schema_version": PROFILE_SCHEMA_VERSION,
+        "profile_count": len(profiles),
+        "profiles": profiles,
+    }
+
+
+@app.get(
+    "/v1/tts-profiles/source-health",
+    dependencies=[Depends(require_token)],
+)
+def tts_profile_source_health() -> dict[str, Any]:
+    try:
+        sources = check_profile_sources(AI302_API_KEY)
+    except ProfileError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "schema_version": "tts-profile-source-health-v1",
+        "checked_at_utc": now_iso(),
+        "sources": sources,
+    }
+
+
 class TTSProxyRequest(BaseModel):
     request_id: str = Field(min_length=1, max_length=100)
     text: str = Field(min_length=1, max_length=5000)
@@ -488,7 +529,7 @@ class TTSProxyRequest(BaseModel):
         le=MAX_TTS_AUDIO_SECONDS,
     )
     # 每次媒体任务可传入与主工作流一致的动态容差。未传入的旧请求
-    # 继续使用 Railway 环境变量的兼容默认值。
+    # 继续兼容旧部署环境变量的默认值。
     duration_tolerance_sec: float | None = Field(
         default=None,
         ge=0.0,
@@ -497,6 +538,9 @@ class TTSProxyRequest(BaseModel):
     style_prompt: str = Field(default="", max_length=2000)
     emotion_mode: Literal["auto", "neutral"] = "auto"
     narration_json: dict[str, Any] | str | None = None
+    narrator_profile_id: str | None = Field(default=None, max_length=50)
+    allow_unverified_profile: bool = False
+    provider_settings: dict[str, Any] = Field(default_factory=dict)
     tts_provider: Literal[
         "dubbingx",
         "openai",
@@ -525,6 +569,78 @@ class TTSProxyRequest(BaseModel):
         "luodo",
     ] = "tongtong"
     qwen3_voice: Literal["Elias"] = "Elias"
+
+
+def _request_narration_object(
+    payload: TTSProxyRequest,
+) -> dict[str, Any] | None:
+    raw = payload.narration_json
+    if isinstance(raw, str):
+        if not raw.strip():
+            return None
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ProfileError("NARRATION_JSON_INVALID") from exc
+    return raw if isinstance(raw, dict) else None
+
+
+def validate_request_performance(payload: TTSProxyRequest) -> None:
+    narration = _request_narration_object(payload)
+    if not narration:
+        return
+    top_level = narration.get("performance_plan")
+    if top_level is not None:
+        validate_performance_plan(payload.text, top_level)
+    for segment in narration.get("segments") or []:
+        if not isinstance(segment, dict) or "performance_plan" not in segment:
+            continue
+        segment_text = str(
+            segment.get("text") or segment.get("spoken_text") or ""
+        ).strip()
+        validate_performance_plan(segment_text, segment["performance_plan"])
+
+
+def resolve_tts_request_profile(
+    payload: TTSProxyRequest,
+) -> TTSProxyRequest:
+    validate_request_performance(payload)
+    if not payload.narrator_profile_id:
+        return payload
+    profile = resolve_profile(
+        payload.narrator_profile_id,
+        allow_documented=payload.allow_unverified_profile,
+    )
+    narration = _request_narration_object(payload) or {}
+    performance = narration.get("performance_plan")
+    if performance is None:
+        segments = narration.get("segments") or []
+        if len(segments) == 1 and isinstance(segments[0], dict):
+            performance = segments[0].get("performance_plan")
+    if performance is None:
+        performance = {
+            "text": payload.text,
+            "delivery": "calm_analysis",
+            "emotion": profile.get("default_emotion") or "neutral",
+            "speed": payload.speed_ratio,
+            "pitch": 0,
+            "energy": 0.7,
+            "pause_after_ms": 0,
+            "cues": [],
+        }
+    settings = compile_provider_settings(profile, performance)
+    updates: dict[str, Any] = {
+        "tts_provider": profile["provider"],
+        "provider_settings": settings,
+        "speed_ratio": float(settings.get("speed", payload.speed_ratio)),
+    }
+    if profile["provider"] == "minimax":
+        updates["minimax_voice_id"] = profile["voice_id"]
+    elif profile["provider"] == "elevenlabs":
+        updates["elevenlabs_voice_id"] = profile["voice_id"]
+    else:
+        updates["voice_id"] = profile["voice_id"]
+    return payload.model_copy(update=updates)
 
 
 def ai302_headers() -> dict[str, str]:
@@ -629,6 +745,54 @@ def parse_elevenlabs_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
     if normalize(joined_text) != normalize(payload.text):
         raise ValueError("narration_json分段文字与完整旁白不一致")
 
+    return segments
+
+
+def parse_dubbingx_segments(payload: TTSProxyRequest) -> list[dict[str, Any]]:
+    """Keep Dify text, speed and pauses intact before DubbingX billing."""
+    raw = payload.narration_json
+    if isinstance(raw, str):
+        raw = json.loads(raw or "{}")
+    if not isinstance(raw, dict) or not isinstance(raw.get("segments"), list):
+        return [
+            {
+                "text": payload.text,
+                "speed": payload.speed_ratio,
+                "pause_after_ms": 0,
+            }
+        ]
+    ordered = sorted(
+        (item for item in raw["segments"] if isinstance(item, dict)),
+        key=lambda item: int(item.get("order") or 0),
+    )
+    segments: list[dict[str, Any]] = []
+    for index, item in enumerate(ordered, start=1):
+        text = str(item.get("text") or item.get("spoken_text") or "").strip()
+        if not text:
+            raise ValueError(f"DubbingX分段{index}文本为空")
+        try:
+            speed = float(item.get("speed", payload.speed_ratio))
+            pause_after_ms = int(item.get("pause_after_ms", 0))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"DubbingX分段{index}速度或停顿无效") from exc
+        if not 0.90 <= speed <= 1.05:
+            raise ValueError(f"DubbingX分段{index}speed超出0.90至1.05")
+        if not 0 <= pause_after_ms <= 650:
+            raise ValueError(f"DubbingX分段{index}pause_after_ms超出0至650")
+        segments.append(
+            {
+                "text": text,
+                "speed": speed,
+                "pause_after_ms": pause_after_ms,
+            }
+        )
+    if not segments:
+        raise ValueError("DubbingX分段为空")
+    normalize = lambda value: re.sub(r"\s+", " ", str(value or "")).strip()
+    if normalize(" ".join(item["text"] for item in segments)) != normalize(
+        payload.text
+    ):
+        raise ValueError("DubbingX分段文字与完整旁白不一致")
     return segments
 
 
@@ -926,11 +1090,13 @@ def submit_dubbingx_tts(
     voice_id: str,
     emotion: str,
     speed_ratio: float,
+    language: str = "zh",
+    pitch_ratio: float = 1.0,
 ) -> str:
     ssml = (
-        f'<speak voiceId="{voice_id}" language="zh" '
+        f'<speak voiceId="{voice_id}" language="{html.escape(language, quote=True)}" '
         f'emotion="{html.escape(emotion, quote=True)}" '
-        f'audioPitch="1.0" audioSpeed="{speed_ratio:.2f}">'
+        f'audioPitch="{pitch_ratio:.2f}" audioSpeed="{speed_ratio:.2f}">'
         f'{html.escape(text, quote=False)}</speak>'
     )
     result = post_dubbingx(
@@ -1468,8 +1634,10 @@ def generate_minimax_tts_segment(
     voice: str,
     speed: float,
     output_path: Path,
+    provider_settings: dict[str, Any] | None = None,
 ) -> None:
     """按302.AI当前MiniMax Speech 2.8 Turbo格式生成单句音频。"""
+    settings = provider_settings or {}
     response = httpx.post(
         "https://api.302.ai/minimaxi/v1/t2a_v2",
         headers=ai302_headers(),
@@ -1480,9 +1648,9 @@ def generate_minimax_tts_segment(
             "voice_setting": {
                 "voice_id": voice,
                 "speed": speed,
-                "vol": 1,
-                "pitch": 0,
-                "emotion": "calm",
+                "vol": settings.get("vol", 1),
+                "pitch": settings.get("pitch", 0),
+                "emotion": settings.get("emotion", "calm"),
                 "text_normalization": True,
             },
             "audio_setting": {
@@ -1562,12 +1730,21 @@ def generate_minimax_segmented_tts(
         for index, unit in enumerate(units):
             source_path = unit_dir / f"sentence-{index:02d}.mp3"
             normalized_path = unit_dir / f"sentence-{index:02d}.wav"
-            generate_minimax_tts_segment(
-                unit["text"],
-                payload.minimax_voice_id,
-                float(unit["speed"]),
-                source_path,
-            )
+            if payload.provider_settings:
+                generate_minimax_tts_segment(
+                    unit["text"],
+                    payload.minimax_voice_id,
+                    float(unit["speed"]),
+                    source_path,
+                    payload.provider_settings,
+                )
+            else:
+                generate_minimax_tts_segment(
+                    unit["text"],
+                    payload.minimax_voice_id,
+                    float(unit["speed"]),
+                    source_path,
+                )
             normalize_audio_to_wav(source_path, normalized_path)
             normalized_paths.append(normalized_path)
             pauses_after_ms.append(int(unit["pause_after_ms"]))
@@ -2502,6 +2679,10 @@ def align_audio_with_source_text(
     
 @app.post("/v1/tts", dependencies=[Depends(require_token)])
 def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
+    try:
+        payload = resolve_tts_request_profile(payload)
+    except ProfileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not AI302_API_KEY:
         raise HTTPException(
             status_code=503,
@@ -2542,11 +2723,13 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
         elif payload.tts_provider == "qwen3_tts":
             qwen_segment_bounds = generate_qwen3_tts(payload, audio_path)
         else:
-            segments = parse_narration_segments(payload)
+            segments = parse_dubbingx_segments(payload)
             segment_paths: list[Path] = []
-            submitted_tasks: list[tuple[str, str]] = []
+            pauses_after_ms: list[int] = []
+            submitted_tasks: list[tuple[str, str, dict[str, Any]]] = []
 
-            for segment_text in segments:
+            for segment in segments:
+                segment_text = segment["text"]
                 emotion = (
                     analyze_dubbingx_emotion(segment_text)
                     if payload.emotion_mode == "auto"
@@ -2556,23 +2739,40 @@ def create_tts_audio(payload: TTSProxyRequest) -> dict[str, Any]:
                     text=segment_text,
                     voice_id=payload.voice_id,
                     emotion=emotion,
-                    speed_ratio=payload.speed_ratio,
+                    speed_ratio=float(segment["speed"]),
+                    language=str(
+                        payload.provider_settings.get("language") or "zh"
+                    ),
+                    pitch_ratio=float(
+                        payload.provider_settings.get("audioPitch") or 1.0
+                    ),
                 )
-                submitted_tasks.append((task_id, emotion))
+                submitted_tasks.append((task_id, emotion, segment))
 
-            for index, (task_id, emotion) in enumerate(submitted_tasks):
+            for index, (task_id, emotion, segment) in enumerate(submitted_tasks):
                 upstream_audio_url = wait_for_dubbingx_tts(task_id)
-                segment_path = request_work_dir / f"segment-{index:02d}.wav"
-                download_audio(upstream_audio_url, segment_path)
+                source_path = request_work_dir / f"dubbingx-source-{index:02d}.wav"
+                segment_path = request_work_dir / f"dubbingx-segment-{index:02d}.wav"
+                download_audio(upstream_audio_url, source_path)
+                normalize_audio_to_wav(source_path, segment_path)
                 segment_paths.append(segment_path)
+                pauses_after_ms.append(int(segment["pause_after_ms"]))
                 logger.info(
-                    "DUBBINGX_SEGMENT_COMPLETED request_id=%s segment=%s emotion=%s",
+                    "DUBBINGX_SEGMENT_COMPLETED request_id=%s segment=%s "
+                    "emotion=%s speed=%.2f pause_after_ms=%s",
                     payload.request_id,
                     index + 1,
                     emotion,
+                    float(segment["speed"]),
+                    pauses_after_ms[-1],
                 )
 
-            concatenate_audio(segment_paths, audio_path)
+            concatenate_audio_with_pauses(
+                segment_paths,
+                pauses_after_ms,
+                audio_path,
+                request_work_dir,
+            )
     except Exception as exc:
         logger.exception(
             "302_TTS_GENERATION_FAILED request_id=%s provider=%s",
@@ -2712,6 +2912,10 @@ def run_tts_job(job_id: str, payload: dict[str, Any]) -> None:
 
 @app.post("/v1/tts-jobs", status_code=202, dependencies=[Depends(require_token)])
 def create_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
+    try:
+        payload = resolve_tts_request_profile(payload)
+    except ProfileError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not AI302_API_KEY:
         raise HTTPException(
             status_code=503,

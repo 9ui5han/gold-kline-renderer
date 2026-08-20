@@ -175,6 +175,13 @@ def _time_label(value: str) -> str:
     return _axis_time_label(value)
 
 
+def _date_only_label(value: str) -> str:
+    try:
+        return (_utc_datetime(value) + timedelta(hours=8)).strftime("%b %d")
+    except Exception:
+        return str(value or "")[:10]
+
+
 def _wrap_text(
     draw: ImageDraw.ImageDraw,
     text: str,
@@ -1868,7 +1875,15 @@ def render_tradingview_scene(
         else:
             x = chart_left + chart_width * mark_index / max(time_marks - 1, 1)
         if candle_index < len(axis_time_candles):
-            label = _time_label(axis_time_candles[candle_index].get("time", ""))
+            # 最右标签（最后一根 K 线）只显示日期，时间由横轴上方的红色标注显示。
+            if mark_index >= time_marks - 1:
+                label = _date_only_label(
+                    axis_time_candles[candle_index].get("time", "")
+                )
+            else:
+                label = _time_label(
+                    axis_time_candles[candle_index].get("time", "")
+                )
             bbox = draw.textbbox((0, 0), label, font=axis_face)
             half_width = (bbox[2] - bbox[0]) / 2
             tick_x = min(chart_right, max(chart_left, x))
