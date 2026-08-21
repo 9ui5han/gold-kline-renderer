@@ -21,6 +21,8 @@ from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .chart_renderer import render_tradingview_scene
+from .segment_renderer import router as segment_render_router
+from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 from .tts_profiles import (
@@ -39,7 +41,7 @@ logger = logging.getLogger("gold_kline_renderer")
 
 
 def resolve_data_dir() -> Path:
-    """Prefer an explicit Render DATA_DIR; keep Railway volume compatibility."""
+    """Use Render DATA_DIR when configured, otherwise use a writable local path."""
     configured = os.getenv("DATA_DIR", "").strip()
     if configured:
         return Path(configured)
@@ -426,6 +428,16 @@ def require_token(authorization: str = Header(default="")) -> None:
         raise HTTPException(503, "服务器尚未设置RENDER_SERVICE_TOKEN")
     if authorization != f"Bearer {TOKEN}":
         raise HTTPException(401, "TOKEN_INVALID")
+
+
+app.include_router(
+    segment_render_router,
+    dependencies=[Depends(require_token)],
+)
+app.include_router(
+    video_composer_router,
+    dependencies=[Depends(require_token)],
+)
 
 
 def now_iso() -> str:
@@ -1952,7 +1964,7 @@ def generate_indextts2_tts(payload: TTSProxyRequest, output_path: Path) -> None:
             detail={
                 "error_code": "INDEXTTS2_SPEAKER_AUDIO_URL_MISSING",
                 "error_message": (
-                    "Railway尚未设置有效的INDEXTTS2_SPEAKER_AUDIO_URL"
+                    "Render尚未设置有效的INDEXTTS2_SPEAKER_AUDIO_URL"
                 ),
             },
         )
