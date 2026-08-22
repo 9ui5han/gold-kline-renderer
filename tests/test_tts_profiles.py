@@ -55,6 +55,41 @@ class TtsProfileTests(unittest.TestCase):
         self.assertGreaterEqual(len(elevenlabs), 3)
         self.assertTrue(all(item["profile_id"] for item in catalog.values()))
 
+    def test_catalog_contains_requested_minimax_system_voices(self):
+        catalog = build_profile_catalog()
+
+        self.assertEqual(
+            catalog["mm_finance_male_02"]["voice_id"],
+            "English_Diligent_Man",
+        )
+        self.assertEqual(
+            catalog["mm_cn_radio_host"]["voice_id"],
+            "Chinese (Mandarin)_Radio_Host",
+        )
+        self.assertEqual(
+            catalog["mm_cn_reliable_exec"]["voice_id"],
+            "Chinese (Mandarin)_Reliable_Executive",
+        )
+        self.assertTrue(
+            all(
+                catalog[profile_id]["status"] == "verified"
+                for profile_id in (
+                    "mm_finance_male_02",
+                    "mm_cn_radio_host",
+                    "mm_cn_reliable_exec",
+                )
+            )
+        )
+
+    def test_catalog_contains_official_dubbingx_test_profiles(self):
+        catalog = build_profile_catalog()
+
+        self.assertEqual(catalog["dx_official_30002"]["voice_id"], "30002")
+        self.assertEqual(catalog["dx_official_30002"]["language"], "zh")
+        self.assertEqual(catalog["dx_official_30002"]["gender"], "male")
+        self.assertEqual(catalog["dx_official_30002"]["status"], "verified")
+        self.assertEqual(catalog["dx_documented_30065"]["status"], "verified")
+
     def test_unknown_profile_is_rejected(self):
         with self.assertRaisesRegex(ProfileError, "PROFILE_NOT_FOUND"):
             resolve_profile("does-not-exist")
