@@ -165,6 +165,72 @@ class TtsV72ContractTests(unittest.TestCase):
                 with self.assertRaisesRegex(main.HTTPException, "REQUEST_ID_CONFLICT"):
                     main.enqueue_tts_job(changed)
 
+    def test_await_route_returns_completed_job_without_a_dify_poll_loop(self):
+        request = {
+            "request_id": "await-completed",
+            "narrator_profile_id": "verified-profile",
+            "text": TEXT,
+            "narration_json": NARRATION,
+            "target_duration_sec": 5.0,
+            "duration_tolerance_sec": 1.5,
+        }
+        completed_job = {
+            "job_id": "job-completed",
+            "request_id": request["request_id"],
+            "status": "completed",
+            "audio_url": "https://example.invalid/audio.mp3",
+            "duration_sec": 5.1,
+        }
+        with (
+            patch.object(main, "TOKEN", "unit-test-token"),
+            patch.object(main, "enqueue_tts_job", return_value=completed_job),
+            TestClient(main.app) as api,
+        ):
+            main.TTS_JOBS["job-completed"] = dict(completed_job)
+            response = api.post(
+                "/v1/tts-jobs/await",
+                headers={"Authorization": "Bearer unit-test-token"},
+                json=request,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["wait_status"], "completed")
+        self.assertEqual(response.json()["job"]["duration_sec"], 5.1)
+
+    def test_await_route_returns_timeout_without_changing_background_job(self):
+        request = {
+            "request_id": "await-timeout",
+            "narrator_profile_id": "verified-profile",
+            "text": TEXT,
+            "narration_json": NARRATION,
+            "target_duration_sec": 5.0,
+            "duration_tolerance_sec": 1.5,
+        }
+        pending_job = {
+            "job_id": "job-pending",
+            "request_id": request["request_id"],
+            "status": "processing",
+            "audio_url": "",
+            "duration_sec": 0,
+        }
+        with (
+            patch.object(main, "TOKEN", "unit-test-token"),
+            patch.object(main, "TTS_AWAIT_TIMEOUT_SEC", 0),
+            patch.object(main, "enqueue_tts_job", return_value=pending_job),
+            TestClient(main.app) as api,
+        ):
+            main.TTS_JOBS["job-pending"] = dict(pending_job)
+            response = api.post(
+                "/v1/tts-jobs/await",
+                headers={"Authorization": "Bearer unit-test-token"},
+                json=request,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["wait_status"], "timeout")
+        self.assertEqual(response.json()["error_code"], "TTS_WAIT_TIMEOUT")
+        self.assertEqual(main.TTS_JOBS["job-pending"]["status"], "processing")
+
 
 if __name__ == "__main__":
     unittest.main()

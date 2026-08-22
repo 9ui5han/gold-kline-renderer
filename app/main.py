@@ -118,6 +118,14 @@ ALIGNMENT_MAX_ATTEMPTS = max(
     1,
     int(os.getenv("ALIGNMENT_MAX_ATTEMPTS", "3")),
 )
+TTS_AWAIT_TIMEOUT_SEC = max(
+    1.0,
+    min(90.0, float(os.getenv("TTS_AWAIT_TIMEOUT_SEC", "90"))),
+)
+TTS_AWAIT_POLL_INTERVAL_SEC = max(
+    0.1,
+    min(5.0, float(os.getenv("TTS_AWAIT_POLL_INTERVAL_SEC", "1"))),
+)
 ALIGNMENT_RETRY_BASE_SEC = max(
     0.1,
     float(os.getenv("ALIGNMENT_RETRY_BASE_SEC", "1.5")),
@@ -3144,9 +3152,48 @@ def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
     return job
 
 
+def wait_for_tts_job(job_id: str) -> dict[str, Any]:
+    """Wait for one existing TTS job without changing its background lifecycle."""
+    deadline = time.monotonic() + TTS_AWAIT_TIMEOUT_SEC
+    latest: dict[str, Any] | None = None
+    while True:
+        with LOCK:
+            job = TTS_JOBS.get(job_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail="TTS_JOB_NOT_FOUND")
+            latest = dict(job)
+
+        status = str(latest.get("status") or "")
+        if status in {"completed", "failed"}:
+            return {"wait_status": status, "job": latest}
+
+        if time.monotonic() >= deadline:
+            return {
+                "wait_status": "timeout",
+                "job": latest,
+                "error_code": "TTS_WAIT_TIMEOUT",
+                "error_message": "TTS job did not finish before the synchronous wait limit.",
+            }
+
+        time.sleep(TTS_AWAIT_POLL_INTERVAL_SEC)
+
+
 @app.post("/v1/tts-jobs", status_code=202, dependencies=[Depends(require_token)])
 def create_tts_job(payload: TTSJobV72Request) -> dict[str, Any]:
     return enqueue_tts_job(v72_to_proxy_request(payload))
+
+
+@app.post("/v1/tts-jobs/await", dependencies=[Depends(require_token)])
+def create_and_await_tts_job(payload: TTSJobV72Request) -> dict[str, Any]:
+    """Create or reuse a TTS job, then wait briefly for its terminal state.
+
+    This route is intended for a Dify Iteration body, where nesting a polling
+    Loop is unsupported. The payload remains the existing strict six-field
+    v7.2 contract. A timeout never cancels the worker or creates a duplicate
+    paid request; it only ends this HTTP wait.
+    """
+    job = enqueue_tts_job(v72_to_proxy_request(payload))
+    return wait_for_tts_job(str(job["job_id"]))
 
 
 @app.post(
