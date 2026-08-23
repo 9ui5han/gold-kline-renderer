@@ -26,6 +26,7 @@ from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 from .scenario_repair import process_scenario_step
+from .segment_plan_validation import process_segment_plan_step
 from .tts_profiles import (
     PERFORMANCE_SCHEMA_VERSION,
     PROFILE_SCHEMA_VERSION,
@@ -568,6 +569,18 @@ class ScenarioStepRequest(ScenarioValidationRequest):
     repair_count: int = Field(default=0, ge=0, le=2)
 
 
+class SegmentPlanStepRequest(BaseModel):
+    candidate: dict[str, Any]
+    segment_budget: dict[str, Any]
+    technical_facts: dict[str, Any]
+    market_analysis: dict[str, Any]
+    validated_levels: dict[str, Any]
+    structure_paths: dict[str, Any]
+    forecast_framework: dict[str, Any]
+    macro_timing: dict[str, Any]
+    repair_count: int = Field(default=0, ge=0, le=2)
+
+
 @app.post(
     "/v1/scenario-paths/step",
     dependencies=[Depends(require_token)],
@@ -579,6 +592,25 @@ def scenario_paths_step(payload: ScenarioStepRequest) -> dict[str, Any]:
         payload.active_levels,
         payload.forecast_framework,
         payload.market_analysis,
+        payload.macro_timing,
+        payload.repair_count,
+    )
+
+
+@app.post(
+    "/v1/segment-plans/step",
+    dependencies=[Depends(require_token)],
+)
+def segment_plans_step(payload: SegmentPlanStepRequest) -> dict[str, Any]:
+    """Return pass, repair, or fail for one TOOL-07 loop step."""
+    return process_segment_plan_step(
+        payload.candidate,
+        payload.segment_budget,
+        payload.technical_facts,
+        payload.market_analysis,
+        payload.validated_levels,
+        payload.structure_paths,
+        payload.forecast_framework,
         payload.macro_timing,
         payload.repair_count,
     )
