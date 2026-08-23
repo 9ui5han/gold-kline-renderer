@@ -25,6 +25,7 @@ from .segment_renderer import router as segment_render_router
 from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
+from .scenario_repair import process_scenario_step
 from .tts_profiles import (
     PERFORMANCE_SCHEMA_VERSION,
     PROFILE_SCHEMA_VERSION,
@@ -553,6 +554,34 @@ def macro_event_context(payload: MacroContextRequest) -> dict[str, Any]:
         return MACRO_CONTEXT_SERVICE.get_context(payload.model_dump())
     except MacroContextError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+class ScenarioValidationRequest(BaseModel):
+    candidate: dict[str, Any]
+    active_levels: dict[str, Any]
+    forecast_framework: dict[str, Any]
+    market_analysis: dict[str, Any]
+    macro_timing: dict[str, Any]
+
+
+class ScenarioStepRequest(ScenarioValidationRequest):
+    repair_count: int = Field(default=0, ge=0, le=2)
+
+
+@app.post(
+    "/v1/scenario-paths/step",
+    dependencies=[Depends(require_token)],
+)
+def scenario_paths_step(payload: ScenarioStepRequest) -> dict[str, Any]:
+    """Return pass, repair, or fail for one TOOL-06 loop step."""
+    return process_scenario_step(
+        payload.candidate,
+        payload.active_levels,
+        payload.forecast_framework,
+        payload.market_analysis,
+        payload.macro_timing,
+        payload.repair_count,
+    )
 
 
 @app.get(
