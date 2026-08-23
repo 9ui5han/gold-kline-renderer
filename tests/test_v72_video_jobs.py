@@ -11,6 +11,7 @@ class V72VideoJobsTests(unittest.TestCase):
 
         paths = app.openapi()["paths"]
         self.assertIn("/v1/segment-render-jobs", paths)
+        self.assertIn("/v1/segment-render-jobs/await", paths)
         self.assertIn("/v1/segment-render-jobs/{job_id}", paths)
         self.assertIn("/v1/compose-jobs", paths)
         self.assertIn("/v1/compose-jobs/{job_id}", paths)
@@ -70,6 +71,64 @@ class V72VideoJobsTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             _validate_payload(_dump(request))
         self.assertEqual(caught.exception.detail["code"], "SCENE_BOUNDS_INVALID")
+
+    def test_wait_for_segment_render_job_reports_completed_and_timeout(self):
+        from app import segment_renderer
+
+        completed = {
+            "job_id": "completed-job",
+            "request_id": "request-completed",
+            "status": "completed",
+            "created_at": "2026-08-23T00:00:00Z",
+            "updated_at": "2026-08-23T00:00:01Z",
+            "payload": {"segment_id": "seg_01", "order": 1},
+            "result": {"video_url": "https://example.invalid/segment.mp4"},
+            "error": None,
+        }
+        waiting = {
+            "job_id": "waiting-job",
+            "request_id": "request-waiting",
+            "status": "rendering",
+            "created_at": "2026-08-23T00:00:00Z",
+            "updated_at": "2026-08-23T00:00:01Z",
+            "payload": {"segment_id": "seg_02", "order": 2},
+            "result": None,
+            "error": None,
+        }
+        with patch.object(segment_renderer.STORE, "get", return_value=completed):
+            result = segment_renderer.wait_for_segment_render_job("completed-job")
+        self.assertEqual(result["wait_status"], "completed")
+        self.assertEqual(result["job"]["video_url"], "https://example.invalid/segment.mp4")
+
+        with (
+            patch.object(segment_renderer.STORE, "get", return_value=waiting),
+            patch.object(segment_renderer, "SEGMENT_RENDER_AWAIT_TIMEOUT_SEC", 0),
+        ):
+            timed_out = segment_renderer.wait_for_segment_render_job("waiting-job")
+        self.assertEqual(timed_out["wait_status"], "timeout")
+        self.assertEqual(timed_out["error_code"], "RENDER_WAIT_TIMEOUT")
+
+    def test_await_route_reuses_existing_job_before_waiting(self):
+        from app import segment_renderer
+
+        request = segment_renderer.SegmentRenderRequest.model_construct()
+        existing = {"job_id": "existing-job", "status": "rendering"}
+        with (
+            patch.object(
+                segment_renderer,
+                "_create_or_reuse_segment_render_job",
+                return_value=(existing, False),
+            ),
+            patch.object(
+                segment_renderer,
+                "wait_for_segment_render_job",
+                return_value={"wait_status": "completed", "job": {"job_id": "existing-job"}},
+            ) as wait_for_job,
+        ):
+            result = segment_renderer.create_and_await_segment_render_job(request)
+
+        self.assertEqual(result["wait_status"], "completed")
+        wait_for_job.assert_called_once_with("existing-job")
 
     def test_compose_request_rejects_unsafe_values(self):
         from app.video_composer import ComposeRequest

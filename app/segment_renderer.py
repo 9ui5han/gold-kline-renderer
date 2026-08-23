@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,14 @@ MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 STORE = JobStore(DATA_DIR / "segment_jobs")
 router = APIRouter(tags=["segment-render"])
+SEGMENT_RENDER_AWAIT_TIMEOUT_SEC = max(
+    1.0,
+    min(240.0, float(os.environ.get("SEGMENT_RENDER_AWAIT_TIMEOUT_SEC", "180"))),
+)
+SEGMENT_RENDER_AWAIT_POLL_INTERVAL_SEC = max(
+    0.1,
+    min(5.0, float(os.environ.get("SEGMENT_RENDER_AWAIT_POLL_INTERVAL_SEC", "1"))),
+)
 
 
 class VideoSpec(BaseModel):
@@ -361,9 +370,7 @@ def _render(job_id: str) -> None:
 
 
 @router.post("/v1/segment-render-jobs")
-def create_segment_render_job(
-    request: SegmentRenderRequest,
-) -> JSONResponse:
+def _create_or_reuse_segment_render_job(request: SegmentRenderRequest) -> tuple[dict[str, Any], bool]:
     payload = _dump(request)
     _validate_payload(payload)
     try:
@@ -375,6 +382,10 @@ def create_segment_render_job(
         }) from exc
     if created:
         threading.Thread(target=_render, args=(job["job_id"],), daemon=True).start()
+    return job, created
+
+
+def _create_response(job: dict[str, Any], created: bool) -> JSONResponse:
     response = {
         "job_id": job["job_id"],
         "request_id": job["request_id"],
@@ -383,6 +394,55 @@ def create_segment_render_job(
         "created_at": job["created_at"],
     }
     return JSONResponse(status_code=202 if created else 200, content=response)
+
+
+def wait_for_segment_render_job(job_id: str) -> dict[str, Any]:
+    """Wait for an existing render job without changing its worker lifecycle."""
+    deadline = time.monotonic() + SEGMENT_RENDER_AWAIT_TIMEOUT_SEC
+    latest: dict[str, Any] | None = None
+    while True:
+        try:
+            latest = STORE.get(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail={
+                "code": "RENDER_JOB_NOT_FOUND",
+                "job_id": job_id,
+            }) from exc
+
+        status = str(latest.get("status") or "")
+        if status in {"completed", "failed"}:
+            return {"wait_status": status, "job": _public(latest)}
+
+        if time.monotonic() >= deadline:
+            return {
+                "wait_status": "timeout",
+                "job": _public(latest),
+                "error_code": "RENDER_WAIT_TIMEOUT",
+                "error_message": "Render job did not finish before the synchronous wait limit.",
+            }
+
+        time.sleep(SEGMENT_RENDER_AWAIT_POLL_INTERVAL_SEC)
+
+
+@router.post("/v1/segment-render-jobs")
+def create_segment_render_job(
+    request: SegmentRenderRequest,
+) -> JSONResponse:
+    job, created = _create_or_reuse_segment_render_job(request)
+    return _create_response(job, created)
+
+
+@router.post("/v1/segment-render-jobs/await")
+def create_and_await_segment_render_job(
+    request: SegmentRenderRequest,
+) -> dict[str, Any]:
+    """Create or reuse one segment render job, then wait briefly for its result.
+
+    This route lets a Dify Iteration body call the renderer once without
+    nesting a polling Loop. A timeout never cancels the background worker.
+    """
+    job, _created = _create_or_reuse_segment_render_job(request)
+    return wait_for_segment_render_job(str(job["job_id"]))
 
 
 @router.get("/v1/segment-render-jobs/{job_id}")
