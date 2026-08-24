@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>宏观事件服务状态</title>
+  <link rel="stylesheet" href="./status.css">
+</head>
+<body>
+  <main class="page-shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">GOLD K-LINE RENDERER</p>
+        <h1>宏观事件服务状态</h1>
+        <p class="subtitle">检查 Render 服务以及 Fed、BLS、BEA 三个官方日历来源。这里只检查服务状态，不判断黄金涨跌。</p>
+      </div>
+      <div id="overall-badge" class="overall-badge idle" role="status" aria-live="polite">
+        <span class="status-dot"></span>
+        <span id="overall-text">等待检查</span>
+      </div>
+    </header>
+
+    <section class="control-panel" aria-labelledby="control-title">
+      <div>
+        <h2 id="control-title">开始检查</h2>
+        <p>页面只读取脱敏状态摘要，不需要输入、保存或传输 Render Token。</p>
+      </div>
+      <button id="check-button" class="primary-button" type="button">立即检查</button>
+      <p id="message" class="message" aria-live="polite">点击“立即检查”查看服务状态。</p>
+    </section>
+
+    <section class="summary-grid" aria-label="服务概览">
+      <article class="summary-card">
+        <span>Render 服务</span>
+        <strong id="render-status">未检查</strong>
+      </article>
+      <article class="summary-card">
+        <span>有效来源</span>
+        <strong id="valid-count">— / 3</strong>
+      </article>
+      <article class="summary-card">
+        <span>检查时间（UTC）</span>
+        <strong id="checked-time">—</strong>
+      </article>
+    </section>
+
+    <section>
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">OFFICIAL SOURCES</p>
+          <h2>官方数据源</h2>
+        </div>
+        <p>绿色表示可访问且结构正确；黄色表示只能部分使用；红色表示不可用。</p>
+      </div>
+      <div id="source-grid" class="source-grid">
+        <article class="source-card idle" data-source="fed">
+          <div class="source-title"><span class="source-icon">F</span><div><h3>Federal Reserve</h3><p>美国联邦储备委员会</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="bls">
+          <div class="source-title"><span class="source-icon">B</span><div><h3>BLS</h3><p>美国劳工统计局</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="bea">
+          <div class="source-title"><span class="source-icon">E</span><div><h3>BEA</h3><p>美国经济分析局</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+      </div>
+    </section>
+
+    <details class="raw-panel">
+      <summary>查看原始 JSON</summary>
+      <pre id="raw-json">尚未检查。</pre>
+    </details>
+
+    <footer>此页面不会读取密钥、生成宏观方向，也不会触发 TTS 或视频渲染。</footer>
+  </main>
+  <script src="./status.js"></script>
+</body>
+</html>

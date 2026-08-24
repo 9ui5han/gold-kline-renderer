@@ -54,6 +54,17 @@ http://127.0.0.1:8000/docs
 
 部署完成后先访问 `https://你的域名/health`。返回 `{"status":"ok"}` 才能继续 Dify。
 
+浏览器图形化检查宏观事件服务：
+
+```text
+https://你的域名/macro-status/
+```
+
+页面不读取`RENDER_SERVICE_TOKEN`。它只调用公开的脱敏状态摘要
+`/v1/macro-events/status-summary`；摘要不包含官方URL、响应正文或服务密钥，并在服务端
+缓存至少60秒，避免页面刷新反复请求Fed、BLS和BEA。原始
+`/v1/macro-events/source-health`接口继续要求Bearer Token，合同保持不变。
+
 Render免费实例可能休眠，且 `/tmp` 文件会在实例重建后丢失。测试阶段可以继续使用
 `DATA_DIR=/tmp/gold-video`；正式保存成片和宏观缓存时应改用Render持久磁盘或对象存储。
 正式TTS还会在 `DATA_DIR/tts-idempotency.json` 保存 `request_id`、请求指纹和任务状态；

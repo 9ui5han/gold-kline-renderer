@@ -70,6 +70,7 @@ MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
 APP_DIR = Path(__file__).resolve().parent
 TIKTOK_PREVIEW_DIR = APP_DIR / "tiktok_preview"
+MACRO_STATUS_DIR = APP_DIR / "macro_status"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -421,9 +422,23 @@ app.mount(
     StaticFiles(directory=TIKTOK_PREVIEW_DIR, html=True),
     name="tiktok-preview",
 )
+app.mount(
+    "/macro-status",
+    StaticFiles(directory=MACRO_STATUS_DIR, html=True),
+    name="macro-status",
+)
 JOBS: dict[str, dict[str, Any]] = {}
 TTS_JOBS: dict[str, dict[str, Any]] = {}
 LOCK = threading.Lock()
+MACRO_STATUS_LOCK = threading.Lock()
+MACRO_STATUS_CACHE_TTL_SEC = max(
+    60,
+    int(os.getenv("MACRO_STATUS_CACHE_TTL_SEC", "60")),
+)
+MACRO_STATUS_CACHE: dict[str, Any] = {
+    "expires_at": 0.0,
+    "payload": None,
+}
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
@@ -440,6 +455,14 @@ async def add_media_cache_header(request, call_next):
         304,
     }:
         response.headers["Cache-Control"] = MEDIA_CACHE_CONTROL
+    if request.url.path.startswith("/macro-status"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
+            "img-src 'self'; connect-src 'self'; base-uri 'none'; "
+            "frame-ancestors 'none'; form-action 'none'"
+        )
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
     return response
 
 
@@ -529,6 +552,51 @@ def update_tts_job(job_id: str, **changes: Any) -> None:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "time": now_iso()}
+
+
+def _public_macro_status() -> dict[str, Any]:
+    """Return a cached, body-free health summary for the public dashboard."""
+    now = time.monotonic()
+    with MACRO_STATUS_LOCK:
+        cached = MACRO_STATUS_CACHE.get("payload")
+        if isinstance(cached, dict) and now < float(
+            MACRO_STATUS_CACHE.get("expires_at") or 0
+        ):
+            return cached
+
+        private_status = probe_all_sources()
+        public_sources = []
+        for source in private_status.get("sources") or []:
+            public_sources.append({
+                "source": source.get("source"),
+                "requested_at_utc": source.get("requested_at_utc"),
+                "http_status": source.get("http_status"),
+                "content_type": source.get("content_type"),
+                "elapsed_ms": source.get("elapsed_ms"),
+                "reachable": source.get("reachable") is True,
+                "structure_valid": source.get("structure_valid") is True,
+                "error_code": source.get("error_code") or "",
+                "error_message": source.get("error_message") or "",
+            })
+
+        payload = {
+            "schema_version": "macro-public-status-v1",
+            "checked_at_utc": private_status.get("checked_at_utc"),
+            "data_status": private_status.get("data_status", "unavailable"),
+            "source_count": private_status.get("source_count", len(public_sources)),
+            "valid_source_count": private_status.get("valid_source_count", 0),
+            "cache_ttl_sec": MACRO_STATUS_CACHE_TTL_SEC,
+            "sources": public_sources,
+        }
+        MACRO_STATUS_CACHE["payload"] = payload
+        MACRO_STATUS_CACHE["expires_at"] = now + MACRO_STATUS_CACHE_TTL_SEC
+        return payload
+
+
+@app.get("/v1/macro-events/status-summary")
+def macro_event_status_summary() -> dict[str, Any]:
+    """Public, sanitized and rate-cached source health for the status page."""
+    return _public_macro_status()
 
 
 @app.get(

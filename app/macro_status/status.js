@@ -1,0 +1,109 @@
+const checkButton = document.querySelector("#check-button");
+const message = document.querySelector("#message");
+const rawJson = document.querySelector("#raw-json");
+const overallBadge = document.querySelector("#overall-badge");
+const overallText = document.querySelector("#overall-text");
+
+function text(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  return String(value);
+}
+
+function setOverall(kind, label) {
+  overallBadge.className = `overall-badge ${kind}`;
+  overallText.textContent = label;
+}
+
+function updateSource(source) {
+  const card = document.querySelector(`[data-source="${source.source}"]`);
+  if (!card) return;
+  const reachable = source.reachable === true;
+  const valid = source.structure_valid === true;
+  const kind = reachable && valid ? "good" : reachable ? "partial" : "bad";
+  const label = reachable && valid ? "正常" : reachable ? "响应异常" : "不可访问";
+  card.className = `source-card ${kind}`;
+  card.querySelector('[data-field="state"]').textContent = label;
+  card.querySelector('[data-field="http"]').textContent = text(source.http_status);
+  card.querySelector('[data-field="content"]').textContent = text(source.content_type);
+  card.querySelector('[data-field="error"]').textContent = text(source.error_code, "无");
+}
+
+function resetSources() {
+  document.querySelectorAll(".source-card").forEach((card) => {
+    card.className = "source-card idle";
+    card.querySelector('[data-field="state"]').textContent = "未检查";
+    card.querySelector('[data-field="http"]').textContent = "—";
+    card.querySelector('[data-field="content"]').textContent = "—";
+    card.querySelector('[data-field="error"]').textContent = "—";
+  });
+}
+
+async function readJson(response) {
+  const body = await response.text();
+  try {
+    return body ? JSON.parse(body) : {};
+  } catch (_error) {
+    return { detail: body || `HTTP ${response.status}` };
+  }
+}
+
+async function runCheck() {
+  checkButton.disabled = true;
+  checkButton.textContent = "检查中…";
+  message.className = "message";
+  message.textContent = "正在连接 Render 并检查三个官方数据源，请稍候。";
+  setOverall("idle", "检查中");
+
+  try {
+    const [serviceResponse, sourceResponse] = await Promise.all([
+      fetch("/health", { cache: "no-store" }),
+      fetch("/v1/macro-events/status-summary", { cache: "no-store" }),
+    ]);
+    const serviceData = await readJson(serviceResponse);
+    const sourceData = await readJson(sourceResponse);
+    const serviceHealthy = serviceResponse.ok && serviceData.status === "ok";
+
+    document.querySelector("#render-status").textContent =
+      serviceHealthy ? "在线" : "异常";
+
+    if (!sourceResponse.ok) {
+      const detail = text(sourceData.detail, `HTTP ${sourceResponse.status}`);
+      throw new Error(detail);
+    }
+
+    const sources = Array.isArray(sourceData.sources) ? sourceData.sources : [];
+    resetSources();
+    sources.forEach(updateSource);
+    document.querySelector("#valid-count").textContent =
+      `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 3)}`;
+    document.querySelector("#checked-time").textContent = text(sourceData.checked_at_utc);
+    rawJson.textContent = JSON.stringify(sourceData, null, 2);
+
+    const status = sourceData.data_status;
+    if (!serviceHealthy) {
+      setOverall("bad", "Render异常");
+      message.className = "message error";
+      message.textContent = "Render 服务健康检查异常；下方数据源状态仅供排查参考。";
+    } else if (status === "complete") {
+      setOverall("good", "全部正常");
+      message.textContent = "Render 与三个官方宏观数据源均正常。";
+    } else if (status === "partial") {
+      setOverall("partial", "部分可用");
+      message.textContent = "Render 在线，但至少一个官方数据源异常，请查看下方红色或黄色卡片。";
+    } else {
+      setOverall("bad", "不可用");
+      message.className = "message error";
+      message.textContent = "宏观数据源当前不可用，请查看错误代码。";
+    }
+  } catch (error) {
+    setOverall("bad", "检查失败");
+    message.className = "message error";
+    message.textContent = `检查失败：${error.message}`;
+    rawJson.textContent = JSON.stringify({ error: error.message }, null, 2);
+  } finally {
+    checkButton.disabled = false;
+    checkButton.textContent = "立即检查";
+  }
+}
+
+checkButton.addEventListener("click", runCheck);
