@@ -26,6 +26,12 @@ from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 from .scenario_repair import process_scenario_step
+from .segment_narration_validation import (
+    complete_tool08,
+    confirm_tts_result,
+    initialize_tool08,
+    process_step as process_segment_narration_step,
+)
 from .segment_plan_validation import process_segment_plan_step
 from .tts_profiles import (
     PERFORMANCE_SCHEMA_VERSION,
@@ -581,6 +587,62 @@ class SegmentPlanStepRequest(BaseModel):
     repair_count: int = Field(default=0, ge=0, le=2)
 
 
+class SegmentNarrationInitRequest(BaseModel):
+    """Cross-workflow TOOL-08 inputs remain JSON strings at the Dify boundary."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    market_input_v1_json: str = Field(min_length=2)
+    levels_v1_json: str = Field(min_length=2)
+    technical_v1_json: str = Field(min_length=2)
+    macro_context_v1_json: str = Field(min_length=2)
+    market_analysis_v1_json: str = Field(min_length=2)
+    forecast_v1_json: str = Field(min_length=2)
+    segment_plan_v1_json: str = Field(min_length=2)
+    narrator_profile_id: str = Field(min_length=1, max_length=50)
+    master_request_id: str = Field(min_length=1, max_length=100)
+
+
+class SegmentNarrationStepRequest(BaseModel):
+    """One deterministic pre-paid-call TOOL-08 validation/repair step."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item: dict[str, Any]
+    segment_narration: dict[str, Any] | None = None
+    segment_performance: dict[str, Any] | None = None
+    # The repair LLM returns this one Object unchanged except for its two
+    # candidate objects.  It avoids Dify trying to read nested Object fields.
+    repair_candidate: dict[str, Any] | None = None
+    voice_duration_profile: dict[str, Any]
+    narrator_profile_id: str = Field(min_length=1, max_length=50)
+    master_request_id: str = Field(min_length=1, max_length=100)
+    repair_count: int = Field(default=0, ge=0, le=2)
+    narration_revision: int = Field(default=0, ge=0, le=9)
+
+
+class SegmentNarrationConfirmRequest(BaseModel):
+    """Validate the actual duration returned by /v1/tts-jobs/await."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item: dict[str, Any]
+    step_result_json: str = Field(min_length=2)
+    tts_result: dict[str, Any]
+    repair_count: int = Field(default=0, ge=0, le=2)
+    narration_revision: int = Field(default=0, ge=0, le=9)
+
+
+class SegmentNarrationCompleteRequest(BaseModel):
+    """Collect successful Iteration outputs into the three TOOL-08 outputs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    segment_media_inputs: list[Any]
+    segment_plan_v1_json: str = Field(min_length=2)
+    voice_duration_profile: dict[str, Any]
+
+
 @app.post(
     "/v1/scenario-paths/step",
     dependencies=[Depends(require_token)],
@@ -614,6 +676,42 @@ def segment_plans_step(payload: SegmentPlanStepRequest) -> dict[str, Any]:
         payload.macro_timing,
         payload.repair_count,
     )
+
+
+@app.post(
+    "/v1/segment-narration/init",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_init(payload: SegmentNarrationInitRequest) -> dict[str, Any]:
+    """Prepare TOOL-08 iteration data without calling a paid TTS provider."""
+    return initialize_tool08(**payload.model_dump())
+
+
+@app.post(
+    "/v1/segment-narration/step",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_step(payload: SegmentNarrationStepRequest) -> dict[str, Any]:
+    """Validate a current segment candidate and return pass, repair, or fail."""
+    return process_segment_narration_step(**payload.model_dump())
+
+
+@app.post(
+    "/v1/segment-narration/confirm",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_confirm(payload: SegmentNarrationConfirmRequest) -> dict[str, Any]:
+    """Check the real duration from the existing strict TTS endpoint."""
+    return confirm_tts_result(**payload.model_dump())
+
+
+@app.post(
+    "/v1/segment-narration/complete",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_complete(payload: SegmentNarrationCompleteRequest) -> dict[str, Any]:
+    """Package validated Iteration media into TOOL-08's external contract."""
+    return complete_tool08(**payload.model_dump())
 
 
 @app.get(
