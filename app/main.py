@@ -600,7 +600,8 @@ class SegmentNarrationInitRequest(BaseModel):
     forecast_v1_json: str = Field(min_length=2)
     segment_plan_v1_json: str = Field(min_length=2)
     narrator_profile_id: str = Field(min_length=1, max_length=50)
-    master_request_id: str = Field(min_length=1, max_length=100)
+    # Optional for compatibility: init generates it when the caller has none.
+    master_request_id: str = Field(default="", max_length=100)
 
 
 class SegmentNarrationStepRequest(BaseModel):

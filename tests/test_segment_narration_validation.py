@@ -90,6 +90,16 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["voice_duration_profile"]["narrator_profile_id"] == "mm_finance_male_02"
     assert result["segments"][0]["segment_id"] == "seg_01"
     assert isinstance(result["segments"][0]["narration_prompt_json"], str)
+    assert result["master_request_id"].startswith("master_01")
+
+
+def test_init_generates_internal_request_id_when_workflow_has_none():
+    contracts = _init_contracts()
+    contracts["master_request_id"] = ""
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is True
+    assert result["master_request_id"].startswith("tool08-")
 
 
 def test_step_pass_builds_exact_six_field_tts_request():
@@ -172,6 +182,7 @@ def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for test in (
         test_init_returns_direct_iteration_array_and_profile,
+        test_init_generates_internal_request_id_when_workflow_has_none,
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_requests_narration_repair_before_paid_tts,
         test_confirm_reads_await_wrapper_job_and_packages_media,

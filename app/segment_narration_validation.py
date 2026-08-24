@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import re
+import uuid
 from typing import Any
 
 from .tts_profiles import ProfileError, resolve_profile, validate_performance_plan
@@ -124,9 +125,9 @@ def initialize_tool08(
         segment_plan = segment_plan_contract.get("segment_plan")
         if not isinstance(segment_plan, dict):
             raise ValueError("SEGMENT_PLAN_OBJECT_REQUIRED")
-        master_id = str(master_request_id or "").strip()
-        if not master_id:
-            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        # TOOL-08 historically did not receive a master request ID from Dify.
+        # Generate it once at init and return it for every later step instead.
+        master_id = str(master_request_id or "").strip() or f"tool08-{uuid.uuid4().hex}"
         profile = _voice_duration_profile(narrator_profile_id)
         raw_segments = segment_plan.get("segments")
         if not isinstance(raw_segments, list) or not raw_segments:
@@ -179,6 +180,7 @@ def initialize_tool08(
             "schema_version": "segment-narration-init-v1",
             "init_valid": True,
             "init_error": "",
+            "master_request_id": master_id,
             "voice_duration_profile": profile,
             "segments": segments,
             "context_json": _compact_json(context),
@@ -188,6 +190,7 @@ def initialize_tool08(
             "schema_version": "segment-narration-init-v1",
             "init_valid": False,
             "init_error": str(exc),
+            "master_request_id": "",
             "voice_duration_profile": {},
             "segments": [],
             "context_json": "{}",
