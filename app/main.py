@@ -29,8 +29,12 @@ from .scenario_repair import process_scenario_step
 from .segment_narration_validation import (
     complete_tool08,
     confirm_tts_result,
+    finalize_tool08,
     initialize_tool08,
     process_step as process_segment_narration_step,
+    resolve_render_step,
+    segment_render_failure,
+    segment_render_success,
 )
 from .segment_plan_validation import process_segment_plan_step
 from .tts_profiles import (
@@ -600,8 +604,7 @@ class SegmentNarrationInitRequest(BaseModel):
     forecast_v1_json: str = Field(min_length=2)
     segment_plan_v1_json: str = Field(min_length=2)
     narrator_profile_id: str = Field(min_length=1, max_length=50)
-    # Optional for compatibility: init generates it when the caller has none.
-    master_request_id: str = Field(default="", max_length=100)
+    master_request_id: str = Field(min_length=1, max_length=100)
 
 
 class SegmentNarrationStepRequest(BaseModel):
@@ -644,6 +647,29 @@ class SegmentNarrationCompleteRequest(BaseModel):
     segment_media_inputs: list[Any]
     segment_plan_v1_json: str = Field(min_length=2)
     voice_duration_profile: dict[str, Any]
+
+
+class SegmentNarrationRenderRequest(BaseModel):
+    """Render either an initial pass step or the single Dify repair candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item: dict[str, Any]
+    selected_input: dict[str, Any]
+    voice_duration_profile: dict[str, Any]
+    narrator_profile_id: str = Field(min_length=1, max_length=50)
+    master_request_id: str = Field(min_length=1, max_length=100)
+
+
+class SegmentNarrationFinalizeRequest(BaseModel):
+    """Collect raw Iteration HTTP bodies and preserve the MASTER request id."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    segment_results: list[Any]
+    segment_plan_v1_json: str = Field(min_length=2)
+    voice_duration_profile: dict[str, Any]
+    master_request_id: str = Field(min_length=1, max_length=100)
 
 
 @app.post(
@@ -715,6 +741,48 @@ def segment_narration_confirm(payload: SegmentNarrationConfirmRequest) -> dict[s
 def segment_narration_complete(payload: SegmentNarrationCompleteRequest) -> dict[str, Any]:
     """Package validated Iteration media into TOOL-08's external contract."""
     return complete_tool08(**payload.model_dump())
+
+
+@app.post(
+    "/v1/segment-narration/render",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_render(payload: SegmentNarrationRenderRequest) -> dict[str, Any]:
+    """Validate at most one Dify repair, run TTS once, and confirm its media."""
+    step = resolve_render_step(**payload.model_dump())
+    if step.get("action") != "pass" or step.get("done") is not True:
+        return segment_render_failure(
+            payload.item,
+            str(step.get("step_error") or "REPAIR_VALIDATION_FAILED"),
+        )
+    try:
+        step_result = json.loads(str(step.get("result_json") or ""))
+        request_data = step_result.get("tts_request")
+        if not isinstance(request_data, dict):
+            raise ValueError("TTS_REQUEST_REQUIRED")
+        tts_result = create_and_await_tts_job(
+            TTSJobV72Request.model_validate(request_data)
+        )
+        confirm = confirm_tts_result(
+            item=payload.item,
+            step_result_json=str(step.get("result_json") or ""),
+            tts_result=tts_result,
+            state_json=str(step.get("next_state_json") or ""),
+        )
+        return segment_render_success(payload.item, confirm)
+    except HTTPException as exc:
+        return segment_render_failure(payload.item, f"TTS_HTTP_{exc.status_code}:{exc.detail}")
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return segment_render_failure(payload.item, str(exc))
+
+
+@app.post(
+    "/v1/segment-narration/finalize",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_finalize(payload: SegmentNarrationFinalizeRequest) -> dict[str, Any]:
+    """Turn the Iteration body array into TOOL-08's final four outputs."""
+    return finalize_tool08(**payload.model_dump())
 
 
 @app.get(

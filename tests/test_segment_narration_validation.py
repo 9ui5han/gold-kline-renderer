@@ -11,8 +11,11 @@ sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 from app.segment_narration_validation import (
     complete_tool08,
     confirm_tts_result,
+    finalize_tool08,
     initialize_tool08,
     process_step,
+    resolve_render_step,
+    segment_render_success,
 )
 
 
@@ -93,13 +96,45 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["master_request_id"].startswith("master_01")
 
 
-def test_init_generates_internal_request_id_when_workflow_has_none():
+def test_init_rejects_missing_master_request_id():
     contracts = _init_contracts()
     contracts["master_request_id"] = ""
     result = initialize_tool08(**contracts)
 
-    assert result["init_valid"] is True
-    assert result["master_request_id"].startswith("tool08-")
+    assert result["init_valid"] is False
+    assert result["init_error"] == "MASTER_REQUEST_ID_REQUIRED"
+    assert result["master_request_id"] == ""
+
+
+def test_render_step_accepts_initial_pass_without_repair():
+    initial = process_step(
+        _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
+    )
+    resolved = resolve_render_step(
+        _item(), initial, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert resolved == initial
+
+
+def test_render_step_validates_the_single_repair_candidate():
+    bad_narration = _narration("You should buy gold now.")
+    initial = process_step(
+        _item(), bad_narration, _performance(bad_narration["text"]),
+        _profile(), "mm_finance_male_02", "master_01",
+    )
+    repair = json.loads(initial["repair_prompt_json"])
+    repair_candidate = {
+        "segment_narration": _narration(),
+        "segment_performance": _performance(),
+        "state_json": repair["state_json"],
+    }
+    resolved = resolve_render_step(
+        _item(), repair_candidate, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert resolved["action"] == "pass"
+    assert json.loads(resolved["next_state_json"])["repair_count"] == 1
 
 
 def test_step_pass_builds_exact_six_field_tts_request():
@@ -205,12 +240,56 @@ def test_complete_rejects_duplicate_iteration_output_ids():
     assert result["complete_error"] == "SEGMENT_MEDIA_IDS_INVALID"
 
 
+def test_finalize_preserves_master_request_id_and_success_contract():
+    step = process_step(
+        _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
+    )
+    confirm = confirm_tts_result(
+        _item(), step["result_json"],
+        {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/a.mp3", "duration_sec": 4.2}},
+    )
+    rendered = segment_render_success(_item(), confirm)
+    result = finalize_tool08(
+        [json.dumps(rendered)],
+        _init_contracts()["segment_plan_v1_json"],
+        _profile(),
+        "master_01",
+    )
+
+    assert result["complete_valid"] is True
+    assert result["master_request_id"] == "master_01"
+    assert result["segment_audio_valid"] is True
+    assert result["bad_segment_ids_json"] == "[]"
+
+
+def test_finalize_propagates_iteration_failure_without_losing_master_id():
+    result = finalize_tool08(
+        [json.dumps({
+            "schema_version": "segment-render-result-v1",
+            "segment_valid": False,
+            "segment_error": "REPAIR_LIMIT_EXCEEDED",
+            "segment_id": "seg_01",
+            "segment_media_input": {},
+        })],
+        _init_contracts()["segment_plan_v1_json"],
+        _profile(),
+        "master_01",
+    )
+
+    assert result["complete_valid"] is False
+    assert result["master_request_id"] == "master_01"
+    assert result["complete_error"] == "REPAIR_LIMIT_EXCEEDED"
+    assert json.loads(result["bad_segment_ids_json"]) == ["seg_01"]
+
+
 def load_tests(loader, tests, pattern):
     """Make these compact function-style contract tests runnable by unittest."""
     suite = unittest.TestSuite()
     for test in (
         test_init_returns_direct_iteration_array_and_profile,
-        test_init_generates_internal_request_id_when_workflow_has_none,
+        test_init_rejects_missing_master_request_id,
+        test_render_step_accepts_initial_pass_without_repair,
+        test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_requests_narration_repair_before_paid_tts,
         test_second_invalid_candidate_fails_after_one_repair,
@@ -219,6 +298,8 @@ def load_tests(loader, tests, pattern):
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
         test_init_rejects_invalid_upstream_contract_version,
         test_complete_rejects_duplicate_iteration_output_ids,
+        test_finalize_preserves_master_request_id_and_success_contract,
+        test_finalize_propagates_iteration_failure_without_losing_master_id,
     ):
         suite.addTest(unittest.FunctionTestCase(test))
     return suite

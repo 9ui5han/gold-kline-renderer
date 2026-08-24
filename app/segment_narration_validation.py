@@ -11,7 +11,6 @@ import copy
 import hashlib
 import json
 import re
-import uuid
 from typing import Any
 
 from .tts_profiles import ProfileError, resolve_profile, validate_performance_plan
@@ -125,9 +124,11 @@ def initialize_tool08(
         segment_plan = segment_plan_contract.get("segment_plan")
         if not isinstance(segment_plan, dict):
             raise ValueError("SEGMENT_PLAN_OBJECT_REQUIRED")
-        # TOOL-08 historically did not receive a master request ID from Dify.
-        # Generate it once at init and return it for every later step instead.
-        master_id = str(master_request_id or "").strip() or f"tool08-{uuid.uuid4().hex}"
+        # The MASTER workflow creates this once. TOOL-08 must preserve it so
+        # TTS, TOOL-09, and TOOL-10 share the same idempotency key.
+        master_id = str(master_request_id or "").strip()
+        if not master_id:
+            raise ValueError("MASTER_REQUEST_ID_REQUIRED")
         profile = _voice_duration_profile(narrator_profile_id)
         raw_segments = segment_plan.get("segments")
         if not isinstance(raw_segments, list) or not raw_segments:
@@ -511,6 +512,63 @@ def _confirm_fail(error: str) -> dict[str, Any]:
     }
 
 
+def resolve_render_step(
+    item: dict[str, Any],
+    selected_input: dict[str, Any],
+    voice_duration_profile: dict[str, Any],
+    narrator_profile_id: str,
+    master_request_id: str,
+) -> dict[str, Any]:
+    """Resolve the Dify branch value into one validated pass step.
+
+    The variable aggregator before the backend render call selects either the
+    already-passed step response or the one allowed repair LLM candidate.
+    """
+    selected = selected_input if isinstance(selected_input, dict) else {}
+    if selected.get("schema_version") == "segment-narration-step-result-v1":
+        if selected.get("action") != "pass" or selected.get("done") is not True:
+            return _step_failure("INITIAL_STEP_NOT_RENDERABLE")
+        return copy.deepcopy(selected)
+    return process_step(
+        item=item,
+        segment_narration=None,
+        segment_performance=None,
+        repair_candidate=selected,
+        voice_duration_profile=voice_duration_profile,
+        narrator_profile_id=narrator_profile_id,
+        master_request_id=master_request_id,
+    )
+
+
+def segment_render_failure(item: dict[str, Any], error: str) -> dict[str, Any]:
+    return {
+        "schema_version": "segment-render-result-v1",
+        "segment_valid": False,
+        "segment_error": str(error or "SEGMENT_RENDER_FAILED"),
+        "segment_id": str((item or {}).get("segment_id") or ""),
+        "segment_media_input": {},
+    }
+
+
+def segment_render_success(item: dict[str, Any], confirm: dict[str, Any]) -> dict[str, Any]:
+    try:
+        if confirm.get("action") != "pass" or confirm.get("done") is not True:
+            raise ValueError(str(confirm.get("confirm_error") or "TTS_CONFIRM_FAILED"))
+        result = _as_object_json(str(confirm.get("result_json") or ""), "CONFIRM_RESULT")
+        media = result.get("segment_media_input")
+        if not isinstance(media, dict) or not media:
+            raise ValueError("SEGMENT_MEDIA_INPUT_REQUIRED")
+        return {
+            "schema_version": "segment-render-result-v1",
+            "segment_valid": True,
+            "segment_error": "",
+            "segment_id": str((item or {}).get("segment_id") or ""),
+            "segment_media_input": media,
+        }
+    except ValueError as exc:
+        return segment_render_failure(item, str(exc))
+
+
 def complete_tool08(
     segment_media_inputs: list[Any],
     segment_plan_v1_json: str,
@@ -583,6 +641,48 @@ def complete_tool08(
         "segment_audio_valid": True,
         "bad_segment_ids_json": "[]",
     }
+
+
+def finalize_tool08(
+    segment_results: list[Any],
+    segment_plan_v1_json: str,
+    voice_duration_profile: dict[str, Any],
+    master_request_id: str,
+) -> dict[str, Any]:
+    """Parse Iteration HTTP bodies and preserve TOOL-08's top-level contract."""
+    master_id = str(master_request_id or "").strip()
+    if not master_id:
+        base = _complete_failure([], voice_duration_profile, "MASTER_REQUEST_ID_REQUIRED")
+        return {"master_request_id": "", **base}
+
+    parsed_results: list[dict[str, Any]] = []
+    bad_ids: list[str] = []
+    errors: list[str] = []
+    for index, raw in enumerate(segment_results or []):
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            value = None
+        if not isinstance(value, dict):
+            bad_ids.append(f"index_{index}")
+            errors.append(f"SEGMENT_RESULT_{index}_INVALID")
+            continue
+        parsed_results.append(value)
+        if value.get("segment_valid") is not True:
+            bad_ids.append(str(value.get("segment_id") or f"index_{index}"))
+            errors.append(str(value.get("segment_error") or "SEGMENT_RENDER_FAILED"))
+
+    if bad_ids or len(parsed_results) != len(segment_results or []):
+        base = _complete_failure(
+            list(dict.fromkeys(bad_ids)),
+            voice_duration_profile,
+            ";".join(dict.fromkeys(errors)) or "SEGMENT_RENDER_FAILED",
+        )
+        return {"master_request_id": master_id, **base}
+
+    media_inputs = [value.get("segment_media_input") for value in parsed_results]
+    base = complete_tool08(media_inputs, segment_plan_v1_json, voice_duration_profile)
+    return {"master_request_id": master_id, **base}
 
 
 def _complete_failure(
