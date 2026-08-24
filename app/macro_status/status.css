@@ -47,6 +47,21 @@ dl { display: grid; gap: 12px; margin: 0; }
 dl div { display: grid; grid-template-columns: 86px 1fr; gap: 10px; padding-top: 12px; border-top: 1px solid #1b302a; }
 dt { color: #71867f; font-size: 12px; }
 dd { margin: 0; color: #d5e0dc; font-size: 13px; overflow-wrap: anywhere; }
+.event-section { margin-top: 38px; }
+.event-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.event-card { position: relative; overflow: hidden; min-width: 0; padding: 18px; border: 1px solid #253b35; border-radius: 18px; background: linear-gradient(160deg, #10201c, #09120f); }
+.event-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: #73847e; }
+.event-card.good::before { background: #42e6a4; }
+.event-card.partial::before { background: #ffc857; }
+.event-card.bad::before { background: #ff647c; }
+.event-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 16px; color: #92a69f; font-size: 12px; font-weight: 800; }
+.event-code { display: inline-flex; min-height: 29px; align-items: center; padding: 0 9px; border: 1px solid #2b5045; border-radius: 9px; background: #15352c; color: #68eabf; letter-spacing: .06em; }
+.event-card h3 { min-height: 44px; margin-bottom: 7px; font-size: 16px; line-height: 1.35; }
+.event-card > p { min-height: 36px; margin-bottom: 17px; color: #80958e; font-size: 12px; line-height: 1.45; }
+.event-card dl { gap: 9px; }
+.event-card dl div { display: block; padding-top: 9px; }
+.event-card dt { margin-bottom: 4px; }
+.event-card dd { font-size: 12px; }
 .raw-panel { margin-top: 20px; border: 1px solid #193129; border-radius: 16px; background: #08120f; }
 .raw-panel summary { padding: 16px 18px; cursor: pointer; color: #a8bbb4; font-weight: 750; }
 pre { max-height: 440px; overflow: auto; margin: 0; padding: 0 18px 18px; color: #8fdaaF; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
@@ -56,6 +71,9 @@ footer { padding: 28px 0 0; color: #63756f; font-size: 13px; text-align: center;
   .hero, .section-heading { display: grid; }
   .overall-badge { justify-self: start; }
   .control-panel { grid-template-columns: 1fr; align-items: stretch; }
-  .summary-grid, .source-grid { grid-template-columns: 1fr; }
+  .summary-grid, .source-grid, .event-grid { grid-template-columns: 1fr; }
   .section-heading > p { text-align: left; }
+}
+@media (min-width: 881px) and (max-width: 1120px) {
+  .event-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

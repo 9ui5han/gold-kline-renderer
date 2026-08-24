@@ -439,6 +439,13 @@ MACRO_STATUS_CACHE: dict[str, Any] = {
     "expires_at": 0.0,
     "payload": None,
 }
+PUBLIC_MACRO_EVENT_TYPES = [
+    {"event_code": "cpi", "label_zh": "CPI 消费者物价指数", "label_en": "Consumer Price Index", "source": "bls"},
+    {"event_code": "ppi", "label_zh": "PPI 生产者物价指数", "label_en": "Producer Price Index", "source": "bls"},
+    {"event_code": "employment", "label_zh": "非农与就业报告", "label_en": "Employment Situation", "source": "bls"},
+    {"event_code": "pce", "label_zh": "PCE 个人消费支出物价", "label_en": "Personal Income and Outlays", "source": "bea"},
+    {"event_code": "fomc", "label_zh": "FOMC 美联储议息会议", "label_en": "FOMC Meeting", "source": "fed"},
+]
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
@@ -576,17 +583,33 @@ def _public_macro_status() -> dict[str, Any]:
                 "reachable": source.get("reachable") is True,
                 "structure_valid": source.get("structure_valid") is True,
                 "error_code": source.get("error_code") or "",
-                "error_message": source.get("error_message") or "",
             })
 
+        source_health = {
+            str(source.get("source") or ""): (
+                source.get("reachable") is True
+                and source.get("structure_valid") is True
+            )
+            for source in public_sources
+        }
+        event_types = MACRO_CONTEXT_SERVICE.get_cached_event_type_summary(
+            PUBLIC_MACRO_EVENT_TYPES,
+        )
+        for event_type in event_types:
+            event_type["source_healthy"] = source_health.get(
+                str(event_type.get("source") or ""),
+                False,
+            )
+
         payload = {
-            "schema_version": "macro-public-status-v1",
+            "schema_version": "macro-public-status-v2",
             "checked_at_utc": private_status.get("checked_at_utc"),
             "data_status": private_status.get("data_status", "unavailable"),
             "source_count": private_status.get("source_count", len(public_sources)),
             "valid_source_count": private_status.get("valid_source_count", 0),
             "cache_ttl_sec": MACRO_STATUS_CACHE_TTL_SEC,
             "sources": public_sources,
+            "event_types": event_types,
         }
         MACRO_STATUS_CACHE["payload"] = payload
         MACRO_STATUS_CACHE["expires_at"] = now + MACRO_STATUS_CACHE_TTL_SEC

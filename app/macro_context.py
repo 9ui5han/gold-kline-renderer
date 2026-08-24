@@ -272,6 +272,81 @@ class MacroContextService:
         )
         temporary.replace(self.cache_path)
 
+    def get_cached_event_type_summary(
+        self,
+        event_types: list[dict[str, str]],
+        *,
+        now: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return sanitized event-code counts and dates from the local cache."""
+        checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        summaries: list[dict[str, Any]] = []
+        with self._lock:
+            cache = self._load_cache()
+            cache_sources = cache.get("sources") or {}
+            for definition in event_types:
+                source = str(definition.get("source") or "")
+                event_code = str(definition.get("event_code") or "")
+                entry = _valid_cache_entry(cache_sources.get(source))
+                events = [
+                    event
+                    for event in (entry.get("events") if entry else []) or []
+                    if isinstance(event, dict)
+                    and str(event.get("event_code") or "") == event_code
+                ]
+                dated_events: list[tuple[datetime, bool]] = []
+                for event in events:
+                    scheduled_time = str(
+                        event.get("scheduled_time_utc") or ""
+                    ).strip()
+                    if scheduled_time:
+                        try:
+                            dated_events.append((
+                                _parse_iso_time(scheduled_time, "EVENT_TIME"),
+                                True,
+                            ))
+                        except MacroContextError:
+                            continue
+                        continue
+                    scheduled_date = str(
+                        event.get("scheduled_date") or ""
+                    ).strip()
+                    if scheduled_date:
+                        try:
+                            dated_events.append((
+                                datetime.fromisoformat(scheduled_date).replace(
+                                    tzinfo=timezone.utc
+                                ),
+                                False,
+                            ))
+                        except ValueError:
+                            continue
+
+                dated_events.sort(key=lambda item: item[0])
+                previous = [item for item in dated_events if item[0] <= checked_at]
+                upcoming = [item for item in dated_events if item[0] > checked_at]
+                summaries.append({
+                    "event_code": event_code,
+                    "label_zh": str(definition.get("label_zh") or event_code),
+                    "label_en": str(definition.get("label_en") or event_code),
+                    "source": source,
+                    "configured": True,
+                    "cache_state": "cached" if entry else "missing",
+                    "cached_at_utc": str(
+                        entry.get("fetched_at_utc") if entry else ""
+                    ),
+                    "event_count": len(events),
+                    "exact_time_count": sum(exact for _, exact in dated_events),
+                    "date_only_count": sum(not exact for _, exact in dated_events),
+                    "previous_event_at_utc": (
+                        _iso_utc(previous[-1][0]) if previous else ""
+                    ),
+                    "next_event_at_utc": (
+                        _iso_utc(upcoming[0][0]) if upcoming else ""
+                    ),
+                })
+        return summaries
+
     def _fetch_sources(
         self,
         specs: list[SourceSpec],

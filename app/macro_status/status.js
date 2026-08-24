@@ -38,6 +38,34 @@ function resetSources() {
   });
 }
 
+function eventState(eventType) {
+  if (eventType.source_healthy !== true) return ["bad", "来源异常"];
+  if (eventType.cache_state !== "cached") return ["partial", "等待缓存"];
+  if (Number(eventType.event_count || 0) === 0) return ["partial", "未识别到事件"];
+  return ["good", "已接入"];
+}
+
+function updateEventType(eventType) {
+  const card = document.querySelector(`[data-event-code="${eventType.event_code}"]`);
+  if (!card) return;
+  const [kind, label] = eventState(eventType);
+  card.className = `event-card ${kind}`;
+  card.querySelector('[data-field="state"]').textContent = label;
+  card.querySelector('[data-field="count"]').textContent = text(eventType.event_count, 0);
+  card.querySelector('[data-field="previous"]').textContent = text(eventType.previous_event_at_utc);
+  card.querySelector('[data-field="next"]').textContent = text(eventType.next_event_at_utc);
+}
+
+function resetEventTypes() {
+  document.querySelectorAll(".event-card").forEach((card) => {
+    card.className = "event-card idle";
+    card.querySelector('[data-field="state"]').textContent = "未检查";
+    card.querySelector('[data-field="count"]').textContent = "—";
+    card.querySelector('[data-field="previous"]').textContent = "—";
+    card.querySelector('[data-field="next"]').textContent = "—";
+  });
+}
+
 async function readJson(response) {
   const body = await response.text();
   try {
@@ -72,8 +100,11 @@ async function runCheck() {
     }
 
     const sources = Array.isArray(sourceData.sources) ? sourceData.sources : [];
+    const eventTypes = Array.isArray(sourceData.event_types) ? sourceData.event_types : [];
     resetSources();
+    resetEventTypes();
     sources.forEach(updateSource);
+    eventTypes.forEach(updateEventType);
     document.querySelector("#valid-count").textContent =
       `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 3)}`;
     document.querySelector("#checked-time").textContent = text(sourceData.checked_at_utc);
@@ -107,3 +138,7 @@ async function runCheck() {
 }
 
 checkButton.addEventListener("click", runCheck);
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { eventState };
+}

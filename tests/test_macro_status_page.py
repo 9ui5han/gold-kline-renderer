@@ -1,10 +1,15 @@
 import unittest
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
 from app import main
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MacroStatusPageTests(unittest.TestCase):
@@ -16,6 +21,9 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("宏观事件服务状态", page)
         self.assertNotIn(main.TOKEN, page)
         self.assertIn("/v1/macro-events/status-summary", script)
+        for event_name in ("CPI", "PPI", "非农", "PCE", "FOMC"):
+            self.assertIn(event_name, page)
+        self.assertIn("event_types", script)
         self.assertNotIn("sessionStorage", script)
         self.assertNotIn("Authorization", script)
         self.assertNotIn(main.TOKEN, script)
@@ -60,14 +68,24 @@ class MacroStatusPageTests(unittest.TestCase):
                 "reachable": True,
                 "structure_valid": True,
                 "error_code": "",
-                "error_message": "",
+                "error_message": "Bearer secret-token leaked",
                 "response_sample": "secret upstream body",
             }],
         }
         main.MACRO_STATUS_CACHE.update({"expires_at": 0.0, "payload": None})
         with patch.object(main, "probe_all_sources", return_value=private) as probe:
-            first = main._public_macro_status()
-            second = main._public_macro_status()
+            with patch.object(
+                main.MACRO_CONTEXT_SERVICE,
+                "get_cached_event_type_summary",
+                return_value=[{
+                    "event_code": "cpi",
+                    "source": "bls",
+                    "configured": True,
+                    "event_count": 12,
+                }],
+            ):
+                first = main._public_macro_status()
+                second = main._public_macro_status()
 
         self.assertEqual(probe.call_count, 1)
         self.assertEqual(first, second)
@@ -75,7 +93,11 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertNotIn("private.example", encoded)
         self.assertNotIn("secret upstream body", encoded)
         self.assertNotIn("response_bytes", encoded)
-        self.assertEqual(first["schema_version"], "macro-public-status-v1")
+        self.assertNotIn("secret-token", encoded)
+        self.assertNotIn("error_message", encoded)
+        self.assertEqual(first["schema_version"], "macro-public-status-v2")
+        self.assertEqual(first["event_types"][0]["event_code"], "cpi")
+        self.assertNotIn("source_url", encoded)
         self.assertGreaterEqual(first["cache_ttl_sec"], 60)
 
     def test_public_summary_route_does_not_require_token(self):
@@ -87,6 +109,7 @@ class MacroStatusPageTests(unittest.TestCase):
             "valid_source_count": 0,
             "cache_ttl_sec": 60,
             "sources": [],
+            "event_types": [],
         }
         with (
             patch.object(main, "_public_macro_status", return_value=expected),
@@ -109,6 +132,76 @@ class MacroStatusPageTests(unittest.TestCase):
         expected = {"index.html", "status.css", "status.js"}
         found = {path.name for path in Path(main.MACRO_STATUS_DIR).iterdir()}
         self.assertTrue(expected.issubset(found))
+
+    def test_cached_event_summary_lists_all_configured_event_types(self):
+        with patch.object(
+            main.MACRO_CONTEXT_SERVICE,
+            "_load_cache",
+            return_value={
+                "schema_version": "macro-source-cache-v1",
+                "sources": {
+                    "bls": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [
+                            {"event_code": "cpi", "scheduled_time_utc": "2026-08-12T12:30:00Z"},
+                            {"event_code": "ppi", "scheduled_time_utc": "2026-09-10T12:30:00Z"},
+                            {"event_code": "employment", "scheduled_date": "2026-09-04"},
+                        ],
+                    },
+                    "bea": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "pce", "scheduled_time_utc": "2026-08-28T12:30:00Z"}],
+                    },
+                    "fed": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "fomc", "scheduled_date": "2026-09-16"}],
+                    },
+                },
+            },
+        ):
+            summaries = main.MACRO_CONTEXT_SERVICE.get_cached_event_type_summary(
+                main.PUBLIC_MACRO_EVENT_TYPES,
+                now=main.datetime(2026, 8, 24, tzinfo=main.timezone.utc),
+            )
+
+        self.assertEqual(
+            {item["event_code"] for item in summaries},
+            {"cpi", "ppi", "employment", "pce", "fomc"},
+        )
+        self.assertTrue(all(item["configured"] for item in summaries))
+        self.assertEqual(
+            next(item for item in summaries if item["event_code"] == "cpi")["event_count"],
+            1,
+        )
+
+    def test_event_cards_cover_all_four_display_states(self):
+        cases = [
+            ({"source_healthy": False, "cache_state": "missing", "event_count": 0}, ["bad", "来源异常"]),
+            ({"source_healthy": True, "cache_state": "missing", "event_count": 0}, ["partial", "等待缓存"]),
+            ({"source_healthy": True, "cache_state": "cached", "event_count": 0}, ["partial", "未识别到事件"]),
+            ({"source_healthy": True, "cache_state": "cached", "event_count": 12}, ["good", "已接入"]),
+        ]
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { eventState } = require('./app/macro_status/status.js');
+const cases = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(cases.map((item) => eventState(item))));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script, json.dumps([item for item, _ in cases])],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            json.loads(completed.stdout),
+            [expected for _, expected in cases],
+        )
 
 
 if __name__ == "__main__":
