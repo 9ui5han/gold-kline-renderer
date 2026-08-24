@@ -22,7 +22,8 @@ class OfficialDebtSourceTests(unittest.TestCase):
             FETCHED_AT,
         )
         self.assertEqual(events[0]["event_code"], "fed_speech")
-        self.assertEqual(events[0]["time_precision"], "publication_time")
+        self.assertEqual(events[0]["time_precision"], "exact")
+        self.assertEqual(events[0]["time_basis"], "publication_time")
         self.assertEqual(events[0]["scheduled_time_utc"], "2025-08-22T14:00:00Z")
 
     def test_powell_ceremonial_remarks_are_not_macro_events(self):
@@ -94,6 +95,23 @@ class OfficialDebtSourceTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["event_code"], "treasury_announcement")
         self.assertIn("sb0607", events[0]["source_url"])
+        self.assertEqual(events[0]["source_local_time"], "2026-08-19T08:30:00-04:00")
+        self.assertEqual(events[0]["scheduled_time_utc"], "2026-08-19T12:30:00Z")
+        self.assertEqual(events[0]["source_timezone"], "America/New_York")
+        self.assertEqual(events[0]["time_precision"], "exact")
+        self.assertEqual(events[0]["time_basis"], "publication_time")
+
+    def test_press_page_handles_eastern_standard_time_without_fixed_offset(self):
+        events = parse_treasury_press_releases(
+            {"items": [{
+                "datetime": "2026-02-04T08:30:00Z",
+                "url": "/news/press-releases/sb0384/",
+                "title": "Treasury Announces Quarterly Refunding",
+            }]},
+            FETCHED_AT,
+        )
+        self.assertEqual(events[0]["source_local_time"], "2026-02-04T08:30:00-05:00")
+        self.assertEqual(events[0]["scheduled_time_utc"], "2026-02-04T13:30:00Z")
 
     def test_press_empty_official_year_is_valid(self):
         self.assertEqual(

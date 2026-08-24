@@ -28,6 +28,9 @@ class MacroStatusPageTests(unittest.TestCase):
             self.assertIn(event_name, page)
         self.assertIn("event_types", script)
         self.assertIn("Asia/Shanghai", script)
+        self.assertIn("America/New_York", script)
+        self.assertIn("北京", script)
+        self.assertIn("当地", script)
         self.assertIn("检查时间（北京时间）", page)
         self.assertNotIn("sessionStorage", script)
         self.assertNotIn("Authorization", script)
@@ -245,6 +248,31 @@ process.stdout.write(formatBeijingTime('2026-08-24T09:38:04Z'));
         )
 
         self.assertEqual(completed.stdout, "2026-08-24 17:38:04")
+
+    def test_event_time_displays_beijing_and_eastern_time(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { formatDualEventTime } = require('./app/macro_status/status.js');
+process.stdout.write(formatDualEventTime(
+  '2026-08-19T12:30:00Z',
+  'America/New_York'
+));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.stdout,
+            "北京 2026-08-19 20:30 ｜ 当地 2026-08-19 08:30",
+        )
 
 
 if __name__ == "__main__":

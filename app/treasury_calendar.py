@@ -218,13 +218,18 @@ def parse_treasury_press_releases(
             continue
         if not any(keyword in topic_text for keyword in _PRESS_KEYWORDS):
             continue
-        normalized = raw_time[:-1] + "+00:00" if raw_time.endswith("Z") else raw_time
+        # Treasury's annual search JSON appends ``Z`` to the publication
+        # wall-clock value, while the official article page exposes that same
+        # value with the America/New_York offset.  Treat the search value as an
+        # Eastern wall clock; otherwise summer releases are shifted four hours
+        # early and winter releases five hours early.
+        normalized = raw_time[:-1] if raw_time.endswith("Z") else raw_time
         try:
             published = datetime.fromisoformat(normalized)
         except ValueError as exc:
             raise TreasuryCalendarParseError("TREASURY_PRESS_DATE_INVALID") from exc
         if published.tzinfo is None:
-            raise TreasuryCalendarParseError("TREASURY_PRESS_TIMEZONE_MISSING")
+            published = published.replace(tzinfo=TREASURY_EASTERN_TIMEZONE)
         published_utc = published.astimezone(timezone.utc)
         source_url = urljoin(TREASURY_PRESS_URL, href)
         if source_url in seen:
@@ -238,8 +243,13 @@ def parse_treasury_press_releases(
             "country": "US",
             "currency": "USD",
             "scheduled_time_utc": published_utc.isoformat().replace("+00:00", "Z"),
-            "scheduled_date": published_utc.date().isoformat(),
-            "time_precision": "publication_time",
+            "scheduled_date": published.date().isoformat(),
+            "time_precision": "exact",
+            "time_basis": "publication_time",
+            "source_timezone": "America/New_York",
+            "source_local_time": published.isoformat(),
+            "source_time_raw": raw_time,
+            "time_verified": True,
             "status": "published",
             "impact": "high",
             "source": "treasury_press",

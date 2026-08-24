@@ -9,24 +9,36 @@ function text(value, fallback = "—") {
   return String(value);
 }
 
-function formatBeijingTime(value) {
+function formatTimeInZone(value, timeZone, includeSeconds = false) {
   if (!value) return "—";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return text(value);
   const parts = new Intl.DateTimeFormat("zh-CN", {
-    timeZone: "Asia/Shanghai",
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-    second: "2-digit",
+    ...(includeSeconds ? { second: "2-digit" } : {}),
     hour12: false,
   }).formatToParts(parsed);
   const values = Object.fromEntries(
     parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
   );
-  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+  const base = `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}`;
+  return includeSeconds ? `${base}:${values.second}` : base;
+}
+
+function formatBeijingTime(value) {
+  return formatTimeInZone(value, "Asia/Shanghai", true);
+}
+
+function formatDualEventTime(value, localTimezone = "America/New_York") {
+  if (!value) return "—";
+  const beijing = formatTimeInZone(value, "Asia/Shanghai");
+  const local = formatTimeInZone(value, localTimezone);
+  return `北京 ${beijing} ｜ 当地 ${local}`;
 }
 
 function setOverall(kind, label) {
@@ -72,8 +84,15 @@ function updateEventType(eventType) {
   card.className = `event-card ${kind}`;
   card.querySelector('[data-field="state"]').textContent = label;
   card.querySelector('[data-field="count"]').textContent = text(eventType.event_count, 0);
-  card.querySelector('[data-field="previous"]').textContent = text(eventType.previous_event_at_utc);
-  card.querySelector('[data-field="next"]').textContent = text(eventType.next_event_at_utc);
+  const localTimezone = text(eventType.local_timezone, "America/New_York");
+  card.querySelector('[data-field="previous"]').textContent = formatDualEventTime(
+    eventType.previous_event_at_utc,
+    localTimezone,
+  );
+  card.querySelector('[data-field="next"]').textContent = formatDualEventTime(
+    eventType.next_event_at_utc,
+    localTimezone,
+  );
 }
 
 function resetEventTypes() {
@@ -162,5 +181,5 @@ async function runCheck() {
 checkButton.addEventListener("click", runCheck);
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { eventState, formatBeijingTime };
+  module.exports = { eventState, formatBeijingTime, formatDualEventTime, formatTimeInZone };
 }

@@ -35,7 +35,7 @@ from .treasury_calendar import (
 )
 
 
-CACHE_SCHEMA_VERSION = "macro-source-cache-v1"
+CACHE_SCHEMA_VERSION = "macro-source-cache-v2"
 CONTEXT_SCHEMA_VERSION = "macro-events-context-v1"
 DEFAULT_CACHE_TTL_SEC = 6 * 60 * 60
 DEFAULT_MAX_STALE_SEC = 48 * 60 * 60
@@ -386,6 +386,9 @@ class MacroContextService:
                     "label_zh": str(definition.get("label_zh") or event_code),
                     "label_en": str(definition.get("label_en") or event_code),
                     "source": source,
+                    "local_timezone": str(
+                        definition.get("local_timezone") or "UTC"
+                    ),
                     "configured": True,
                     "cache_state": "cached" if entry else "missing",
                     "cached_at_utc": str(

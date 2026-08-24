@@ -440,15 +440,15 @@ MACRO_STATUS_CACHE: dict[str, Any] = {
     "payload": None,
 }
 PUBLIC_MACRO_EVENT_TYPES = [
-    {"event_code": "cpi", "label_zh": "CPI 消费者物价指数", "label_en": "Consumer Price Index", "source": "bls"},
-    {"event_code": "ppi", "label_zh": "PPI 生产者物价指数", "label_en": "Producer Price Index", "source": "bls"},
-    {"event_code": "employment", "label_zh": "非农与就业报告", "label_en": "Employment Situation", "source": "bls"},
-    {"event_code": "pce", "label_zh": "PCE 个人消费支出物价", "label_en": "Personal Income and Outlays", "source": "bea"},
-    {"event_code": "fomc", "label_zh": "FOMC 美联储议息会议", "label_en": "FOMC Meeting", "source": "fed"},
-    {"event_code": "fed_speech", "label_zh": "Powell 讲话", "label_en": "Jerome Powell Speech", "source": "fed_speeches"},
-    {"event_code": "treasury_auction", "label_zh": "美国国债拍卖", "label_en": "Treasury Auction", "source": "treasury_auctions"},
-    {"event_code": "treasury_buyback", "label_zh": "美国国债回购", "label_en": "Treasury Buyback", "source": "treasury_buybacks"},
-    {"event_code": "treasury_announcement", "label_zh": "美国财政部公告", "label_en": "Treasury Debt Announcement", "source": "treasury_press"},
+    {"event_code": "cpi", "label_zh": "CPI 消费者物价指数", "label_en": "Consumer Price Index", "source": "bls", "local_timezone": "America/New_York"},
+    {"event_code": "ppi", "label_zh": "PPI 生产者物价指数", "label_en": "Producer Price Index", "source": "bls", "local_timezone": "America/New_York"},
+    {"event_code": "employment", "label_zh": "非农与就业报告", "label_en": "Employment Situation", "source": "bls", "local_timezone": "America/New_York"},
+    {"event_code": "pce", "label_zh": "PCE 个人消费支出物价", "label_en": "Personal Income and Outlays", "source": "bea", "local_timezone": "America/New_York"},
+    {"event_code": "fomc", "label_zh": "FOMC 美联储议息会议", "label_en": "FOMC Meeting", "source": "fed", "local_timezone": "America/New_York"},
+    {"event_code": "fed_speech", "label_zh": "Powell 讲话", "label_en": "Jerome Powell Speech", "source": "fed_speeches", "local_timezone": "America/New_York"},
+    {"event_code": "treasury_auction", "label_zh": "美国国债拍卖", "label_en": "Treasury Auction", "source": "treasury_auctions", "local_timezone": "America/New_York"},
+    {"event_code": "treasury_buyback", "label_zh": "美国国债回购", "label_en": "Treasury Buyback", "source": "treasury_buybacks", "local_timezone": "America/New_York"},
+    {"event_code": "treasury_announcement", "label_zh": "美国财政部公告", "label_en": "Treasury Debt Announcement", "source": "treasury_press", "local_timezone": "America/New_York"},
 ]
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
