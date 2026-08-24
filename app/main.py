@@ -632,6 +632,7 @@ class SegmentNarrationConfirmRequest(BaseModel):
     tts_result: dict[str, Any]
     repair_count: int = Field(default=0, ge=0, le=2)
     narration_revision: int = Field(default=0, ge=0, le=9)
+    state_json: str = Field(default="", max_length=500)
 
 
 class SegmentNarrationCompleteRequest(BaseModel):

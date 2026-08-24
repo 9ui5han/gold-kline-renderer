@@ -437,8 +437,16 @@ def confirm_tts_result(
     tts_result: dict[str, Any],
     repair_count: int = 0,
     narration_revision: int = 0,
+    state_json: str = "",
 ) -> dict[str, Any]:
     """Validate the wrapped ``/v1/tts-jobs/await`` response after paid TTS."""
+    if state_json:
+        try:
+            state = _as_object_json(state_json, "STEP_STATE")
+            repair_count = int(state["repair_count"])
+            narration_revision = int(state["narration_revision"])
+        except (KeyError, TypeError, ValueError):
+            return _confirm_fail("STEP_STATE_INVALID")
     try:
         step_result = _as_object_json(step_result_json, "STEP_RESULT")
     except ValueError as exc:

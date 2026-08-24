@@ -127,6 +127,29 @@ class SegmentPlanValidationTests(unittest.TestCase):
         prompt = json.loads(result["repair_prompt_json"])
         self.assertTrue(any("closing_card" in item for item in prompt["validator_errors"]))
 
+    def test_legacy_quoted_visual_booleans_are_canonicalized(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        for segment in candidate["segments"]:
+            segment["visual"]["show_volume"] = "false"
+            segment["visual"]["show_macro_marker"] = "false"
+        result = self._step(candidate, 0)
+        self.assertEqual(result["action"], "pass")
+        final = json.loads(result["result_json"])
+        contract = json.loads(final["segment_plan_v1_json"])
+        visual = contract["segment_plan"]["segments"][0]["visual"]
+        self.assertIs(visual["show_volume"], False)
+        self.assertIs(visual["show_macro_marker"], False)
+
+    def test_invalid_visual_boolean_requests_repair(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["segments"][0]["visual"]["show_volume"] = "disabled"
+        result = self._step(candidate, 0)
+        self.assertEqual(result["action"], "repair")
+        prompt = json.loads(result["repair_prompt_json"])
+        self.assertTrue(
+            any("show_volume必须是Boolean" in item for item in prompt["validator_errors"])
+        )
+
     def test_invalid_plan_fails_after_two_repairs(self):
         candidate = json.loads(json.dumps(VALID_PLAN))
         candidate["segments"] = []

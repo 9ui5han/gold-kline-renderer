@@ -32,6 +32,14 @@ def _number(value: Any, label: str, errors: list[str]) -> float:
         return 0.0
 
 
+def _canonicalize_visual_booleans(visual: dict[str, Any]) -> None:
+    """Convert the only safe legacy Boolean spellings before validation."""
+    for field in ("show_volume", "show_macro_marker"):
+        value = visual.get(field)
+        if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            visual[field] = value.strip().lower() == "true"
+
+
 def _check_anchor_ids(
     value: Any,
     label: str,
@@ -209,10 +217,15 @@ def validate_segment_plan(
         if not isinstance(visual, dict):
             errors.append(f"{segment_id}:visual必须是Object")
             visual = {}
+        else:
+            _canonicalize_visual_booleans(visual)
         if visual.get("visual_mode") not in allowed_visual_modes:
             errors.append(f"{segment_id}:visual_mode无效")
         if visual.get("camera_motion") not in allowed_camera:
             errors.append(f"{segment_id}:camera_motion无效")
+        for field in ("show_volume", "show_macro_marker"):
+            if type(visual.get(field)) is not bool:
+                errors.append(f"{segment_id}:{field}必须是Boolean")
         for level_id in visual.get("highlight_levels") or []:
             if str(level_id) not in level_ids:
                 errors.append(f"{segment_id}:未知highlight level={level_id}")

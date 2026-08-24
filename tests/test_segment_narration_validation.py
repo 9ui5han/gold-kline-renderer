@@ -145,6 +145,21 @@ def test_confirm_reads_await_wrapper_job_and_packages_media():
     assert packed["segment_media_input"]["audio"]["duration_sec"] == 4.2
 
 
+def test_confirm_uses_backend_repair_state_json():
+    step = process_step(
+        _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01",
+        repair_count=1, narration_revision=1,
+    )
+    confirmed = confirm_tts_result(
+        _item(),
+        step["result_json"],
+        {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/audio.mp3", "duration_sec": 20}},
+        state_json=step["next_state_json"],
+    )
+    assert confirmed["action"] == "repair_performance"
+    assert json.loads(confirmed["next_state_json"])["repair_count"] == 2
+
+
 def test_complete_rejects_missing_iteration_media_and_returns_external_contract():
     result = complete_tool08([], _init_contracts()["segment_plan_v1_json"], _profile())
 
@@ -186,6 +201,7 @@ def load_tests(loader, tests, pattern):
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_requests_narration_repair_before_paid_tts,
         test_confirm_reads_await_wrapper_job_and_packages_media,
+        test_confirm_uses_backend_repair_state_json,
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
         test_init_rejects_invalid_upstream_contract_version,
         test_complete_rejects_duplicate_iteration_output_ids,
