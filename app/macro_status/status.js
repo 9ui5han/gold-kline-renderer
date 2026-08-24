@@ -9,6 +9,26 @@ function text(value, fallback = "—") {
   return String(value);
 }
 
+function formatBeijingTime(value) {
+  if (!value) return "—";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return text(value);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(parsed);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}`;
+}
+
 function setOverall(kind, label) {
   overallBadge.className = `overall-badge ${kind}`;
   overallText.textContent = label;
@@ -107,7 +127,9 @@ async function runCheck() {
     eventTypes.forEach(updateEventType);
     document.querySelector("#valid-count").textContent =
       `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 7)}`;
-    document.querySelector("#checked-time").textContent = text(sourceData.checked_at_utc);
+    document.querySelector("#checked-time").textContent = formatBeijingTime(
+      sourceData.checked_at_utc,
+    );
     rawJson.textContent = JSON.stringify(sourceData, null, 2);
 
     const status = sourceData.data_status;
@@ -140,5 +162,5 @@ async function runCheck() {
 checkButton.addEventListener("click", runCheck);
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { eventState };
+  module.exports = { eventState, formatBeijingTime };
 }

@@ -27,6 +27,8 @@ class MacroStatusPageTests(unittest.TestCase):
         ):
             self.assertIn(event_name, page)
         self.assertIn("event_types", script)
+        self.assertIn("Asia/Shanghai", script)
+        self.assertIn("检查时间（北京时间）", page)
         self.assertNotIn("sessionStorage", script)
         self.assertNotIn("Authorization", script)
         self.assertNotIn(main.TOKEN, script)
@@ -224,6 +226,25 @@ process.stdout.write(JSON.stringify(cases.map((item) => eventState(item))));
             json.loads(completed.stdout),
             [expected for _, expected in cases],
         )
+
+    def test_checked_time_is_formatted_as_beijing_time(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { formatBeijingTime } = require('./app/macro_status/status.js');
+process.stdout.write(formatBeijingTime('2026-08-24T09:38:04Z'));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.stdout, "2026-08-24 17:38:04")
 
 
 if __name__ == "__main__":
