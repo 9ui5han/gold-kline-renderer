@@ -383,7 +383,9 @@ def process_step(
         }
 
     kind = "narration" if result["narration_violation"] else "performance"
-    if repairs >= 2:
+    # Dify keeps exactly one repair LLM node.  A second failed candidate is a
+    # deterministic failure, rather than a second front-end repair loop.
+    if repairs >= 1:
         return {
             "schema_version": "segment-narration-step-result-v1",
             "action": "fail",
@@ -492,30 +494,9 @@ def confirm_tts_result(
             "next_state_json": _compact_json({"repair_count": int(repair_count), "narration_revision": int(narration_revision)}),
             "confirm_error": "",
         }
-    if int(repair_count) >= 2:
-        return _confirm_fail("ACTUAL_DURATION_REPAIR_LIMIT_EXCEEDED")
-    result = _as_object_json(step_result_json, "STEP_RESULT")
-    next_state = {"repair_count": int(repair_count) + 1, "narration_revision": int(narration_revision) + 1}
-    repair_prompt = {
-        "repair_kind": "actual_duration",
-        "validator_errors": ["ACTUAL_DURATION_OUT_OF_RANGE"],
-        "allowed_changes": ["segment_performance"],
-        "item": item,
-        "segment_duration_budget": budget,
-        "actual_duration_sec": duration,
-        "segment_narration": result.get("validated_narration") or {},
-        "segment_performance": result.get("validated_performance") or {},
-        "state_json": _compact_json(next_state),
-    }
-    return {
-        "schema_version": "segment-narration-confirm-result-v1",
-        "action": "repair_performance",
-        "done": False,
-        "result_json": _compact_json({"actual_duration_sec": duration, "actual_duration_valid": False, "actual_duration_error": "ACTUAL_DURATION_OUT_OF_RANGE"}),
-        "repair_prompt_json": _compact_json(repair_prompt),
-        "next_state_json": _compact_json(next_state),
-        "confirm_error": "",
-    }
+    # Retrying real TTS duration from Dify would require a second dynamic LLM
+    # branch.  Keep the public workflow compact and fail safely instead.
+    return _confirm_fail("ACTUAL_DURATION_OUT_OF_RANGE")
 
 
 def _confirm_fail(error: str) -> dict[str, Any]:

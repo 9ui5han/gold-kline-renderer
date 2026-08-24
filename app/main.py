@@ -618,8 +618,9 @@ class SegmentNarrationStepRequest(BaseModel):
     voice_duration_profile: dict[str, Any]
     narrator_profile_id: str = Field(min_length=1, max_length=50)
     master_request_id: str = Field(min_length=1, max_length=100)
-    repair_count: int = Field(default=0, ge=0, le=2)
-    narration_revision: int = Field(default=0, ge=0, le=9)
+    # TOOL-08's Dify flow intentionally permits one LLM repair at most.
+    repair_count: int = Field(default=0, ge=0, le=1)
+    narration_revision: int = Field(default=0, ge=0, le=1)
 
 
 class SegmentNarrationConfirmRequest(BaseModel):
@@ -630,8 +631,8 @@ class SegmentNarrationConfirmRequest(BaseModel):
     item: dict[str, Any]
     step_result_json: str = Field(min_length=2)
     tts_result: dict[str, Any]
-    repair_count: int = Field(default=0, ge=0, le=2)
-    narration_revision: int = Field(default=0, ge=0, le=9)
+    repair_count: int = Field(default=0, ge=0, le=1)
+    narration_revision: int = Field(default=0, ge=0, le=1)
     state_json: str = Field(default="", max_length=500)
 
 
