@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -15,7 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.job_store import IdempotencyConflict, JobStore
 
@@ -62,10 +64,187 @@ class SegmentRenderRequest(BaseModel):
     fallback_policy: dict[str, Any]
 
 
+class Tool09SegmentRequest(BaseModel):
+    """Compact request emitted by TOOL-09's per-segment Dify iteration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(pattern=r"^tool09-segment-request-v1$")
+    master_request_id: str = Field(min_length=1, max_length=100)
+    market_input: dict[str, Any]
+    segment_item: dict[str, Any]
+
+    @field_validator("master_request_id")
+    @classmethod
+    def validate_master_request_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
+
+
+class Tool09FinalizeRequest(BaseModel):
+    """Collection request emitted after all TOOL-09 iterations finish."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(pattern=r"^tool09-collection-request-v1$")
+    master_request_id: str = Field(min_length=1, max_length=100)
+    rendered_segments: list[Any]
+    market_input: dict[str, Any]
+    segment_media: dict[str, Any]
+
+    @field_validator("master_request_id")
+    @classmethod
+    def validate_master_request_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
+
+
 def _dump(model: BaseModel) -> dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _tool09_request_id(master_request_id: str, segment_id: str) -> str:
+    safe_master = re.sub(r"[^A-Za-z0-9_-]+", "-", master_request_id).strip("-") or "tool09"
+    safe_segment = re.sub(r"[^A-Za-z0-9_-]+", "-", segment_id).strip("-") or "segment"
+    digest = hashlib.sha256(f"{master_request_id}|{segment_id}".encode("utf-8")).hexdigest()[:16]
+    suffix = f"{digest}-{safe_segment}-visual-r0"
+    return f"{safe_master[: max(1, 120 - len(suffix) - 1)]}-{suffix}"
+
+
+def _tool09_candles(market_input: dict[str, Any], timeframe: str) -> list[dict[str, Any]]:
+    normalized = market_input.get("normalized_market")
+    if not isinstance(normalized, dict):
+        normalized = {}
+    timeframes = normalized.get("timeframes")
+    if not isinstance(timeframes, dict):
+        timeframes = {}
+    frame = timeframes.get(timeframe)
+    if not isinstance(frame, dict):
+        frame = {}
+    bars = frame.get("closed_bars") or frame.get("bars") or []
+    if not isinstance(bars, list) or len(bars) < 20:
+        raise HTTPException(status_code=422, detail={"code": "RENDER_CANDLES_LT_20"})
+    candles: list[dict[str, Any]] = []
+    for bar in bars[-200:]:
+        if not isinstance(bar, dict):
+            raise HTTPException(status_code=422, detail={"code": "RENDER_CANDLE_NOT_OBJECT"})
+        try:
+            candles.append({
+                "time": str(bar["time"]),
+                "open": float(bar["open"]),
+                "high": float(bar["high"]),
+                "low": float(bar["low"]),
+                "close": float(bar["close"]),
+                "volume": float(bar.get("volume") or 0.0),
+            })
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={"code": "RENDER_CANDLE_INVALID"}) from exc
+    return candles
+
+
+def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderRequest:
+    market = payload.market_input
+    if market.get("schema_version") != "market-input-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
+    item = payload.segment_item
+    segment_id = str(item.get("segment_id") or "").strip()
+    if not segment_id:
+        raise HTTPException(status_code=422, detail={"code": "SEGMENT_ID_REQUIRED"})
+    audio = item.get("audio") if isinstance(item.get("audio"), dict) else {}
+    audio_url = str(audio.get("url") or "").strip()
+    base_duration = float(audio.get("duration_sec") or 0.0)
+    duration_validation = item.get("duration_validation")
+    if not isinstance(duration_validation, dict) or duration_validation.get("valid") is not True:
+        raise HTTPException(status_code=422, detail={"code": "AUDIO_DURATION_NOT_VALID"})
+    if base_duration <= 0:
+        raise HTTPException(status_code=422, detail={"code": "AUDIO_DURATION_INVALID"})
+
+    normalized = market.get("normalized_market")
+    if not isinstance(normalized, dict):
+        normalized = {}
+    job_config = market.get("job_config")
+    if not isinstance(job_config, dict):
+        job_config = {}
+    forecast = job_config.get("forecast")
+    if not isinstance(forecast, dict):
+        forecast = {}
+    visual = item.get("visual") if isinstance(item.get("visual"), dict) else {}
+    timeframe = str(visual.get("source_timeframe") or forecast.get("timeframe") or "1h")
+    video = job_config.get("video") if isinstance(job_config.get("video"), dict) else {}
+    fps = int(video.get("fps") or 30)
+    transition = item.get("transition_out") if isinstance(item.get("transition_out"), dict) else {}
+    tail_handle = max(0.0, min(3.0, float(transition.get("duration_ms") or 0) / 1000.0))
+    timeline = {
+        "schema_version": "visual-timeline-v1",
+        "segment_id": segment_id,
+        "base_duration_sec": base_duration,
+        "fps": fps,
+        "scenes": [{
+            "scene_id": "scene_01",
+            "start_sec": 0.0,
+            "end_sec": base_duration,
+            "duration_sec": base_duration,
+            "template_id": "chart_push",
+        }],
+        "camera_plan": [],
+        "overlay_plan": [],
+    }
+    data_as_of = str(market.get("data_as_of") or normalized.get("data_as_of") or "").strip()
+    request_data = {
+        "request_id": _tool09_request_id(payload.master_request_id, segment_id),
+        "master_request_id": payload.master_request_id,
+        "segment_id": segment_id,
+        "order": int(item.get("order") or 1),
+        "symbol": str(normalized.get("symbol") or "XAUUSD"),
+        "timeframe": timeframe,
+        "data_as_of": data_as_of,
+        "historical_candles": _tool09_candles(market, timeframe),
+        "audio_url": audio_url,
+        "base_duration_sec": base_duration,
+        "head_handle_sec": 0.0,
+        "tail_handle_sec": tail_handle,
+        "render_duration_sec": base_duration + tail_handle,
+        "visual_timeline": timeline,
+        "video": {
+            "width": int(video.get("width") or 1080),
+            "height": int(video.get("height") or 1920),
+            "fps": fps,
+            "format": "mp4",
+        },
+        "fallback_policy": {
+            "supported_effect": "static_hold",
+            "unsupported_effect": "degrade_to_static_hold",
+            "retry_current_segment": 1,
+        },
+    }
+    return SegmentRenderRequest.model_validate(request_data)
+
+
+def _tool09_failed_segment(payload: Tool09SegmentRequest, code: str, message: str) -> dict[str, Any]:
+    return {
+        "master_request_id": payload.master_request_id,
+        "segment_id": str(payload.segment_item.get("segment_id") or ""),
+        "order": int(payload.segment_item.get("order") or 0),
+        "status": "failed",
+        "render_error": {"code": code, "message": message, "retryable": code == "RENDER_WAIT_TIMEOUT"},
+        "video_url": "",
+        "base_duration_sec": 0.0,
+        "head_handle_sec": 0.0,
+        "tail_handle_sec": 0.0,
+        "actual_render_duration_sec": 0.0,
+        "probe_valid": False,
+        "kline_main_visual_present": False,
+        "degraded": False,
+        "degradation_code": "",
+        "degradation_records": [],
+        "transition_out": {"type": "hard_cut", "duration_ms": 0},
+    }
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
@@ -443,6 +622,118 @@ def create_and_await_segment_render_job(
     """
     job, _created = _create_or_reuse_segment_render_job(request)
     return wait_for_segment_render_job(str(job["job_id"]))
+
+
+@router.post("/v1/tool-09/segments/render-await")
+def tool09_render_and_await(payload: Tool09SegmentRequest) -> dict[str, Any]:
+    """Adapt TOOL-09's compact Dify contract to the segment renderer."""
+    request = _tool09_render_request(payload)
+    awaited = create_and_await_segment_render_job(request)
+    job = awaited.get("job") if isinstance(awaited.get("job"), dict) else {}
+    wait_status = str(awaited.get("wait_status") or job.get("status") or "")
+    if wait_status != "completed" or str(job.get("status") or "") != "completed":
+        error = job.get("error") if isinstance(job.get("error"), dict) else {}
+        code = str(awaited.get("error_code") or error.get("code") or "SEGMENT_RENDER_FAILED")
+        message = str(awaited.get("error_message") or error.get("message") or wait_status or code)
+        rendered = _tool09_failed_segment(payload, code, message)
+        return {
+            "master_request_id": payload.master_request_id,
+            "rendered_segment": rendered,
+            "segment_result_valid": False,
+            "segment_result_error": message,
+        }
+
+    transition = payload.segment_item.get("transition_out")
+    if not isinstance(transition, dict):
+        transition = {"type": "hard_cut", "duration_ms": 0}
+    rendered = {
+        "master_request_id": payload.master_request_id,
+        "segment_id": str(payload.segment_item.get("segment_id") or ""),
+        "order": int(payload.segment_item.get("order") or 1),
+        "status": "completed",
+        "render_error": {},
+        "video_url": str(job.get("video_url") or ""),
+        "thumbnail_url": str(job.get("thumbnail_url") or ""),
+        "base_duration_sec": float(job.get("base_duration_sec") or 0.0),
+        "head_handle_sec": float(job.get("head_handle_sec") or 0.0),
+        "tail_handle_sec": float(job.get("tail_handle_sec") or 0.0),
+        "actual_render_duration_sec": float(job.get("render_duration_sec") or 0.0),
+        "probe_valid": bool(job.get("probe_valid")),
+        "kline_main_visual_present": bool(job.get("kline_main_visual_present")),
+        "degraded": bool(job.get("degraded")),
+        "degradation_code": str(job.get("degradation_code") or ""),
+        "degradation_records": job.get("degradation_records") if isinstance(job.get("degradation_records"), list) else [],
+        "transition_out": transition,
+    }
+    valid = bool(rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"])
+    error_message = "" if valid else "SEGMENT_RENDER_RESULT_INVALID"
+    if not valid:
+        rendered["status"] = "failed"
+        rendered["render_error"] = {"code": error_message, "message": error_message, "retryable": False}
+    return {
+        "master_request_id": payload.master_request_id,
+        "rendered_segment": rendered,
+        "segment_result_valid": valid,
+        "segment_result_error": error_message,
+    }
+
+
+@router.post("/v1/tool-09/segments/finalize")
+def tool09_finalize(payload: Tool09FinalizeRequest) -> dict[str, Any]:
+    """Validate, order, and package all rendered segments for TOOL-10."""
+    if payload.market_input.get("schema_version") != "market-input-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
+    if payload.segment_media.get("schema_version") != "segment-media-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "SEGMENT_MEDIA_VERSION_INVALID"})
+
+    parsed: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for index, raw in enumerate(payload.rendered_segments):
+        try:
+            item = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            item = None
+        if not isinstance(item, dict):
+            errors.append(f"RENDERED_SEGMENT_{index}_INVALID")
+            continue
+        if str(item.get("master_request_id") or "").strip() != payload.master_request_id:
+            errors.append(f"RENDERED_SEGMENT_{index}_MASTER_ID_MISMATCH")
+            continue
+        parsed.append(item)
+        if item.get("status") != "completed" or not item.get("video_url") or item.get("probe_valid") is not True:
+            render_error = item.get("render_error") if isinstance(item.get("render_error"), dict) else {}
+            errors.append(str(render_error.get("code") or f"RENDERED_SEGMENT_{index}_FAILED"))
+
+    expected_media = payload.segment_media.get("segment_media_inputs")
+    if not isinstance(expected_media, list) or not expected_media:
+        errors.append("SEGMENT_MEDIA_INPUTS_EMPTY")
+        expected_ids: list[str] = []
+    else:
+        expected_ids = [str(item.get("segment_id") or "") for item in expected_media if isinstance(item, dict)]
+    rendered_ids = [str(item.get("segment_id") or "") for item in parsed]
+    if len(expected_ids) != len(expected_media or []) or not all(expected_ids):
+        errors.append("SEGMENT_MEDIA_IDS_INVALID")
+    elif sorted(rendered_ids) != sorted(expected_ids):
+        errors.append("RENDERED_SEGMENT_IDS_MISMATCH")
+
+    order_by_id = {segment_id: index for index, segment_id in enumerate(expected_ids)}
+    ordered = sorted(parsed, key=lambda item: order_by_id.get(str(item.get("segment_id") or ""), len(order_by_id)))
+    errors = list(dict.fromkeys(errors))
+    valid = not errors and bool(ordered)
+    contract = {
+        "schema_version": "rendered-segments-contract-v1",
+        "master_request_id": payload.master_request_id,
+        "rendered_segments": ordered,
+        "segment_render_valid": valid,
+        "segment_render_errors": errors,
+    }
+    return {
+        "schema_version": "tool09-finalize-result-v1",
+        "master_request_id": payload.master_request_id,
+        "rendered_v1_json": json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+        "segment_render_valid": valid,
+        "render_errors_json": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
+    }
 
 
 @router.get("/v1/segment-render-jobs/{job_id}")

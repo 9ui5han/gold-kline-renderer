@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.job_store import IdempotencyConflict, JobStore
 
@@ -93,6 +93,37 @@ class ComposeRequest(BaseModel):
     duration_tolerance_sec: float = Field(default=10.0, ge=0, le=60)
     fallback_policy: dict[str, Any]
     video: ComposeVideoConfig
+
+
+class FinalComposeStartRequest(BaseModel):
+    """The compact string contract emitted by TOOL-10's T10-02 node."""
+
+    market_input_v1_json: str = Field(min_length=2)
+    rendered_v1_json: str = Field(min_length=2)
+    master_request_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("master_request_id")
+    @classmethod
+    def validate_master_request_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
+
+
+class FinalComposeStepRequest(BaseModel):
+    """Opaque polling state returned by ``/start`` and ``/step``."""
+
+    job_id: str = Field(min_length=1, max_length=100)
+    master_request_id: str = Field(min_length=1, max_length=100)
+
+    @field_validator("master_request_id")
+    @classmethod
+    def validate_master_request_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
 
 
 def _probe_duration(path: Path) -> float:
@@ -512,6 +543,199 @@ def _public_job(job: dict[str, Any]) -> dict[str, Any]:
     if isinstance(job.get("error"), dict):
         response["error"] = job["error"]
     return response
+
+
+def _load_contract(raw: str, version: str, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(str(raw or ""))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(422, f"{label}_JSON_INVALID") from exc
+    if not isinstance(value, dict):
+        raise HTTPException(422, f"{label}_NOT_OBJECT")
+    if value.get("schema_version") != version:
+        raise HTTPException(422, f"{label}_VERSION_INVALID")
+    return value
+
+
+def _compose_request_from_tool10(payload: FinalComposeStartRequest) -> ComposeRequest:
+    market = _load_contract(
+        payload.market_input_v1_json,
+        "market-input-contract-v1",
+        "MARKET_INPUT",
+    )
+    rendered = _load_contract(
+        payload.rendered_v1_json,
+        "rendered-segments-contract-v1",
+        "RENDERED_SEGMENTS",
+    )
+    if str(rendered.get("master_request_id") or "").strip() != payload.master_request_id:
+        raise HTTPException(409, "MASTER_REQUEST_ID_MISMATCH")
+    if rendered.get("segment_render_valid") is not True:
+        raise HTTPException(422, "SEGMENT_RENDER_NOT_VALID")
+    errors = rendered.get("segment_render_errors")
+    if not isinstance(errors, list) or errors:
+        raise HTTPException(422, "SEGMENT_RENDER_ERRORS_NOT_EMPTY")
+    items = rendered.get("rendered_segments")
+    if not isinstance(items, list) or not items:
+        raise HTTPException(422, "RENDERED_SEGMENTS_EMPTY")
+
+    segments: list[dict[str, Any]] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise HTTPException(422, f"RENDERED_SEGMENT_NOT_OBJECT:{index}")
+        video = item.get("video") if isinstance(item.get("video"), dict) else {}
+        transition = item.get("transition_out")
+        if not isinstance(transition, dict):
+            transition = {"type": "hard_cut", "duration_ms": 0}
+        base = float(item.get("base_duration_sec") or item.get("duration_sec") or 0)
+        head = float(item.get("head_handle_sec") or 0)
+        tail = float(item.get("tail_handle_sec") or 0)
+        actual = float(
+            item.get("actual_render_duration_sec")
+            or item.get("render_duration_sec")
+            or video.get("duration_sec")
+            or 0
+        )
+        segments.append({
+            "segment_id": str(item.get("segment_id") or ""),
+            "order": int(item.get("order") or index + 1),
+            "video_url": str(video.get("url") or item.get("video_url") or ""),
+            "base_duration_sec": base,
+            "head_handle_sec": head,
+            "tail_handle_sec": tail,
+            "actual_render_duration_sec": actual,
+            "probe_valid": item.get("probe_valid") is True,
+            "kline_main_visual_present": item.get("kline_main_visual_present") is True,
+            "degraded": item.get("degraded") is True,
+            "degradation_code": str(item.get("degradation_code") or ""),
+            "transition_out": transition,
+        })
+
+    ordered = sorted(segments, key=lambda value: value["order"])
+    # The final segment has no following boundary, so its transition is ignored.
+    requested = [value["transition_out"] for value in ordered[:-1]]
+    typed_segments = [ComposeSegment.model_validate(value) for value in ordered]
+    ledger = _transition_ledger(typed_segments, requested)
+    expected = sum(value["actual_render_duration_sec"] for value in ordered) - sum(
+        float(value["actual_overlap_sec"]) for value in ledger
+    )
+    narration_timeline = sum(value["base_duration_sec"] for value in ordered)
+    video_value = rendered.get("video")
+    if not isinstance(video_value, dict):
+        job_config = market.get("job_config")
+        if not isinstance(job_config, dict):
+            job_config = {}
+        video_value = job_config.get("video")
+        if not isinstance(video_value, dict):
+            video_value = market.get("video") if isinstance(market.get("video"), dict) else {}
+    return ComposeRequest.model_validate({
+        "request_id": f"{payload.master_request_id}-final-compose",
+        "segments": ordered,
+        "expected_final_duration_sec": round(expected, 3),
+        "narration_timeline_sec": round(narration_timeline, 3),
+        "duration_tolerance_sec": 10.0,
+        "fallback_policy": {"transition_failure": ["fade", "hard_cut"]},
+        "video": video_value or {},
+    })
+
+
+def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]:
+    status = str(job.get("status") or "")
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    error = job.get("error") if isinstance(job.get("error"), dict) else {}
+    valid = status == "completed"
+    error_code = str(error.get("code") or "FINAL_COMPOSE_FAILED")
+    errors = [] if valid else [error_code]
+    duration = float(result.get("duration_sec") or 0)
+    target = float(result.get("narration_timeline_sec") or 0)
+    difference = round(duration - target, 3)
+    contract = {
+        "schema_version": "final-result-contract-v1",
+        "master_request_id": master_request_id,
+        "final_valid": valid,
+        "final_errors": errors,
+        "final_video_url": str(result.get("video_url") or ""),
+        "final_duration_sec": duration,
+    }
+    return {
+        "schema_version": "final-compose-result-v1",
+        "master_request_id": master_request_id,
+        "final_result_v1_json": json.dumps(contract, ensure_ascii=False, separators=(",", ":")),
+        "final_valid": valid,
+        "final_errors_json": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
+        "final_video_url": str(result.get("video_url") or ""),
+        "final_duration_sec": duration,
+        "target_duration_sec": target,
+        "duration_diff_sec": difference,
+        "duration_in_preferred": valid and abs(difference) <= 3.0,
+        "duration_in_hard": valid and abs(difference) <= 10.0,
+        "final_degraded": bool(result.get("degradation_records")),
+        "degradation_records": result.get("degradation_records") or [],
+        "rebuild_segment_ids": result.get("rebuild_segment_ids") or [],
+        "requested_transitions": result.get("requested_transitions") or [],
+        "applied_transitions": result.get("applied_transitions") or [],
+        "actual_overlap_sec": float(result.get("actual_overlap_sec") or 0),
+    }
+
+
+def _poll_request(job_id: str, master_request_id: str) -> str:
+    return json.dumps(
+        {"job_id": job_id, "master_request_id": master_request_id},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+@router.post("/v1/final-compose-jobs/start", status_code=202)
+def start_final_compose_job(payload: FinalComposeStartRequest) -> dict[str, Any]:
+    request = _compose_request_from_tool10(payload)
+    job = create_compose_job(request)
+    job_id = str(job["job_id"])
+    current = JOB_STORE.get(job_id)
+    done = str(current.get("status")) in {"completed", "failed"}
+    result_json = "{}"
+    if done:
+        result_json = json.dumps(
+            _final_result(current, payload.master_request_id),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return {
+        "schema_version": "final-compose-start-v1",
+        "master_request_id": payload.master_request_id,
+        "request_json": _poll_request(job_id, payload.master_request_id),
+        "done": done,
+        "result_json": result_json,
+    }
+
+
+@router.post("/v1/final-compose-jobs/step")
+def step_final_compose_job(payload: FinalComposeStepRequest) -> dict[str, Any]:
+    try:
+        job = JOB_STORE.get(payload.job_id)
+    except KeyError as exc:
+        raise HTTPException(404, "COMPOSE_JOB_NOT_FOUND") from exc
+    expected_request_id = f"{payload.master_request_id}-final-compose"
+    if str(job.get("request_id") or "") != expected_request_id:
+        raise HTTPException(409, "MASTER_REQUEST_ID_MISMATCH")
+    status = str(job.get("status") or "")
+    done = status in {"completed", "failed"}
+    action = "pass" if status == "completed" else "fail" if status == "failed" else "continue"
+    result_json = "{}"
+    if done:
+        result_json = json.dumps(
+            _final_result(job, payload.master_request_id),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    return {
+        "schema_version": "final-compose-step-v1",
+        "master_request_id": payload.master_request_id,
+        "action": action,
+        "done": done,
+        "next_request_json": _poll_request(payload.job_id, payload.master_request_id),
+        "result_json": result_json,
+    }
 
 
 @router.post(

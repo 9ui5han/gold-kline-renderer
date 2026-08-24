@@ -13,6 +13,8 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertIn("/v1/segment-render-jobs", paths)
         self.assertIn("/v1/segment-render-jobs/await", paths)
         self.assertIn("/v1/segment-render-jobs/{job_id}", paths)
+        self.assertIn("/v1/tool-09/segments/render-await", paths)
+        self.assertIn("/v1/tool-09/segments/finalize", paths)
         self.assertIn("/v1/compose-jobs", paths)
         self.assertIn("/v1/compose-jobs/{job_id}", paths)
 
@@ -129,6 +131,100 @@ class V72VideoJobsTests(unittest.TestCase):
 
         self.assertEqual(result["wait_status"], "completed")
         wait_for_job.assert_called_once_with("existing-job")
+
+    def test_tool09_render_adapter_preserves_master_request_id(self):
+        from app import segment_renderer
+
+        payload = segment_renderer.Tool09SegmentRequest.model_validate({
+            "schema_version": "tool09-segment-request-v1",
+            "master_request_id": "gold-master-01",
+            "market_input": {},
+            "segment_item": {"segment_id": "seg_01", "order": 1},
+        })
+        completed = {
+            "wait_status": "completed",
+            "job": {
+                "status": "completed",
+                "video_url": "https://example.invalid/seg_01.mp4",
+                "thumbnail_url": "",
+                "base_duration_sec": 5.0,
+                "head_handle_sec": 0.0,
+                "tail_handle_sec": 0.0,
+                "render_duration_sec": 5.0,
+                "probe_valid": True,
+                "kline_main_visual_present": True,
+                "degraded": False,
+            },
+        }
+        with (
+            patch.object(segment_renderer, "_tool09_render_request", return_value=object()),
+            patch.object(segment_renderer, "create_and_await_segment_render_job", return_value=completed),
+        ):
+            result = segment_renderer.tool09_render_and_await(payload)
+
+        self.assertTrue(result["segment_result_valid"])
+        self.assertEqual(result["master_request_id"], "gold-master-01")
+        self.assertEqual(result["rendered_segment"]["master_request_id"], "gold-master-01")
+
+    def test_tool09_models_reject_empty_master_request_id(self):
+        from app.segment_renderer import Tool09FinalizeRequest, Tool09SegmentRequest
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            Tool09SegmentRequest.model_validate({
+                "schema_version": "tool09-segment-request-v1",
+                "master_request_id": "",
+                "market_input": {},
+                "segment_item": {},
+            })
+        with self.assertRaises(ValidationError):
+            Tool09FinalizeRequest.model_validate({
+                "schema_version": "tool09-collection-request-v1",
+                "master_request_id": "",
+                "rendered_segments": [],
+                "market_input": {},
+                "segment_media": {},
+            })
+        with self.assertRaises(ValidationError):
+            Tool09SegmentRequest.model_validate({
+                "schema_version": "tool09-segment-request-v1",
+                "master_request_id": "   ",
+                "market_input": {},
+                "segment_item": {},
+            })
+
+    def test_tool09_finalize_requires_matching_master_request_id(self):
+        import json
+        from app.segment_renderer import Tool09FinalizeRequest, tool09_finalize
+
+        base = {
+            "schema_version": "tool09-collection-request-v1",
+            "master_request_id": "gold-master-01",
+            "market_input": {"schema_version": "market-input-contract-v1"},
+            "segment_media": {
+                "schema_version": "segment-media-contract-v1",
+                "segment_media_inputs": [{"segment_id": "seg_01"}],
+            },
+        }
+        rendered = {
+            "master_request_id": "gold-master-01",
+            "segment_id": "seg_01",
+            "order": 1,
+            "status": "completed",
+            "video_url": "https://example.invalid/seg_01.mp4",
+            "probe_valid": True,
+        }
+        success = tool09_finalize(Tool09FinalizeRequest.model_validate({**base, "rendered_segments": [rendered]}))
+        self.assertTrue(success["segment_render_valid"])
+        self.assertEqual(success["master_request_id"], "gold-master-01")
+        self.assertEqual(json.loads(success["rendered_v1_json"])["master_request_id"], "gold-master-01")
+
+        mismatch = tool09_finalize(Tool09FinalizeRequest.model_validate({
+            **base,
+            "rendered_segments": [{**rendered, "master_request_id": "different-master"}],
+        }))
+        self.assertFalse(mismatch["segment_render_valid"])
+        self.assertIn("MASTER_ID_MISMATCH", mismatch["render_errors_json"])
 
     def test_compose_request_rejects_unsafe_values(self):
         from app.video_composer import ComposeRequest
