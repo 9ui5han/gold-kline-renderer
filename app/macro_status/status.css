@@ -48,7 +48,7 @@ dl div { display: grid; grid-template-columns: 86px 1fr; gap: 10px; padding-top:
 dt { color: #71867f; font-size: 12px; }
 dd { margin: 0; color: #d5e0dc; font-size: 13px; overflow-wrap: anywhere; }
 .event-section { margin-top: 38px; }
-.event-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
+.event-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
 .event-card { position: relative; overflow: hidden; min-width: 0; padding: 18px; border: 1px solid #253b35; border-radius: 18px; background: linear-gradient(160deg, #10201c, #09120f); }
 .event-card::before { content: ""; position: absolute; inset: 0 0 auto; height: 3px; background: #73847e; }
 .event-card.good::before { background: #42e6a4; }

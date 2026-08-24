@@ -1,7 +1,7 @@
 """Build a cached, source-aware macro calendar context for XAUUSD.
 
-This service combines official Fed, BLS, and BEA calendars.  It only reports
-event timing and source health; it never calculates a directional bias.
+This service combines official Fed, BLS, BEA, and Treasury sources. It only
+reports event timing and source health; it never calculates a directional bias.
 """
 
 from __future__ import annotations
@@ -19,12 +19,19 @@ import httpx
 from .bea_calendar import parse_bea_release_dates
 from .bls_calendar import parse_bls_ics
 from .fed_calendar import parse_fed_fomc_calendar
+from .fed_speech_calendar import parse_fed_powell_rss
 from .macro_source_probe import (
     CONNECT_TIMEOUT_SEC,
     READ_TIMEOUT_SEC,
     SOURCE_SPECS,
     USER_AGENT,
     SourceSpec,
+    treasury_press_url,
+)
+from .treasury_calendar import (
+    parse_treasury_auctions,
+    parse_treasury_buybacks,
+    parse_treasury_press_releases,
 )
 
 
@@ -39,6 +46,10 @@ _PARSERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "fed": parse_fed_fomc_calendar,
     "bls": parse_bls_ics,
     "bea": parse_bea_release_dates,
+    "fed_speeches": parse_fed_powell_rss,
+    "treasury_auctions": parse_treasury_auctions,
+    "treasury_buybacks": parse_treasury_buybacks,
+    "treasury_press": parse_treasury_press_releases,
 }
 
 
@@ -170,7 +181,52 @@ def _fetch_source(
     spec: SourceSpec,
     client: httpx.Client,
     fetched_at_utc: str,
+    query_years: set[int] | None = None,
+    allow_empty: bool = False,
 ) -> dict[str, Any]:
+    if spec.source == "treasury_press" and query_years is not None:
+        years = sorted(query_years or {_parse_iso_time(
+            fetched_at_utc, "FETCHED_AT"
+        ).year})
+        merged_events: list[dict[str, Any]] = []
+        content_type = ""
+        for year in years:
+            annual_spec = SourceSpec(
+                source=spec.source,
+                url=treasury_press_url(year),
+                accept=spec.accept,
+                expected_content_types=spec.expected_content_types,
+                body_marker=spec.body_marker,
+                response_format=spec.response_format,
+            )
+            result = _fetch_source(
+                annual_spec,
+                client,
+                fetched_at_utc,
+                None,
+                allow_empty=True,
+            )
+            if not result["ok"]:
+                return result
+            content_type = result["content_type"]
+            merged_events.extend(result["events"])
+        unique_events = {
+            str(event.get("event_id") or ""): event
+            for event in merged_events
+            if str(event.get("event_id") or "")
+        }
+        return {
+            "ok": True,
+            "http_status": 200,
+            "content_type": content_type,
+            "fetched_at_utc": fetched_at_utc,
+            "events": sorted(
+                unique_events.values(),
+                key=lambda event: event.get("scheduled_time_utc") or "",
+            ),
+            "coverage_years": years,
+        }
+
     try:
         response = client.get(
             spec.url,
@@ -222,7 +278,7 @@ def _fetch_source(
             "error_code": "SOURCE_PARSE_FAILED",
             "error_message": str(exc)[:160],
         }
-    if not events:
+    if not events and not allow_empty:
         return {
             "ok": False,
             "http_status": response.status_code,
@@ -352,11 +408,18 @@ class MacroContextService:
         specs: list[SourceSpec],
         client: httpx.Client,
         fetched_at_utc: str,
+        query_years: set[int],
     ) -> dict[str, dict[str, Any]]:
         results: dict[str, dict[str, Any]] = {}
         with ThreadPoolExecutor(max_workers=len(specs) or 1) as executor:
             futures = {
-                executor.submit(_fetch_source, spec, client, fetched_at_utc): spec.source
+                executor.submit(
+                    _fetch_source,
+                    spec,
+                    client,
+                    fetched_at_utc,
+                    query_years if spec.source == "treasury_press" else None,
+                ): spec.source
                 for spec in specs
             }
             for future in as_completed(futures):
@@ -399,6 +462,9 @@ class MacroContextService:
         request = _validate_request(payload)
         checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         checked_at_utc = _iso_utc(checked_at)
+        query_start = request["data_as_of"] - timedelta(hours=QUERY_LOOKBACK_HOURS)
+        query_end = request["horizon_end"] + timedelta(hours=QUERY_LOOKAHEAD_HOURS)
+        query_years = set(range(query_start.year, query_end.year + 1))
 
         with self._lock:
             cache = self._load_cache()
@@ -410,7 +476,18 @@ class MacroContextService:
             for spec in SOURCE_SPECS:
                 entry = _valid_cache_entry(cache_sources.get(spec.source))
                 age = _cache_age_seconds(entry, checked_at) if entry else None
-                if entry is not None and age is not None and age <= self.cache_ttl_sec:
+                coverage_ok = (
+                    spec.source != "treasury_press"
+                    or query_years.issubset({
+                        int(year) for year in entry.get("coverage_years", [])
+                    })
+                ) if entry is not None else False
+                if (
+                    entry is not None
+                    and age is not None
+                    and age <= self.cache_ttl_sec
+                    and coverage_ok
+                ):
                     events = entry["events"]
                     source_events[spec.source] = events
                     statuses[spec.source] = _source_status(
@@ -443,6 +520,7 @@ class MacroContextService:
                         specs_to_fetch,
                         active_client,
                         checked_at_utc,
+                        query_years,
                     )
                     if active_client is not None
                     else {}
@@ -461,6 +539,7 @@ class MacroContextService:
                         "http_status": result["http_status"],
                         "content_type": result["content_type"],
                         "events": events,
+                        "coverage_years": result.get("coverage_years", []),
                     }
                     cache_changed = True
                     statuses[spec.source] = _source_status(
@@ -520,8 +599,6 @@ class MacroContextService:
         else:
             data_status = "unavailable"
 
-        query_start = request["data_as_of"] - timedelta(hours=QUERY_LOOKBACK_HOURS)
-        query_end = request["horizon_end"] + timedelta(hours=QUERY_LOOKAHEAD_HOURS)
         all_events = [
             event
             for events in source_events.values()

@@ -445,6 +445,10 @@ PUBLIC_MACRO_EVENT_TYPES = [
     {"event_code": "employment", "label_zh": "非农与就业报告", "label_en": "Employment Situation", "source": "bls"},
     {"event_code": "pce", "label_zh": "PCE 个人消费支出物价", "label_en": "Personal Income and Outlays", "source": "bea"},
     {"event_code": "fomc", "label_zh": "FOMC 美联储议息会议", "label_en": "FOMC Meeting", "source": "fed"},
+    {"event_code": "fed_speech", "label_zh": "Powell 讲话", "label_en": "Jerome Powell Speech", "source": "fed_speeches"},
+    {"event_code": "treasury_auction", "label_zh": "美国国债拍卖", "label_en": "Treasury Auction", "source": "treasury_auctions"},
+    {"event_code": "treasury_buyback", "label_zh": "美国国债回购", "label_en": "Treasury Buyback", "source": "treasury_buybacks"},
+    {"event_code": "treasury_announcement", "label_zh": "美国财政部公告", "label_en": "Treasury Debt Announcement", "source": "treasury_press"},
 ]
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",

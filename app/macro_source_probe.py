@@ -31,6 +31,13 @@ READ_TIMEOUT_SEC = 12.0
 MAX_SAMPLE_CHARS = 160
 
 
+def treasury_press_url(year: int) -> str:
+    return (
+        "https://home.treasury.gov/news-data/press-releases/search/"
+        f"{int(year)}.json"
+    )
+
+
 @dataclass(frozen=True)
 class SourceSpec:
     source: str
@@ -64,6 +71,44 @@ SOURCE_SPECS = (
     SourceSpec(
         source="bea",
         url="https://apps.bea.gov/API/signup/release_dates.json",
+        accept="application/json",
+        expected_content_types=("application/json", "text/json"),
+        body_marker="",
+        response_format="json",
+    ),
+    SourceSpec(
+        source="fed_speeches",
+        url="https://www.federalreserve.gov/feeds/s_t_powell.xml",
+        accept="application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
+        expected_content_types=("application/rss+xml", "application/xml", "text/xml"),
+        body_marker="<rss",
+        response_format="xml",
+    ),
+    SourceSpec(
+        source="treasury_auctions",
+        url=(
+            "https://api.fiscaldata.treasury.gov/services/api/fiscal_service/"
+            "v1/accounting/od/auctions_query?sort=-auction_date&page%5Bsize%5D=100"
+        ),
+        accept="application/json",
+        expected_content_types=("application/json", "text/json"),
+        body_marker="",
+        response_format="json",
+    ),
+    SourceSpec(
+        source="treasury_buybacks",
+        url=(
+            "https://home.treasury.gov/system/files/221/"
+            "Tentative-Buyback-Schedule.xml"
+        ),
+        accept="application/xml,text/xml;q=0.9,*/*;q=0.8",
+        expected_content_types=("application/xml", "text/xml"),
+        body_marker="<buybackcalendar",
+        response_format="xml",
+    ),
+    SourceSpec(
+        source="treasury_press",
+        url=treasury_press_url(datetime.now(timezone.utc).year),
         accept="application/json",
         expected_content_types=("application/json", "text/json"),
         body_marker="",
@@ -109,8 +154,13 @@ def probe_source(
     requested_at_utc = _now_iso()
     started = time.monotonic()
     try:
+        effective_url = (
+            treasury_press_url(datetime.now(timezone.utc).year)
+            if spec.source == "treasury_press"
+            else spec.url
+        )
         response = client.get(
-            spec.url,
+            effective_url,
             headers={
                 "User-Agent": USER_AGENT,
                 "Accept": spec.accept,
@@ -132,7 +182,7 @@ def probe_source(
 
         return {
             "source": spec.source,
-            "url": spec.url,
+            "url": effective_url,
             "requested_at_utc": requested_at_utc,
             "http_status": response.status_code,
             "content_type": content_type,

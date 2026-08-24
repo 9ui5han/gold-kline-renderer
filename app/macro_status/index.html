@@ -13,7 +13,7 @@
       <div>
         <p class="eyebrow">GOLD K-LINE RENDERER</p>
         <h1>宏观事件服务状态</h1>
-        <p class="subtitle">检查 Render 服务以及 Fed、BLS、BEA 三个官方日历来源。这里只检查服务状态，不判断黄金涨跌。</p>
+        <p class="subtitle">检查 Render 服务以及美联储、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。</p>
       </div>
       <div id="overall-badge" class="overall-badge idle" role="status" aria-live="polite">
         <span class="status-dot"></span>
@@ -37,7 +37,7 @@
       </article>
       <article class="summary-card">
         <span>有效来源</span>
-        <strong id="valid-count">— / 3</strong>
+        <strong id="valid-count">— / 7</strong>
       </article>
       <article class="summary-card">
         <span>检查时间（UTC）</span>
@@ -66,6 +66,22 @@
           <div class="source-title"><span class="source-icon">E</span><div><h3>BEA</h3><p>美国经济分析局</p></div></div>
           <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
         </article>
+        <article class="source-card idle" data-source="fed_speeches">
+          <div class="source-title"><span class="source-icon">S</span><div><h3>Fed Speeches</h3><p>Powell 官方讲话 RSS</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="treasury_auctions">
+          <div class="source-title"><span class="source-icon">A</span><div><h3>Treasury Auctions</h3><p>财政部国债发行与拍卖</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="treasury_buybacks">
+          <div class="source-title"><span class="source-icon">R</span><div><h3>Treasury Buybacks</h3><p>财政部国债回购日程</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="treasury_press">
+          <div class="source-title"><span class="source-icon">N</span><div><h3>Treasury News</h3><p>财政部债务管理公告</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
       </div>
     </section>
 
@@ -83,6 +99,10 @@
         <article class="event-card idle" data-event-code="employment"><div class="event-card-head"><span class="event-code">NFP</span><span data-field="state">未检查</span></div><h3>非农与就业报告</h3><p>来源：BLS Employment Situation</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="pce"><div class="event-card-head"><span class="event-code">PCE</span><span data-field="state">未检查</span></div><h3>PCE 个人消费支出物价</h3><p>来源：BEA 美国经济分析局</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="fomc"><div class="event-card-head"><span class="event-code">FOMC</span><span data-field="state">未检查</span></div><h3>FOMC 美联储议息会议</h3><p>来源：Federal Reserve</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_speech"><div class="event-card-head"><span class="event-code">SPEECH</span><span data-field="state">未检查</span></div><h3>Powell 官方讲话</h3><p>来源：Federal Reserve RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="treasury_auction"><div class="event-card-head"><span class="event-code">AUCTION</span><span data-field="state">未检查</span></div><h3>美国国债发行与拍卖</h3><p>来源：Fiscal Data</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="treasury_buyback"><div class="event-card-head"><span class="event-code">BUYBACK</span><span data-field="state">未检查</span></div><h3>美国国债回购</h3><p>来源：TreasuryDirect</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="treasury_announcement"><div class="event-card-head"><span class="event-code">NOTICE</span><span data-field="state">未检查</span></div><h3>美国财政部债务公告</h3><p>来源：Treasury Press Releases</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
       </div>
     </section>
 

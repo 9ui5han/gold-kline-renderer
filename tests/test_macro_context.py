@@ -46,6 +46,33 @@ BEA_JSON = {
         "release_dates": ["2026-09-16T12:30:00+00:00"],
     }
 }
+FED_SPEECH_RSS = """<rss><channel><item>
+<title>Powell, Economic Outlook</title>
+<link>https://www.federalreserve.gov/newsevents/speech/powell20260916a.htm</link>
+<pubDate>Wed, 16 Sep 2026 15:00:00 GMT</pubDate>
+</item></channel></rss>"""
+TREASURY_AUCTIONS_JSON = {"data": [{
+    "auction_date": "2026-09-16",
+    "cusip": "91282TEST",
+    "security_type": "Note",
+    "security_term": "10-Year",
+    "closing_time_comp": "01:00 PM",
+    "offering_amt": "42000000000",
+}]}
+TREASURY_BUYBACK_XML = """<BuyBackCalendar><BuybackCalendarDate>
+<PurchaseBucketName>Nominal Coupons 10Y to 20Y</PurchaseBucketName>
+<SecurityType>NOMINAL COUPONS</SecurityType>
+<OperationType>Liquidity Support</OperationType>
+<MaximumPurchaseAmountDollars>2000000000</MaximumPurchaseAmountDollars>
+<AnnouncementDate>2026-09-15</AnnouncementDate>
+<OperationDate>2026-09-16</OperationDate>
+<OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
+</BuybackCalendarDate></BuyBackCalendar>"""
+TREASURY_PRESS_JSON = {"items": [{
+    "datetime": "2026-09-16T14:00:00Z",
+    "url": "/news/press-releases/test001/",
+    "title": "Treasury Announces Quarterly Refunding",
+}]}
 
 
 def response_map(overrides=None):
@@ -53,6 +80,14 @@ def response_map(overrides=None):
         "fed": (200, "text/html; charset=utf-8", FED_HTML),
         "bls": (200, "text/calendar; charset=utf-8", BLS_ICS),
         "bea": (200, "application/json", json.dumps(BEA_JSON)),
+        "fed_speeches": (200, "text/xml", FED_SPEECH_RSS),
+        "treasury_auctions": (
+            200, "application/json", json.dumps(TREASURY_AUCTIONS_JSON),
+        ),
+        "treasury_buybacks": (200, "application/xml", TREASURY_BUYBACK_XML),
+        "treasury_press": (
+            200, "application/json", json.dumps(TREASURY_PRESS_JSON),
+        ),
     }
     responses.update(overrides or {})
     return responses
@@ -96,10 +131,13 @@ class MacroContextTests(unittest.TestCase):
 
         self.assertEqual(result["data_status"], "complete")
         self.assertEqual(result["directional_bias"], "not_calculated")
-        self.assertEqual(len(result["events"]), 4)
+        self.assertEqual(len(result["events"]), 8)
         self.assertEqual(
             {event["event_code"] for event in result["events"]},
-            {"cpi", "pce", "fomc"},
+            {
+                "cpi", "pce", "fomc", "fed_speech", "treasury_auction",
+                "treasury_buyback", "treasury_announcement",
+            },
         )
         self.assertTrue(
             all(status["available"] for status in result["source_status"].values())
@@ -118,7 +156,7 @@ class MacroContextTests(unittest.TestCase):
             result["source_status"]["bls"]["error_code"],
             "HTTP_STATUS_403",
         )
-        self.assertEqual(len(result["events"]), 3)
+        self.assertEqual(len(result["events"]), 7)
 
     def test_timeout_uses_recent_stale_cache_and_marks_partial(self):
         service = self.service(cache_ttl_sec=60, max_stale_sec=3600)
@@ -147,8 +185,8 @@ class MacroContextTests(unittest.TestCase):
 
     def test_all_sources_fail_without_cache_is_unavailable(self):
         responses = {
-            source: (503, "text/html", "unavailable")
-            for source in ("fed", "bls", "bea")
+            spec.source: (503, "text/html", "unavailable")
+            for spec in SOURCE_SPECS
         }
         with mock_client(responses) as client:
             result = self.service().get_context(REQUEST, client=client, now=NOW)
@@ -175,7 +213,7 @@ class MacroContextTests(unittest.TestCase):
 
         self.assertEqual(first["data_status"], "complete")
         self.assertEqual(second["data_status"], "complete")
-        self.assertEqual(counter, {"fed": 1, "bls": 1, "bea": 1})
+        self.assertEqual(counter, {spec.source: 1 for spec in SOURCE_SPECS})
         self.assertTrue(
             all(
                 status["cache_state"] == "fresh"
@@ -218,6 +256,214 @@ class MacroContextTests(unittest.TestCase):
 
         self.assertEqual(result["data_status"], "complete")
         self.assertNotIn("pce", {event["event_code"] for event in result["events"]})
+
+    def test_cross_year_window_merges_two_treasury_press_years(self):
+        request = {
+            "request_id": "cross-year",
+            "symbol": "XAUUSD",
+            "data_as_of": "2026-12-31T23:45:00Z",
+            "forecast_horizon": {
+                "schema_version": "forecast-horizon-v1",
+                "timeframe": "15m",
+                "start_time": "2027-01-01T00:00:00Z",
+                "end_time": "2027-01-01T01:45:00Z",
+                "duration_minutes": 120,
+            },
+        }
+        requested_press_years = []
+
+        def handler(http_request: httpx.Request) -> httpx.Response:
+            url = str(http_request.url)
+            if "/news-data/press-releases/search/" in url:
+                year = int(url.rsplit("/", 1)[-1].split(".", 1)[0])
+                requested_press_years.append(year)
+                body = {"items": [{
+                    "datetime": f"{year}-{'12-31T23:50:00Z' if year == 2026 else '01-01T00:30:00Z'}",
+                    "url": f"/news/press-releases/year{year}/",
+                    "title": "Treasury Announces Quarterly Refunding",
+                }]}
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    json=body,
+                    request=http_request,
+                )
+            source = next(
+                spec.source for spec in SOURCE_SPECS if spec.url == url
+            )
+            status, content_type, body = response_map()[source]
+            return httpx.Response(
+                status,
+                headers={"content-type": content_type},
+                text=body,
+                request=http_request,
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            result = self.service().get_context(
+                request,
+                client=client,
+                now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            )
+
+        announcements = [
+            event for event in result["events"]
+            if event["event_code"] == "treasury_announcement"
+        ]
+        self.assertEqual(requested_press_years, [2026, 2027])
+        self.assertEqual(len(announcements), 2)
+
+    def test_fresh_press_cache_switches_year_after_long_running_rollover(self):
+        requested_press_years = []
+
+        def handler(http_request: httpx.Request) -> httpx.Response:
+            url = str(http_request.url)
+            if "/news-data/press-releases/search/" in url:
+                year = int(url.rsplit("/", 1)[-1].split(".", 1)[0])
+                requested_press_years.append(year)
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    json={"items": [{
+                        "datetime": f"{year}-02-01T12:00:00Z",
+                        "url": f"/news/press-releases/year{year}/",
+                        "title": "Treasury Announces Quarterly Refunding",
+                    }]},
+                    request=http_request,
+                )
+            source = next(
+                spec.source for spec in SOURCE_SPECS if spec.url == url
+            )
+            status, content_type, body = response_map()[source]
+            return httpx.Response(
+                status,
+                headers={"content-type": content_type},
+                text=body,
+                request=http_request,
+            )
+
+        service = self.service(cache_ttl_sec=86400)
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            service.get_context(REQUEST, client=client, now=NOW)
+            request_2027 = {
+                **REQUEST,
+                "data_as_of": "2027-02-01T11:45:00Z",
+                "forecast_horizon": {
+                    **REQUEST["forecast_horizon"],
+                    "start_time": "2027-02-01T12:00:00Z",
+                    "end_time": "2027-02-01T19:45:00Z",
+                },
+            }
+            service.get_context(
+                request_2027,
+                client=client,
+                now=NOW + timedelta(hours=1),
+            )
+
+        self.assertEqual(requested_press_years, [2026, 2027])
+
+    def test_press_year_with_empty_official_list_is_healthy_and_cached(self):
+        request = {
+            **REQUEST,
+            "data_as_of": "2027-02-01T11:45:00Z",
+            "forecast_horizon": {
+                **REQUEST["forecast_horizon"],
+                "start_time": "2027-02-01T12:00:00Z",
+                "end_time": "2027-02-01T19:45:00Z",
+            },
+        }
+        requested_press_years = []
+
+        def handler(http_request: httpx.Request) -> httpx.Response:
+            url = str(http_request.url)
+            if "/news-data/press-releases/search/" in url:
+                requested_press_years.append(2027)
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    json={"items": []},
+                    request=http_request,
+                )
+            source = next(spec.source for spec in SOURCE_SPECS if spec.url == url)
+            status, content_type, body = response_map()[source]
+            return httpx.Response(
+                status,
+                headers={"content-type": content_type},
+                text=body,
+                request=http_request,
+            )
+
+        service = self.service(cache_ttl_sec=3600)
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            first = service.get_context(
+                request, client=client, now=datetime(2027, 2, 1, tzinfo=timezone.utc)
+            )
+            second = service.get_context(
+                request,
+                client=client,
+                now=datetime(2027, 2, 1, 0, 5, tzinfo=timezone.utc),
+            )
+
+        self.assertTrue(first["source_status"]["treasury_press"]["available"])
+        self.assertEqual(first["source_status"]["treasury_press"]["event_count"], 0)
+        self.assertEqual(second["source_status"]["treasury_press"]["cache_state"], "fresh")
+        self.assertEqual(requested_press_years, [2027])
+
+    def test_cross_year_press_allows_one_empty_year(self):
+        request = {
+            "request_id": "cross-year-empty",
+            "symbol": "XAUUSD",
+            "data_as_of": "2026-12-31T23:45:00Z",
+            "forecast_horizon": {
+                "schema_version": "forecast-horizon-v1",
+                "timeframe": "15m",
+                "start_time": "2027-01-01T00:00:00Z",
+                "end_time": "2027-01-01T01:45:00Z",
+                "duration_minutes": 120,
+            },
+        }
+
+        def handler(http_request: httpx.Request) -> httpx.Response:
+            url = str(http_request.url)
+            if "/news-data/press-releases/search/" in url:
+                year = int(url.rsplit("/", 1)[-1].split(".", 1)[0])
+                title = (
+                    "Treasury Announces Quarterly Refunding"
+                    if year == 2026
+                    else "Treasury Announces Community Grant Program"
+                )
+                return httpx.Response(
+                    200,
+                    headers={"content-type": "application/json"},
+                    json={"items": [{
+                        "datetime": f"{year}-{'12-31T23:50:00Z' if year == 2026 else '01-01T00:30:00Z'}",
+                        "url": f"/news/press-releases/year{year}/",
+                        "title": title,
+                    }]},
+                    request=http_request,
+                )
+            source = next(spec.source for spec in SOURCE_SPECS if spec.url == url)
+            status, content_type, body = response_map()[source]
+            return httpx.Response(
+                status,
+                headers={"content-type": content_type},
+                text=body,
+                request=http_request,
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            result = self.service().get_context(
+                request,
+                client=client,
+                now=datetime(2027, 1, 1, tzinfo=timezone.utc),
+            )
+
+        announcements = [
+            event for event in result["events"]
+            if event["event_code"] == "treasury_announcement"
+        ]
+        self.assertTrue(result["source_status"]["treasury_press"]["available"])
+        self.assertEqual(len(announcements), 1)
 
     def test_request_rejects_timezone_free_data_as_of(self):
         invalid = dict(REQUEST)

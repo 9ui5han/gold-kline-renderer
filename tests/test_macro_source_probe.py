@@ -24,6 +24,26 @@ VALID_RESPONSES = {
         "application/json",
         '{"file_last_updated":"2026-08-03","release_dates":[]}',
     ),
+    "fed_speeches": (
+        200,
+        "text/xml; charset=utf-8",
+        "<rss><channel><item><title>Powell</title></item></channel></rss>",
+    ),
+    "treasury_auctions": (
+        200,
+        "application/json",
+        '{"data":[{"auction_date":"2026-08-27"}]}',
+    ),
+    "treasury_buybacks": (
+        200,
+        "application/xml",
+        "<BuyBackCalendar><BuybackCalendarDate/></BuyBackCalendar>",
+    ),
+    "treasury_press": (
+        200,
+        "application/json",
+        '{"category":"press-releases","items":[]}',
+    ),
 }
 
 
@@ -63,7 +83,7 @@ class MacroSourceProbeTests(unittest.TestCase):
 
         self.assertEqual(result["schema_version"], "macro-source-health-v1")
         self.assertEqual(result["data_status"], "complete")
-        self.assertEqual(result["valid_source_count"], 3)
+        self.assertEqual(result["valid_source_count"], 7)
         self.assertEqual(result["directional_bias"], "not_calculated")
         self.assertTrue(all(item["structure_valid"] for item in result["sources"]))
 
@@ -101,8 +121,8 @@ class MacroSourceProbeTests(unittest.TestCase):
             "checked_at_utc": "2026-08-03T00:00:00Z",
             "data_status": "complete",
             "directional_bias": "not_calculated",
-            "source_count": 3,
-            "valid_source_count": 3,
+            "source_count": 7,
+            "valid_source_count": 7,
             "sources": [],
         }
         with (

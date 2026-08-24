@@ -21,7 +21,10 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("宏观事件服务状态", page)
         self.assertNotIn(main.TOKEN, page)
         self.assertIn("/v1/macro-events/status-summary", script)
-        for event_name in ("CPI", "PPI", "非农", "PCE", "FOMC"):
+        for event_name in (
+            "CPI", "PPI", "非农", "PCE", "FOMC", "Powell",
+            "美国国债发行与拍卖", "美国国债回购", "美国财政部债务公告",
+        ):
             self.assertIn(event_name, page)
         self.assertIn("event_types", script)
         self.assertNotIn("sessionStorage", script)
@@ -55,7 +58,7 @@ class MacroStatusPageTests(unittest.TestCase):
         private = {
             "checked_at_utc": "2026-08-24T00:00:00Z",
             "data_status": "complete",
-            "source_count": 3,
+            "source_count": 7,
             "valid_source_count": 3,
             "sources": [{
                 "source": "fed",
@@ -156,6 +159,22 @@ class MacroStatusPageTests(unittest.TestCase):
                         "fetched_at_utc": "2026-08-24T00:00:00Z",
                         "events": [{"event_code": "fomc", "scheduled_date": "2026-09-16"}],
                     },
+                    "fed_speeches": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "fed_speech", "scheduled_time_utc": "2026-08-20T12:00:00Z"}],
+                    },
+                    "treasury_auctions": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "treasury_auction", "scheduled_time_utc": "2026-08-27T17:00:00Z"}],
+                    },
+                    "treasury_buybacks": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "treasury_buyback", "scheduled_time_utc": "2026-08-25T17:40:00Z"}],
+                    },
+                    "treasury_press": {
+                        "fetched_at_utc": "2026-08-24T00:00:00Z",
+                        "events": [{"event_code": "treasury_announcement", "scheduled_time_utc": "2026-08-19T08:30:00Z"}],
+                    },
                 },
             },
         ):
@@ -166,7 +185,10 @@ class MacroStatusPageTests(unittest.TestCase):
 
         self.assertEqual(
             {item["event_code"] for item in summaries},
-            {"cpi", "ppi", "employment", "pce", "fomc"},
+            {
+                "cpi", "ppi", "employment", "pce", "fomc", "fed_speech",
+                "treasury_auction", "treasury_buyback", "treasury_announcement",
+            },
         )
         self.assertTrue(all(item["configured"] for item in summaries))
         self.assertEqual(

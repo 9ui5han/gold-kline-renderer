@@ -44,7 +44,7 @@ http://127.0.0.1:8000/docs
 | `AI302_API_KEY` | 302.AI API Key | 是 |
 | `ELEVENLABS_MODEL_ID` | `eleven_v3` | 否 |
 | `TTS_PROFILE_CATALOG_JSON` | 自定义音色Profile的JSON数组；未填写时使用代码内文档候选 | 否；真实音色ID不是密钥 |
-| `MACRO_USER_AGENT` | `GoldKlineRender/2.0 (+https://你的Render域名)` | 否；用于Fed/BLS/BEA识别请求来源 |
+| `MACRO_USER_AGENT` | `GoldKlineRender/2.0 (+https://你的Render域名)` | 否；用于Fed/BLS/BEA及美国财政部识别请求来源 |
 | `MACRO_CACHE_TTL_SEC` | `21600`（6小时） | 否 |
 | `MACRO_CACHE_MAX_STALE_SEC` | `172800`（48小时） | 否 |
 | `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
@@ -62,7 +62,7 @@ https://你的域名/macro-status/
 
 页面不读取`RENDER_SERVICE_TOKEN`。它只调用公开的脱敏状态摘要
 `/v1/macro-events/status-summary`；摘要不包含官方URL、响应正文或服务密钥，并在服务端
-缓存至少60秒，避免页面刷新反复请求Fed、BLS和BEA。原始
+缓存至少60秒，避免页面刷新反复请求Fed、BLS、BEA和美国财政部。原始
 `/v1/macro-events/source-health`接口继续要求Bearer Token，合同保持不变。
 
 页面还会显示已配置的CPI、PPI、非农/就业、PCE和FOMC事件类型，以及解析缓存中的
@@ -109,7 +109,7 @@ GET /v1/macro-events/source-health
 Authorization: Bearer <RENDER_SERVICE_TOKEN>
 ```
 
-返回 `fed`、`bls`、`bea` 三个来源的HTTP状态、响应类型和结构校验结果。
+返回 `fed`、`bls`、`bea`、`fed_speeches`、`treasury_auctions`、`treasury_buybacks`、`treasury_press` 七个来源的HTTP状态、响应类型和结构校验结果。
 
 按预测范围查询正式宏观事件上下文：
 
@@ -136,7 +136,7 @@ Content-Type: application/json
 }
 ```
 
-响应统一返回Fed、BLS、BEA来源状态及预测窗口前后24小时内的白名单事件。
+响应统一返回Fed、BLS、BEA、美联储讲话及美国财政部来源状态，并返回预测窗口前后24小时内的白名单事件。讲话与临时公告使用官方发布时间，不把它们误写成预定讲话时间。
 `data_status`为`complete`、`partial`或`unavailable`；任何情况下
 `directional_bias`都固定为`not_calculated`。正常缓存6小时，来源刷新失败时最多
 回退到48小时内最后一次成功缓存并明确标记`stale=true`。缓存文件保存在
