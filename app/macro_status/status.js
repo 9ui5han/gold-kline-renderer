@@ -77,6 +77,34 @@ function eventState(eventType) {
   return ["good", "已接入"];
 }
 
+function eventTypeName(eventType) {
+  return String(
+    eventType.label_en || eventType.label_zh || eventType.event_code || "",
+  ).trim();
+}
+
+function compareEventTypes(left, right) {
+  const leftTime = String(left.next_event_at_utc || "").trim();
+  const rightTime = String(right.next_event_at_utc || "").trim();
+  const leftHasTime = Boolean(leftTime);
+  const rightHasTime = Boolean(rightTime);
+
+  if (leftHasTime !== rightHasTime) return leftHasTime ? -1 : 1;
+  if (leftTime !== rightTime) return leftTime.localeCompare(rightTime);
+
+  const nameOrder = eventTypeName(left).localeCompare(
+    eventTypeName(right),
+    "en",
+    { sensitivity: "base" },
+  );
+  if (nameOrder !== 0) return nameOrder;
+  return String(left.event_code || "").localeCompare(String(right.event_code || ""));
+}
+
+function sortEventTypes(eventTypes) {
+  return [...eventTypes].sort(compareEventTypes);
+}
+
 function updateEventType(eventType) {
   const card = document.querySelector(`[data-event-code="${eventType.event_code}"]`);
   if (!card) return;
@@ -102,6 +130,17 @@ function resetEventTypes() {
     card.querySelector('[data-field="count"]').textContent = "—";
     card.querySelector('[data-field="previous"]').textContent = "—";
     card.querySelector('[data-field="next"]').textContent = "—";
+  });
+}
+
+function reorderEventCards(eventTypes) {
+  const grid = document.querySelector("#event-grid");
+  if (!grid) return;
+  sortEventTypes(eventTypes).forEach((eventType) => {
+    const card = document.querySelector(
+      `[data-event-code="${eventType.event_code}"]`,
+    );
+    if (card) grid.append(card);
   });
 }
 
@@ -143,7 +182,9 @@ async function runCheck() {
     resetSources();
     resetEventTypes();
     sources.forEach(updateSource);
-    eventTypes.forEach(updateEventType);
+    const sortedEventTypes = sortEventTypes(eventTypes);
+    sortedEventTypes.forEach(updateEventType);
+    reorderEventCards(sortedEventTypes);
     document.querySelector("#valid-count").textContent =
       `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 7)}`;
     document.querySelector("#checked-time").textContent = formatBeijingTime(
@@ -181,5 +222,12 @@ async function runCheck() {
 checkButton.addEventListener("click", runCheck);
 
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = { eventState, formatBeijingTime, formatDualEventTime, formatTimeInZone };
+  module.exports = {
+    compareEventTypes,
+    eventState,
+    formatBeijingTime,
+    formatDualEventTime,
+    formatTimeInZone,
+    sortEventTypes,
+  };
 }

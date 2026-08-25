@@ -28,6 +28,8 @@ class MacroStatusPageTests(unittest.TestCase):
         ):
             self.assertIn(event_name, page)
         self.assertIn("event_types", script)
+        self.assertIn("按下一次触发时间排列", page)
+        self.assertIn("sortEventTypes", script)
         self.assertIn("Asia/Shanghai", script)
         self.assertIn("America/New_York", script)
         self.assertIn("北京", script)
@@ -206,6 +208,41 @@ class MacroStatusPageTests(unittest.TestCase):
             1,
         )
 
+    def test_event_types_sort_by_next_trigger_then_english_event_name(self):
+        definitions = [
+            {"event_code": "zulu", "label_zh": "Zulu", "label_en": "Zulu Event", "source": "official"},
+            {"event_code": "bravo", "label_zh": "Bravo", "label_en": "Bravo Event", "source": "official"},
+            {"event_code": "alpha", "label_zh": "Alpha", "label_en": "Alpha Event", "source": "official"},
+            {"event_code": "no_next", "label_zh": "No Next", "label_en": "No Next Event", "source": "official"},
+        ]
+        with patch.object(
+            main.MACRO_CONTEXT_SERVICE,
+            "_load_cache",
+            return_value={
+                "schema_version": "macro-source-cache-v3",
+                "sources": {
+                    "official": {
+                        "fetched_at_utc": "2026-08-25T00:00:00Z",
+                        "events": [
+                            {"event_code": "zulu", "scheduled_time_utc": "2026-08-27T14:00:00Z"},
+                            {"event_code": "bravo", "scheduled_time_utc": "2026-08-26T12:30:00Z"},
+                            {"event_code": "alpha", "scheduled_time_utc": "2026-08-26T12:30:00Z"},
+                            {"event_code": "no_next", "scheduled_time_utc": "2026-08-24T12:30:00Z"},
+                        ],
+                    },
+                },
+            },
+        ):
+            summaries = main.MACRO_CONTEXT_SERVICE.get_cached_event_type_summary(
+                definitions,
+                now=main.datetime(2026, 8, 25, tzinfo=main.timezone.utc),
+            )
+
+        self.assertEqual(
+            [item["event_code"] for item in summaries],
+            ["alpha", "bravo", "zulu", "no_next"],
+        )
+
     def test_event_cards_cover_all_four_display_states(self):
         cases = [
             ({"source_healthy": False, "cache_state": "missing", "event_count": 0}, ["bad", "来源异常"]),
@@ -277,6 +314,35 @@ process.stdout.write(formatDualEventTime(
         self.assertEqual(
             completed.stdout,
             "北京 2026-08-19 20:30 ｜ 当地 2026-08-19 08:30",
+        )
+
+    def test_browser_sort_matches_server_order_for_equal_trigger_times(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { sortEventTypes } = require('./app/macro_status/status.js');
+const events = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(sortEventTypes(events).map((item) => item.event_code)));
+"""
+        events = [
+            {"event_code": "zulu", "label_en": "Zulu Event", "next_event_at_utc": "2026-08-27T14:00:00Z"},
+            {"event_code": "bravo", "label_en": "Bravo Event", "next_event_at_utc": "2026-08-26T12:30:00Z"},
+            {"event_code": "alpha", "label_en": "Alpha Event", "next_event_at_utc": "2026-08-26T12:30:00Z"},
+            {"event_code": "no_next", "label_en": "No Next Event", "next_event_at_utc": ""},
+        ]
+        completed = subprocess.run(
+            ["node", "-e", script, json.dumps(events)],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            json.loads(completed.stdout),
+            ["alpha", "bravo", "zulu", "no_next"],
         )
 
 

@@ -404,7 +404,18 @@ class MacroContextService:
                         _iso_utc(upcoming[0][0]) if upcoming else ""
                     ),
                 })
-        return summaries
+        # 状态页展示的是“下一次会先触发什么”。有下一次精确/日期事件的
+        # 类型排在前面；同一触发时刻按英文事件名的首字母排序。没有下一次
+        # 事件的类型仍保留在列表末尾，方便确认来源是否已经接入。
+        return sorted(
+            summaries,
+            key=lambda item: (
+                0 if item["next_event_at_utc"] else 1,
+                item["next_event_at_utc"] or "",
+                str(item["label_en"]).casefold(),
+                str(item["event_code"]).casefold(),
+            ),
+        )
 
     def _fetch_sources(
         self,
