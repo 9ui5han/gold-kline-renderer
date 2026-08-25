@@ -115,6 +115,8 @@ MAX_TTS_AUDIO_SECONDS = float(
     os.getenv("MAX_TTS_AUDIO_SECONDS", "900")
 )
 TTS_IDEMPOTENCY_PATH = DATA_DIR / "tts-idempotency.json"
+MACRO_WORKFLOW_USAGE_PATH = DATA_DIR / "macro-last-workflow-usage.json"
+MACRO_WORKFLOW_USAGE_TTL_SEC = 24 * 60 * 60
 MAX_TTS_TARGET_DRIFT_SECONDS = max(
     0.0,
     float(
@@ -226,6 +228,7 @@ class RenderRequest(BaseModel):
     analysis_forecast: dict[str, Any]
     forecast_paths: dict[str, Any] = Field(default_factory=dict)
     narration: dict[str, Any]
+    macro_event_link: dict[str, Any] = Field(default_factory=dict)
     timeline: dict[str, Any] = Field(default_factory=dict)
     audio_url: str = ""
     video: VideoOptions = Field(default_factory=VideoOptions)
@@ -431,6 +434,7 @@ JOBS: dict[str, dict[str, Any]] = {}
 TTS_JOBS: dict[str, dict[str, Any]] = {}
 LOCK = threading.Lock()
 MACRO_STATUS_LOCK = threading.Lock()
+MACRO_WORKFLOW_USAGE_LOCK = threading.Lock()
 MACRO_STATUS_CACHE_TTL_SEC = max(
     60,
     int(os.getenv("MACRO_STATUS_CACHE_TTL_SEC", "60")),
@@ -458,11 +462,102 @@ PUBLIC_MACRO_EVENT_TYPES = [
     {"event_code": "treasury_announcement", "label_zh": "美国财政部公告", "label_en": "Treasury Debt Announcement", "source": "treasury_press", "local_timezone": "America/New_York"},
     {"event_code": "treasury_secretary_speech", "label_zh": "Scott Bessent 财政部长讲话", "label_en": "Scott Bessent Speech", "source": "treasury_press", "local_timezone": "America/New_York"},
 ]
+PUBLIC_MACRO_EVENT_CODES = {
+    str(item["event_code"])
+    for item in PUBLIC_MACRO_EVENT_TYPES
+}
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
     max_stale_sec=MACRO_CACHE_MAX_STALE_SEC,
 )
+
+
+def _usage_utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _usage_time_text(value: datetime) -> str:
+    return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def _load_active_macro_workflow_usage(
+    now: datetime | None = None,
+) -> dict[str, str] | None:
+    """Return the single most recent final-workflow macro use for 24 hours."""
+    try:
+        with MACRO_WORKFLOW_USAGE_LOCK:
+            raw = json.loads(MACRO_WORKFLOW_USAGE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    event_code = str(raw.get("event_code") or "").strip()
+    event_title_en = str(raw.get("event_title_en") or "").strip()
+    used_at_utc = str(raw.get("used_at_utc") or "").strip()
+    if not event_code or not event_title_en or event_code not in PUBLIC_MACRO_EVENT_CODES:
+        return None
+    try:
+        parsed_text = used_at_utc[:-1] + "+00:00" if used_at_utc.endswith("Z") else used_at_utc
+        used_at = datetime.fromisoformat(parsed_text).astimezone(timezone.utc)
+    except ValueError:
+        return None
+    reference = (now or _usage_utc_now()).astimezone(timezone.utc)
+    age_seconds = (reference - used_at).total_seconds()
+    if age_seconds < 0 or age_seconds > MACRO_WORKFLOW_USAGE_TTL_SEC:
+        return None
+    return {
+        "event_code": event_code,
+        "event_title_en": event_title_en,
+        "event_title_zh": str(raw.get("event_title_zh") or "").strip(),
+        "source": str(raw.get("source") or "").strip(),
+        "used_at_utc": _usage_time_text(used_at),
+    }
+
+
+def _record_macro_workflow_usage(macro_event_link: dict[str, Any]) -> None:
+    """Persist one status-only marker after a final render task adopts an event."""
+    if not isinstance(macro_event_link, dict) or macro_event_link.get("valid") is not True:
+        return
+    event_code = str(macro_event_link.get("event_code") or "").strip()
+    event_title_en = str(macro_event_link.get("event_title_en") or "").strip()
+    if not event_code or not event_title_en or event_code not in PUBLIC_MACRO_EVENT_CODES:
+        return
+    usage = {
+        "event_code": event_code,
+        "event_title_en": event_title_en,
+        "event_title_zh": str(macro_event_link.get("event_title_zh") or "").strip(),
+        "source": str(macro_event_link.get("source") or "").strip(),
+        "used_at_utc": _usage_time_text(_usage_utc_now()),
+    }
+    try:
+        with MACRO_WORKFLOW_USAGE_LOCK:
+            MACRO_WORKFLOW_USAGE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            temporary = MACRO_WORKFLOW_USAGE_PATH.with_suffix(".tmp")
+            temporary.write_text(
+                json.dumps(usage, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            temporary.replace(MACRO_WORKFLOW_USAGE_PATH)
+    except OSError:
+        logger.warning("Unable to save macro workflow usage marker", exc_info=True)
+        return
+    with MACRO_STATUS_LOCK:
+        MACRO_STATUS_CACHE.update({"expires_at": 0.0, "payload": None})
+
+
+def _macro_usage_cache_ttl_sec(usage: dict[str, str] | None) -> float:
+    if usage is None:
+        return float(MACRO_STATUS_CACHE_TTL_SEC)
+    used_at_utc = str(usage.get("used_at_utc") or "")
+    try:
+        parsed_text = used_at_utc[:-1] + "+00:00" if used_at_utc.endswith("Z") else used_at_utc
+        used_at = datetime.fromisoformat(parsed_text).astimezone(timezone.utc)
+    except ValueError:
+        return 0.0
+    remaining = MACRO_WORKFLOW_USAGE_TTL_SEC - (_usage_utc_now() - used_at).total_seconds()
+    return max(0.0, min(float(MACRO_STATUS_CACHE_TTL_SEC), remaining))
 
 
 @app.middleware("http")
@@ -607,11 +702,18 @@ def _public_macro_status() -> dict[str, Any]:
         event_types = MACRO_CONTEXT_SERVICE.get_cached_event_type_summary(
             PUBLIC_MACRO_EVENT_TYPES,
         )
+        recent_workflow_usage = _load_active_macro_workflow_usage()
         for event_type in event_types:
             event_type["source_healthy"] = source_health.get(
                 str(event_type.get("source") or ""),
                 False,
             )
+            if (
+                recent_workflow_usage is not None
+                and event_type.get("event_code")
+                == recent_workflow_usage["event_code"]
+            ):
+                event_type["last_used_at_utc"] = recent_workflow_usage["used_at_utc"]
 
         payload = {
             "schema_version": "macro-public-status-v2",
@@ -624,7 +726,9 @@ def _public_macro_status() -> dict[str, Any]:
             "event_types": event_types,
         }
         MACRO_STATUS_CACHE["payload"] = payload
-        MACRO_STATUS_CACHE["expires_at"] = now + MACRO_STATUS_CACHE_TTL_SEC
+        MACRO_STATUS_CACHE["expires_at"] = now + _macro_usage_cache_ttl_sec(
+            recent_workflow_usage
+        )
         return payload
 
 
@@ -3570,6 +3674,7 @@ def create_render_job(payload: RenderRequest) -> dict[str, Any]:
     }
     with LOCK:
         JOBS[job_id] = job
+    _record_macro_workflow_usage(payload.macro_event_link)
     threading.Thread(
         target=render_job,
         args=(job_id, payload.model_dump()),

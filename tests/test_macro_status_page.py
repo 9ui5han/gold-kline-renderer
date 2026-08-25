@@ -133,6 +133,45 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), expected)
 
+    def test_status_cache_expires_when_the_24_hour_usage_marker_expires(self):
+        private = {
+            "checked_at_utc": "2026-08-25T00:00:00Z",
+            "data_status": "complete",
+            "source_count": 1,
+            "valid_source_count": 1,
+            "sources": [{
+                "source": "bls",
+                "requested_at_utc": "2026-08-25T00:00:00Z",
+                "http_status": 200,
+                "content_type": "text/html",
+                "elapsed_ms": 25,
+                "reachable": True,
+                "structure_valid": True,
+                "error_code": "",
+            }],
+        }
+        usage = {
+            "event_code": "cpi",
+            "event_title_en": "Consumer Price Index",
+            "event_title_zh": "消费者物价指数",
+            "source": "bls",
+            "used_at_utc": "2026-08-24T00:00:15Z",
+        }
+        main.MACRO_STATUS_CACHE.update({"expires_at": 0.0, "payload": None})
+        with (
+            patch.object(main, "probe_all_sources", return_value=private),
+            patch.object(main, "_load_active_macro_workflow_usage", return_value=usage),
+            patch.object(main, "_usage_utc_now", return_value=main.datetime(2026, 8, 25, tzinfo=main.timezone.utc)),
+            patch.object(main.time, "monotonic", return_value=100.0),
+            patch.object(main.MACRO_CONTEXT_SERVICE, "get_cached_event_type_summary", return_value=[{
+                "event_code": "cpi", "source": "bls", "event_count": 1,
+            }]),
+        ):
+            summary = main._public_macro_status()
+
+        self.assertEqual(summary["event_types"][0]["last_used_at_utc"], usage["used_at_utc"])
+        self.assertLessEqual(main.MACRO_STATUS_CACHE["expires_at"], 115.0)
+
     def test_macro_status_static_mount_is_registered(self):
         route = next(
             route
@@ -295,6 +334,28 @@ process.stdout.write(formatBeijingTime('2026-08-24T09:38:04Z'));
         )
 
         self.assertEqual(completed.stdout, "2026-08-24 17:38:04")
+
+    def test_recent_workflow_usage_marker_shows_exact_beijing_time(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { formatRecentWorkflowUsage } = require('./app/macro_status/status.js');
+process.stdout.write(formatRecentWorkflowUsage('2026-08-24T09:38:04Z'));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.stdout,
+            "最近被 workflow 采用：2026-08-24 17:38:04 北京时间",
+        )
 
     def test_event_time_displays_beijing_and_eastern_time(self):
         script = """

@@ -1,4 +1,9 @@
+import json
+import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from unittest.mock import patch
 
 from pydantic import ValidationError
 
@@ -20,6 +25,57 @@ def _history():
 
 
 class RenderRequestContractTests(unittest.TestCase):
+    def test_final_render_records_only_the_valid_macro_event_for_status(self):
+        request = main.RenderRequest(
+            request_id="macro-usage-render",
+            timeframe="15m",
+            data_as_of="2026-08-25T06:00:00Z",
+            historical_candles=_history(),
+            analysis_forecast={"trend": "sideways"},
+            narration={"segments": []},
+            macro_event_link={
+                "schema_version": "macro-kline-link-v1",
+                "valid": True,
+                "event_id": "fed-warsh-usage-1",
+                "event_code": "fed_warsh_speech",
+                "event_title_en": "Warsh, Economic Outlook",
+                "event_title_zh": "Warsh 经济展望讲话",
+                "source": "fed_speeches",
+            },
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            usage_path = Path(directory) / "macro-last-workflow-usage.json"
+            with (
+                patch.object(main, "MACRO_WORKFLOW_USAGE_PATH", usage_path),
+                patch.object(main.threading, "Thread") as thread,
+            ):
+                thread.return_value.start.return_value = None
+                main.create_render_job(request)
+                usage = main._load_active_macro_workflow_usage()
+
+        self.assertEqual(usage["event_code"], "fed_warsh_speech")
+        self.assertEqual(usage["event_title_en"], "Warsh, Economic Outlook")
+        self.assertTrue(usage["used_at_utc"].endswith("Z"))
+
+    def test_macro_usage_marker_expires_after_24_hours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            usage_path = Path(directory) / "macro-last-workflow-usage.json"
+            used_at = datetime(2026, 8, 24, 0, 0, tzinfo=timezone.utc)
+            usage_path.write_text(
+                json.dumps({
+                    "event_code": "cpi",
+                    "event_title_en": "Consumer Price Index",
+                    "used_at_utc": used_at.isoformat().replace("+00:00", "Z"),
+                }),
+                encoding="utf-8",
+            )
+            with patch.object(main, "MACRO_WORKFLOW_USAGE_PATH", usage_path):
+                active = main._load_active_macro_workflow_usage(
+                    now=used_at + timedelta(hours=24, seconds=1),
+                )
+
+        self.assertIsNone(active)
+
     def test_chinese_subtitle_free_payload_removes_all_subtitles(self):
         source = {
             "style": {

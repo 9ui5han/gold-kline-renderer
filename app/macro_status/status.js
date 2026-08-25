@@ -34,6 +34,11 @@ function formatBeijingTime(value) {
   return formatTimeInZone(value, "Asia/Shanghai", true);
 }
 
+function formatRecentWorkflowUsage(value) {
+  const usedAt = formatBeijingTime(value);
+  return usedAt === "—" ? "" : `最近被 workflow 采用：${usedAt} 北京时间`;
+}
+
 function formatDualEventTime(value, localTimezone = "America/New_York") {
   if (!value) return "—";
   const beijing = formatTimeInZone(value, "Asia/Shanghai");
@@ -121,6 +126,20 @@ function updateEventType(eventType) {
     eventType.next_event_at_utc,
     localTimezone,
   );
+  const recentUsage = formatRecentWorkflowUsage(eventType.last_used_at_utc);
+  let usageMarker = card.querySelector(".workflow-usage");
+  if (recentUsage) {
+    card.classList.add("recently-used");
+    if (!usageMarker) {
+      usageMarker = document.createElement("p");
+      usageMarker.className = "workflow-usage";
+      card.append(usageMarker);
+    }
+    usageMarker.textContent = recentUsage;
+  } else {
+    card.classList.remove("recently-used");
+    usageMarker?.remove();
+  }
 }
 
 function resetEventTypes() {
@@ -130,6 +149,8 @@ function resetEventTypes() {
     card.querySelector('[data-field="count"]').textContent = "—";
     card.querySelector('[data-field="previous"]').textContent = "—";
     card.querySelector('[data-field="next"]').textContent = "—";
+    card.classList.remove("recently-used");
+    card.querySelector(".workflow-usage")?.remove();
   });
 }
 
@@ -227,6 +248,7 @@ if (typeof module !== "undefined" && module.exports) {
     eventState,
     formatBeijingTime,
     formatDualEventTime,
+    formatRecentWorkflowUsage,
     formatTimeInZone,
     sortEventTypes,
   };
