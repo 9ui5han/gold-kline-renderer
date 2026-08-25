@@ -68,11 +68,18 @@ TREASURY_BUYBACK_XML = """<BuyBackCalendar><BuybackCalendarDate>
 <OperationDate>2026-09-16</OperationDate>
 <OperationStartTimeEasternUS>13:40</OperationStartTimeEasternUS>
 </BuybackCalendarDate></BuyBackCalendar>"""
-TREASURY_PRESS_JSON = {"items": [{
-    "datetime": "2026-09-16T14:00:00Z",
-    "url": "/news/press-releases/test001/",
-    "title": "Treasury Announces Quarterly Refunding",
-}]}
+TREASURY_PRESS_JSON = {"items": [
+    {
+        "datetime": "2026-09-16T14:00:00Z",
+        "url": "/news/press-releases/test001/",
+        "title": "Treasury Announces Quarterly Refunding",
+    },
+    {
+        "datetime": "2026-09-16T14:15:00Z",
+        "url": "/news/press-releases/test-bessent/",
+        "title": "Remarks by Treasury Secretary Scott Bessent before the Economic Club",
+    },
+]}
 
 
 def response_map(overrides=None):
@@ -131,12 +138,13 @@ class MacroContextTests(unittest.TestCase):
 
         self.assertEqual(result["data_status"], "complete")
         self.assertEqual(result["directional_bias"], "not_calculated")
-        self.assertEqual(len(result["events"]), 8)
+        self.assertEqual(len(result["events"]), 9)
         self.assertEqual(
             {event["event_code"] for event in result["events"]},
             {
                 "cpi", "pce", "fomc", "fed_speech", "treasury_auction",
                 "treasury_buyback", "treasury_announcement",
+                "treasury_secretary_speech",
             },
         )
         self.assertTrue(
@@ -156,7 +164,7 @@ class MacroContextTests(unittest.TestCase):
             result["source_status"]["bls"]["error_code"],
             "HTTP_STATUS_403",
         )
-        self.assertEqual(len(result["events"]), 7)
+        self.assertEqual(len(result["events"]), 8)
 
     def test_timeout_uses_recent_stale_cache_and_marks_partial(self):
         service = self.service(cache_ttl_sec=60, max_stale_sec=3600)

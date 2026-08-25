@@ -35,7 +35,7 @@ from .treasury_calendar import (
 )
 
 
-CACHE_SCHEMA_VERSION = "macro-source-cache-v2"
+CACHE_SCHEMA_VERSION = "macro-source-cache-v3"
 CONTEXT_SCHEMA_VERSION = "macro-events-context-v1"
 DEFAULT_CACHE_TTL_SEC = 6 * 60 * 60
 DEFAULT_MAX_STALE_SEC = 48 * 60 * 60

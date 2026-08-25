@@ -113,6 +113,30 @@ class OfficialDebtSourceTests(unittest.TestCase):
         self.assertEqual(events[0]["source_local_time"], "2026-02-04T08:30:00-05:00")
         self.assertEqual(events[0]["scheduled_time_utc"], "2026-02-04T13:30:00Z")
 
+    def test_bessent_macro_speech_is_included_and_ceremonial_remarks_are_excluded(self):
+        events = parse_treasury_press_releases(
+            {"items": [
+                {
+                    "datetime": "2026-06-23T19:15:00Z",
+                    "url": "/news/press-releases/sb0539/",
+                    "title": "Remarks from Secretary of the Treasury Scott Bessent at The Economic Club of New York: American Economic Statecraft",
+                },
+                {
+                    "datetime": "2026-08-10T13:05:11Z",
+                    "url": "/news/press-releases/sb0601/",
+                    "title": "Remarks from Secretary of the Treasury Scott Bessent at Joint Base Renaming Ceremony",
+                },
+            ]},
+            FETCHED_AT,
+        )
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["event_code"], "treasury_secretary_speech")
+        self.assertEqual(events[0]["event_subtype"], "bessent_published")
+        self.assertEqual(events[0]["speaker"], "Scott Bessent")
+        self.assertEqual(events[0]["time_precision"], "exact")
+        self.assertEqual(events[0]["time_basis"], "publication_time")
+        self.assertEqual(events[0]["scheduled_time_utc"], "2026-06-23T23:15:00Z")
+
     def test_press_empty_official_year_is_valid(self):
         self.assertEqual(
             parse_treasury_press_releases({"items": []}, FETCHED_AT),

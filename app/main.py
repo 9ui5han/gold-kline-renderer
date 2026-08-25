@@ -449,6 +449,7 @@ PUBLIC_MACRO_EVENT_TYPES = [
     {"event_code": "treasury_auction", "label_zh": "美国国债拍卖", "label_en": "Treasury Auction", "source": "treasury_auctions", "local_timezone": "America/New_York"},
     {"event_code": "treasury_buyback", "label_zh": "美国国债回购", "label_en": "Treasury Buyback", "source": "treasury_buybacks", "local_timezone": "America/New_York"},
     {"event_code": "treasury_announcement", "label_zh": "美国财政部公告", "label_en": "Treasury Debt Announcement", "source": "treasury_press", "local_timezone": "America/New_York"},
+    {"event_code": "treasury_secretary_speech", "label_zh": "Scott Bessent 财政部长讲话", "label_en": "Scott Bessent Speech", "source": "treasury_press", "local_timezone": "America/New_York"},
 ]
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",

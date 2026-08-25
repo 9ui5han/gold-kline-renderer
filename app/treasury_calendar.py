@@ -40,6 +40,25 @@ _PRESS_EXCLUSIONS = (
     "vehicle auction",
     "tax lien auction",
 )
+_BESSENT_NAME_MARKERS = (
+    "scott bessent",
+    "secretary bessent",
+    "treasury secretary bessent",
+)
+_BESSENT_SPEECH_MARKERS = (
+    "remarks",
+    "statement",
+    "address",
+    "testimony",
+)
+_BESSENT_CEREMONIAL_EXCLUSIONS = (
+    "commencement",
+    "renaming ceremony",
+    "official unveiling",
+    "anniversary celebration",
+    "foster youth",
+    "high school",
+)
 
 
 class TreasuryCalendarParseError(ValueError):
@@ -214,9 +233,19 @@ def parse_treasury_press_releases(
         if not raw_time or not href or not title:
             raise TreasuryCalendarParseError("TREASURY_PRESS_FIELDS_MISSING")
         topic_text = title.casefold()
-        if any(exclusion in topic_text for exclusion in _PRESS_EXCLUSIONS):
-            continue
-        if not any(keyword in topic_text for keyword in _PRESS_KEYWORDS):
+        is_debt_announcement = (
+            not any(exclusion in topic_text for exclusion in _PRESS_EXCLUSIONS)
+            and any(keyword in topic_text for keyword in _PRESS_KEYWORDS)
+        )
+        is_bessent_speech = (
+            any(marker in topic_text for marker in _BESSENT_NAME_MARKERS)
+            and any(marker in topic_text for marker in _BESSENT_SPEECH_MARKERS)
+            and not any(
+                exclusion in topic_text
+                for exclusion in _BESSENT_CEREMONIAL_EXCLUSIONS
+            )
+        )
+        if not is_debt_announcement and not is_bessent_speech:
             continue
         # Treasury's annual search JSON appends ``Z`` to the publication
         # wall-clock value, while the official article page exposes that same
@@ -235,10 +264,19 @@ def parse_treasury_press_releases(
         if source_url in seen:
             continue
         seen.add(source_url)
-        events.append({
-            "event_id": _event_id("announcement", source_url),
-            "event_code": "treasury_announcement",
-            "event_subtype": "debt_management",
+        event_code = (
+            "treasury_announcement"
+            if is_debt_announcement
+            else "treasury_secretary_speech"
+        )
+        event_subtype = (
+            "debt_management" if is_debt_announcement else "bessent_published"
+        )
+        event_prefix = "announcement" if is_debt_announcement else "bessent-speech"
+        event = {
+            "event_id": _event_id(event_prefix, source_url),
+            "event_code": event_code,
+            "event_subtype": event_subtype,
             "title": title,
             "country": "US",
             "currency": "USD",
@@ -255,5 +293,8 @@ def parse_treasury_press_releases(
             "source": "treasury_press",
             "source_url": source_url,
             "source_fetched_at_utc": source_fetched_at_utc,
-        })
+        }
+        if is_bessent_speech and not is_debt_announcement:
+            event["speaker"] = "Scott Bessent"
+        events.append(event)
     return sorted(events, key=lambda event: event["scheduled_time_utc"])
