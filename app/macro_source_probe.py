@@ -21,7 +21,10 @@ import httpx
 def build_user_agent() -> str:
     return os.getenv(
         "MACRO_USER_AGENT",
-        "GoldKlineRender/2.0 (+https://gold-kline-renderer.onrender.com)",
+        (
+            "Mozilla/5.0 (compatible; GoldKlineRender/2.0; "
+            "+https://gold-kline-renderer-production.up.railway.app)"
+        ),
     ).strip()
 
 
@@ -78,11 +81,38 @@ SOURCE_SPECS = (
     ),
     SourceSpec(
         source="fed_speeches",
-        url="https://www.federalreserve.gov/feeds/s_t_powell.xml",
+        url="https://www.federalreserve.gov/feeds/speeches_and_testimony.xml",
         accept="application/rss+xml,application/xml,text/xml;q=0.9,*/*;q=0.8",
         expected_content_types=("application/rss+xml", "application/xml", "text/xml"),
         body_marker="<rss",
         response_format="xml",
+    ),
+    SourceSpec(
+        source="nyfed_williams_speeches",
+        url="https://www.newyorkfed.org/newsevents/speeches/index",
+        accept="text/html,application/xhtml+xml",
+        expected_content_types=("text/html", "application/xhtml+xml"),
+        body_marker="speeches",
+        response_format="html",
+    ),
+    SourceSpec(
+        source="whitehouse_remarks",
+        url="https://www.whitehouse.gov/remarks/",
+        accept="text/html,application/xhtml+xml",
+        expected_content_types=("text/html", "application/xhtml+xml"),
+        body_marker="remarks from president trump",
+        response_format="html",
+    ),
+    SourceSpec(
+        source="state_diplomacy",
+        url=(
+            "https://www.state.gov/wp-json/wp/v2/state_press_release?"
+            "per_page=100&_fields=id,date_gmt,link,title,content,type"
+        ),
+        accept="application/json",
+        expected_content_types=("application/json", "text/json"),
+        body_marker="",
+        response_format="json_array",
     ),
     SourceSpec(
         source="treasury_auctions",
@@ -138,11 +168,12 @@ def _structure_valid(spec: SourceSpec, response: httpx.Response) -> bool:
     ):
         return False
 
-    if spec.response_format == "json":
+    if spec.response_format in {"json", "json_array"}:
         try:
-            return isinstance(response.json(), dict)
+            decoded = response.json()
         except (json.JSONDecodeError, ValueError):
             return False
+        return isinstance(decoded, list) if spec.response_format == "json_array" else isinstance(decoded, dict)
 
     return spec.body_marker in response.text.lower()
 

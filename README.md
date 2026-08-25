@@ -109,7 +109,9 @@ GET /v1/macro-events/source-health
 Authorization: Bearer <RENDER_SERVICE_TOKEN>
 ```
 
-返回 `fed`、`bls`、`bea`、`fed_speeches`、`treasury_auctions`、`treasury_buybacks`、`treasury_press` 七个来源的HTTP状态、响应类型和结构校验结果。
+返回 `fed`、`bls`、`bea`、`fed_speeches`、`nyfed_williams_speeches`、`whitehouse_remarks`、`state_diplomacy`、`treasury_auctions`、`treasury_buybacks`、`treasury_press` 十个来源的 HTTP 状态、响应类型和结构校验结果。
+
+讲话类事件只使用官方链接和官方发布时间/日期：美联储来源覆盖 Kevin Warsh、Philip Jefferson、Michelle Bowman、Christopher Waller 与 Jerome Powell；纽约联储 John Williams 页面只有发布日期，因此该类事件标为 `date_only`，不会被用于关联某一根精确时间的 K 线。白宫总统讲话和国务院外交官员讲话/声明需要同时满足“官方来源、明确发言人或职务、宏观或地缘关键词”三层筛选；它们的时间是官方发布时间，不等于已证明的市场因果。
 
 按预测范围查询正式宏观事件上下文：
 

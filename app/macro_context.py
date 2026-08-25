@@ -19,7 +19,7 @@ import httpx
 from .bea_calendar import parse_bea_release_dates
 from .bls_calendar import parse_bls_ics
 from .fed_calendar import parse_fed_fomc_calendar
-from .fed_speech_calendar import parse_fed_powell_rss
+from .fed_speech_calendar import parse_fed_fomc_speeches_rss
 from .macro_source_probe import (
     CONNECT_TIMEOUT_SEC,
     READ_TIMEOUT_SEC,
@@ -33,9 +33,14 @@ from .treasury_calendar import (
     parse_treasury_buybacks,
     parse_treasury_press_releases,
 )
+from .us_official_speech_calendar import (
+    parse_nyfed_williams_speeches,
+    parse_state_diplomatic_releases,
+    parse_whitehouse_trump_remarks,
+)
 
 
-CACHE_SCHEMA_VERSION = "macro-source-cache-v3"
+CACHE_SCHEMA_VERSION = "macro-source-cache-v4"
 CONTEXT_SCHEMA_VERSION = "macro-events-context-v1"
 DEFAULT_CACHE_TTL_SEC = 6 * 60 * 60
 DEFAULT_MAX_STALE_SEC = 48 * 60 * 60
@@ -46,10 +51,22 @@ _PARSERS: dict[str, Callable[[Any, str], list[dict[str, Any]]]] = {
     "fed": parse_fed_fomc_calendar,
     "bls": parse_bls_ics,
     "bea": parse_bea_release_dates,
-    "fed_speeches": parse_fed_powell_rss,
+    "fed_speeches": parse_fed_fomc_speeches_rss,
+    "nyfed_williams_speeches": parse_nyfed_williams_speeches,
+    "whitehouse_remarks": parse_whitehouse_trump_remarks,
+    "state_diplomacy": parse_state_diplomatic_releases,
     "treasury_auctions": parse_treasury_auctions,
     "treasury_buybacks": parse_treasury_buybacks,
     "treasury_press": parse_treasury_press_releases,
+}
+
+# 这些来源是“最近已发布的讲话/声明”列表。某一轮没有符合三层筛选
+# （官方来源、发言人/职务、宏观或地缘关键词）的条目是正常状态，不表示来源故障。
+_EVENT_SOURCES_ALLOW_EMPTY = {
+    "fed_speeches",
+    "nyfed_williams_speeches",
+    "whitehouse_remarks",
+    "state_diplomacy",
 }
 
 
@@ -268,7 +285,11 @@ def _fetch_source(
         }
 
     try:
-        parser_input: Any = response.json() if spec.response_format == "json" else response.text
+        parser_input: Any = (
+            response.json()
+            if spec.response_format in {"json", "json_array"}
+            else response.text
+        )
         events = _PARSERS[spec.source](parser_input, fetched_at_utc)
     except (ValueError, json.JSONDecodeError) as exc:
         return {
@@ -433,6 +454,7 @@ class MacroContextService:
                     client,
                     fetched_at_utc,
                     query_years if spec.source == "treasury_press" else None,
+                    spec.source in _EVENT_SOURCES_ALLOW_EMPTY,
                 ): spec.source
                 for spec in specs
             }

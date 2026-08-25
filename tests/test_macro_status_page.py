@@ -22,7 +22,9 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertNotIn(main.TOKEN, page)
         self.assertIn("/v1/macro-events/status-summary", script)
         for event_name in (
-            "CPI", "PPI", "非农", "PCE", "FOMC", "Powell",
+            "CPI", "PPI", "非农", "PCE", "FOMC", "Kevin Warsh", "Philip Jefferson",
+            "Michelle Bowman", "Christopher Waller", "Jerome Powell", "John Williams",
+            "Donald Trump", "美国外交官员讲话与声明",
             "美国国债发行与拍卖", "美国国债回购", "美国财政部债务公告",
             "Scott Bessent 财政部长讲话",
         ):
@@ -198,6 +200,9 @@ class MacroStatusPageTests(unittest.TestCase):
             {item["event_code"] for item in summaries},
             {
                 "cpi", "ppi", "employment", "pce", "fomc", "fed_speech",
+                "fed_warsh_speech", "fed_jefferson_speech", "fed_bowman_speech",
+                "fed_waller_speech", "nyfed_williams_speech",
+                "whitehouse_trump_remarks", "state_diplomatic_official_statement",
                 "treasury_auction", "treasury_buyback", "treasury_announcement",
                 "treasury_secretary_speech",
             },
@@ -219,7 +224,7 @@ class MacroStatusPageTests(unittest.TestCase):
             main.MACRO_CONTEXT_SERVICE,
             "_load_cache",
             return_value={
-                "schema_version": "macro-source-cache-v3",
+                "schema_version": "macro-source-cache-v4",
                 "sources": {
                     "official": {
                         "fetched_at_utc": "2026-08-25T00:00:00Z",

@@ -29,6 +29,21 @@ VALID_RESPONSES = {
         "text/xml; charset=utf-8",
         "<rss><channel><item><title>Powell</title></item></channel></rss>",
     ),
+    "nyfed_williams_speeches": (
+        200,
+        "text/html; charset=utf-8",
+        "<html><body><h1>Speeches</h1></body></html>",
+    ),
+    "whitehouse_remarks": (
+        200,
+        "text/html; charset=utf-8",
+        "<html><body>Remarks from President Trump</body></html>",
+    ),
+    "state_diplomacy": (
+        200,
+        "application/json",
+        "[]",
+    ),
     "treasury_auctions": (
         200,
         "application/json",
@@ -83,7 +98,7 @@ class MacroSourceProbeTests(unittest.TestCase):
 
         self.assertEqual(result["schema_version"], "macro-source-health-v1")
         self.assertEqual(result["data_status"], "complete")
-        self.assertEqual(result["valid_source_count"], 7)
+        self.assertEqual(result["valid_source_count"], 10)
         self.assertEqual(result["directional_bias"], "not_calculated")
         self.assertTrue(all(item["structure_valid"] for item in result["sources"]))
 
@@ -121,8 +136,8 @@ class MacroSourceProbeTests(unittest.TestCase):
             "checked_at_utc": "2026-08-03T00:00:00Z",
             "data_status": "complete",
             "directional_bias": "not_calculated",
-            "source_count": 7,
-            "valid_source_count": 7,
+            "source_count": 10,
+            "valid_source_count": 10,
             "sources": [],
         }
         with (

@@ -51,6 +51,18 @@ FED_SPEECH_RSS = """<rss><channel><item>
 <link>https://www.federalreserve.gov/newsevents/speech/powell20260916a.htm</link>
 <pubDate>Wed, 16 Sep 2026 15:00:00 GMT</pubDate>
 </item></channel></rss>"""
+NYFED_WILLIAMS_HTML = """<table><tr><td class="dirColL">Sep 16, 2026</td>
+<td><a href="/newsevents/speeches/2026/wil260916" class="paraHeader">Williams: Monetary Policy Outlook</a></td>
+</tr></table>"""
+WHITEHOUSE_REMARKS_HTML = """<ul><li class="playlist_term-remarks-from-president-trump">
+<a href="/videos/trump-energy/" title="President Trump Remarks on Energy and Trade">President Trump Remarks on Energy and Trade</a>
+<time datetime="2026-09-16T12:45:00+00:00"></time></li></ul>"""
+STATE_DIPLOMACY_JSON = [{
+    "date_gmt": "2026-09-16T12:50:00",
+    "link": "https://www.state.gov/releases/rubio-energy-sanctions/",
+    "title": {"rendered": "Remarks by Secretary Rubio on Energy Sanctions"},
+    "content": {"rendered": "<p>Iran energy policy.</p>"},
+}]
 TREASURY_AUCTIONS_JSON = {"data": [{
     "auction_date": "2026-09-16",
     "cusip": "91282TEST",
@@ -88,6 +100,9 @@ def response_map(overrides=None):
         "bls": (200, "text/calendar; charset=utf-8", BLS_ICS),
         "bea": (200, "application/json", json.dumps(BEA_JSON)),
         "fed_speeches": (200, "text/xml", FED_SPEECH_RSS),
+        "nyfed_williams_speeches": (200, "text/html", NYFED_WILLIAMS_HTML),
+        "whitehouse_remarks": (200, "text/html", WHITEHOUSE_REMARKS_HTML),
+        "state_diplomacy": (200, "application/json", json.dumps(STATE_DIPLOMACY_JSON)),
         "treasury_auctions": (
             200, "application/json", json.dumps(TREASURY_AUCTIONS_JSON),
         ),
@@ -138,11 +153,13 @@ class MacroContextTests(unittest.TestCase):
 
         self.assertEqual(result["data_status"], "complete")
         self.assertEqual(result["directional_bias"], "not_calculated")
-        self.assertEqual(len(result["events"]), 9)
+        self.assertEqual(len(result["events"]), 12)
         self.assertEqual(
             {event["event_code"] for event in result["events"]},
             {
-                "cpi", "pce", "fomc", "fed_speech", "treasury_auction",
+                "cpi", "pce", "fomc", "fed_speech", "nyfed_williams_speech",
+                "whitehouse_trump_remarks", "state_diplomatic_official_statement",
+                "treasury_auction",
                 "treasury_buyback", "treasury_announcement",
                 "treasury_secretary_speech",
             },
@@ -164,7 +181,7 @@ class MacroContextTests(unittest.TestCase):
             result["source_status"]["bls"]["error_code"],
             "HTTP_STATUS_403",
         )
-        self.assertEqual(len(result["events"]), 8)
+        self.assertEqual(len(result["events"]), 11)
 
     def test_timeout_uses_recent_stale_cache_and_marks_partial(self):
         service = self.service(cache_ttl_sec=60, max_stale_sec=3600)
@@ -247,6 +264,19 @@ class MacroContextTests(unittest.TestCase):
             result["source_status"]["bea"]["error_code"],
             "SOURCE_EVENTS_EMPTY",
         )
+
+    def test_speech_source_without_a_qualified_item_is_healthy(self):
+        no_macro_remarks = """<ul><li class="playlist_term-remarks-from-president-trump">
+        <a href="/videos/reception/" title="President Trump Participates in a Team USA Reception">Reception</a>
+        <time datetime="2026-09-16T12:45:00+00:00"></time></li></ul>"""
+        with mock_client(
+            response_map({"whitehouse_remarks": (200, "text/html", no_macro_remarks)})
+        ) as client:
+            result = self.service().get_context(REQUEST, client=client, now=NOW)
+
+        self.assertEqual(result["data_status"], "complete")
+        self.assertTrue(result["source_status"]["whitehouse_remarks"]["available"])
+        self.assertEqual(result["source_status"]["whitehouse_remarks"]["event_count"], 0)
 
     def test_events_outside_expanded_query_window_are_filtered(self):
         responses = response_map(

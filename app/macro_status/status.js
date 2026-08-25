@@ -157,7 +157,7 @@ async function runCheck() {
   checkButton.disabled = true;
   checkButton.textContent = "检查中…";
   message.className = "message";
-  message.textContent = "正在连接 Render 并检查七个官方数据源，请稍候。";
+  message.textContent = "正在连接 Render 并检查官方宏观数据源，请稍候。";
   setOverall("idle", "检查中");
 
   try {
@@ -186,7 +186,7 @@ async function runCheck() {
     sortedEventTypes.forEach(updateEventType);
     reorderEventCards(sortedEventTypes);
     document.querySelector("#valid-count").textContent =
-      `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 7)}`;
+      `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 10)}`;
     document.querySelector("#checked-time").textContent = formatBeijingTime(
       sourceData.checked_at_utc,
     );
@@ -199,7 +199,7 @@ async function runCheck() {
       message.textContent = "Render 服务健康检查异常；下方数据源状态仅供排查参考。";
     } else if (status === "complete") {
       setOverall("good", "全部正常");
-      message.textContent = "Render 与七个官方宏观数据源均正常。";
+      message.textContent = "Render 与全部官方宏观数据源均正常。";
     } else if (status === "partial") {
       setOverall("partial", "部分可用");
       message.textContent = "Render 在线，但至少一个官方数据源异常，请查看下方红色或黄色卡片。";

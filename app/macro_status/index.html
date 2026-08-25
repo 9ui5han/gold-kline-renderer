@@ -13,7 +13,7 @@
       <div>
         <p class="eyebrow">GOLD K-LINE RENDERER</p>
         <h1>宏观事件服务状态</h1>
-        <p class="subtitle">检查 Render 服务以及美联储、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。</p>
+        <p class="subtitle">检查 Render 服务以及美联储、纽约联储、白宫、国务院、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。</p>
       </div>
       <div id="overall-badge" class="overall-badge idle" role="status" aria-live="polite">
         <span class="status-dot"></span>
@@ -37,7 +37,7 @@
       </article>
       <article class="summary-card">
         <span>有效来源</span>
-        <strong id="valid-count">— / 7</strong>
+        <strong id="valid-count">— / 10</strong>
       </article>
       <article class="summary-card">
         <span>检查时间（北京时间）</span>
@@ -67,7 +67,19 @@
           <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
         </article>
         <article class="source-card idle" data-source="fed_speeches">
-          <div class="source-title"><span class="source-icon">S</span><div><h3>Fed Speeches</h3><p>Powell 官方讲话 RSS</p></div></div>
+          <div class="source-title"><span class="source-icon">S</span><div><h3>Fed Speeches</h3><p>美联储讲话与证词 RSS</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="nyfed_williams_speeches">
+          <div class="source-title"><span class="source-icon">N</span><div><h3>New York Fed Speeches</h3><p>纽约联储 John Williams 官方讲话页</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="whitehouse_remarks">
+          <div class="source-title"><span class="source-icon">W</span><div><h3>White House Remarks</h3><p>总统 Donald Trump 官方讲话页</p></div></div>
+          <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
+        </article>
+        <article class="source-card idle" data-source="state_diplomacy">
+          <div class="source-title"><span class="source-icon">D</span><div><h3>State Department</h3><p>国务院官方外交新闻接口</p></div></div>
           <dl><div><dt>状态</dt><dd data-field="state">未检查</dd></div><div><dt>HTTP</dt><dd data-field="http">—</dd></div><div><dt>内容类型</dt><dd data-field="content">—</dd></div><div><dt>错误代码</dt><dd data-field="error">—</dd></div></dl>
         </article>
         <article class="source-card idle" data-source="treasury_auctions">
@@ -99,7 +111,14 @@
         <article class="event-card idle" data-event-code="employment"><div class="event-card-head"><span class="event-code">NFP</span><span data-field="state">未检查</span></div><h3>非农与就业报告</h3><p>来源：BLS Employment Situation</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="pce"><div class="event-card-head"><span class="event-code">PCE</span><span data-field="state">未检查</span></div><h3>PCE 个人消费支出物价</h3><p>来源：BEA 美国经济分析局</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="fomc"><div class="event-card-head"><span class="event-code">FOMC</span><span data-field="state">未检查</span></div><h3>FOMC 美联储议息会议</h3><p>来源：Federal Reserve</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
-        <article class="event-card idle" data-event-code="fed_speech"><div class="event-card-head"><span class="event-code">SPEECH</span><span data-field="state">未检查</span></div><h3>Powell 官方讲话</h3><p>来源：Federal Reserve RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_warsh_speech"><div class="event-card-head"><span class="event-code">WARSH</span><span data-field="state">未检查</span></div><h3>Kevin Warsh 美联储主席讲话</h3><p>来源：Federal Reserve Speeches &amp; Testimony RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_jefferson_speech"><div class="event-card-head"><span class="event-code">JEFFERSON</span><span data-field="state">未检查</span></div><h3>Philip Jefferson 美联储副主席讲话</h3><p>来源：Federal Reserve Speeches &amp; Testimony RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_bowman_speech"><div class="event-card-head"><span class="event-code">BOWMAN</span><span data-field="state">未检查</span></div><h3>Michelle Bowman 美联储理事讲话</h3><p>来源：Federal Reserve Speeches &amp; Testimony RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_speech"><div class="event-card-head"><span class="event-code">POWELL</span><span data-field="state">未检查</span></div><h3>Jerome Powell 美联储讲话</h3><p>来源：Federal Reserve Speeches &amp; Testimony RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="fed_waller_speech"><div class="event-card-head"><span class="event-code">WALLER</span><span data-field="state">未检查</span></div><h3>Christopher Waller 美联储理事讲话</h3><p>来源：Federal Reserve Speeches &amp; Testimony RSS</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="nyfed_williams_speech"><div class="event-card-head"><span class="event-code">WILLIAMS</span><span data-field="state">未检查</span></div><h3>John Williams 纽约联储主席讲话</h3><p>来源：New York Fed Speeches</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="whitehouse_trump_remarks"><div class="event-card-head"><span class="event-code">TRUMP</span><span data-field="state">未检查</span></div><h3>Donald Trump 总统讲话</h3><p>来源：White House Remarks</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
+        <article class="event-card idle" data-event-code="state_diplomatic_official_statement"><div class="event-card-head"><span class="event-code">STATE</span><span data-field="state">未检查</span></div><h3>美国外交官员讲话与声明</h3><p>来源：U.S. Department of State official API</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="treasury_auction"><div class="event-card-head"><span class="event-code">AUCTION</span><span data-field="state">未检查</span></div><h3>美国国债发行与拍卖</h3><p>来源：Fiscal Data</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="treasury_buyback"><div class="event-card-head"><span class="event-code">BUYBACK</span><span data-field="state">未检查</span></div><h3>美国国债回购</h3><p>来源：TreasuryDirect</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="treasury_announcement"><div class="event-card-head"><span class="event-code">NOTICE</span><span data-field="state">未检查</span></div><h3>美国财政部债务公告</h3><p>来源：Treasury Press Releases</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
