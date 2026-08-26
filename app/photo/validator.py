@@ -31,6 +31,15 @@ def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> 
         if item.get("layout_overflow") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "TEXT_OVERFLOW", "message": "文字超出安全长度"})
+        if item.get("render_language") != "en" or item.get("english_contract_valid") is not True:
+            bad_pages.add(page_no)
+            errors.append({"page_no": page_no, "code": "NON_ENGLISH_RENDER", "message": "最终图片必须使用英文"})
+        if item.get("layout_overlap") is True:
+            bad_pages.add(page_no)
+            errors.append({"page_no": page_no, "code": "LAYOUT_OVERLAP", "message": "人物、图表或文字发生遮挡"})
+        if int(item.get("disclaimer_count") or 0) != 1:
+            bad_pages.add(page_no)
+            errors.append({"page_no": page_no, "code": "DISCLAIMER_COUNT_INVALID", "message": "英文免责声明必须且只能出现一次"})
         if photo_plan.get("content_type") == "knowledge" and page.get("visual_type") in {"indicator_panel", "candlestick_demo", "market_chart"}:
             if item.get("risk_note_present") is not True:
                 bad_pages.add(page_no)
