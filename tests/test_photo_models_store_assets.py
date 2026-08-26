@@ -5,6 +5,11 @@ from pathlib import Path
 
 
 class PhotoModelsStoreAssetsTests(unittest.TestCase):
+    def test_docker_image_packages_photo_assets(self):
+        project_root = Path(__file__).resolve().parents[1]
+        dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("COPY assets/photo ./assets/photo", dockerfile)
+
     def test_photo_font_renders_distinct_chinese_glyphs(self):
         from app.photo.chart_renderer import _font
 
