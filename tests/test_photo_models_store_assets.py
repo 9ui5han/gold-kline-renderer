@@ -32,11 +32,18 @@ class PhotoModelsStoreAssetsTests(unittest.TestCase):
             "teacher_thinking",
         ):
             item = registry.resolve(pose, "character")
-            svg = Path(item["asset_path"]).read_text(encoding="utf-8")
             self.assertEqual(item["license"], "PROJECT-OWNED")
-            self.assertIn("viewBox=\"0 0 600 900\"", svg)
-            self.assertNotIn("Open Peeps", svg)
-            self.assertNotIn("Humaaans", svg)
+            path = Path(item["asset_path"])
+            if pose == "teacher_front":
+                from PIL import Image
+                with Image.open(path) as image:
+                    self.assertEqual(image.mode, "RGBA")
+                    self.assertNotEqual(image.getchannel("A").getextrema(), (255, 255))
+            else:
+                svg = path.read_text(encoding="utf-8")
+                self.assertIn("viewBox=\"0 0 600 900\"", svg)
+                self.assertNotIn("Open Peeps", svg)
+                self.assertNotIn("Humaaans", svg)
 
         for icon in (
             "search",

@@ -93,6 +93,56 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("PHOTO_MARKET_CHART_NOT_IMPLEMENTED", response.text)
 
+    def test_explicit_unknown_indicator_plugin_is_rejected(self):
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "pages": [{
+                    "page_no": 1,
+                    "visual_type": "indicator_panel",
+                    "visual_focus": "custom indicator",
+                    "required_elements": [],
+                    "annotations": [],
+                    "risk_note": "Educational illustration",
+                    "teaching_spec": {
+                        "indicator_id": "unknown_magic",
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": "basic_use"
+                    }
+                }],
+                "route_payload": {"schema_version": "photo-route-v1", "route_name": "knowledge"},
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("INDICATOR_PLUGIN_NOT_SUPPORTED", response.text)
+
+        for indicator_id in ("rsi_magic", "ictx"):
+            body = response.request.content
+            import json
+            payload = json.loads(body)
+            payload["pages"][0]["teaching_spec"]["indicator_id"] = indicator_id
+            retry = self.api.post("/v1/photo/charts/render", headers=AUTH, json=payload)
+            self.assertEqual(retry.status_code, 422)
+            self.assertIn("INDICATOR_PLUGIN_NOT_SUPPORTED", retry.text)
+
+    def test_unsupported_lesson_goal_is_rejected(self):
+        base = {
+            "schema_version": "photo-chart-request-v1",
+            "content_type": "knowledge",
+            "pages": [{
+                "page_no": 1, "visual_type": "indicator_panel", "visual_focus": "lesson",
+                "required_elements": [], "annotations": [], "risk_note": "Educational illustration",
+                "teaching_spec": {"indicator_id": "rsi", "indicator_kind": "oscillator", "lesson_goal": "overbought_intro"},
+            }],
+            "route_payload": {"schema_version": "photo-route-v1", "route_name": "knowledge"},
+        }
+        response = self.api.post("/v1/photo/charts/render", headers=AUTH, json=base)
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("LESSON_GOAL_NOT_SUPPORTED", response.text)
+
     def test_missing_required_asset_is_rejected(self):
         response = self.api.post(
             "/v1/photo/assets/resolve",
@@ -116,7 +166,7 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertIn("PHOTO_ASSET_NOT_FOUND", response.text)
 
     def test_repair_rejects_financial_fact_changes(self):
-        for error_code in ("PRICE_MISMATCH", "FORECAST_CONDITION_MISMATCH"):
+        for error_code in ("PRICE_MISMATCH", "FORECAST_CONDITION_MISMATCH", "TEACHING_SIGNAL_INVALID"):
             with self.subTest(error_code=error_code):
                 response = self.api.post(
                     "/v1/photo/repair",

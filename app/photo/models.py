@@ -16,6 +16,31 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PhotoTeachingSpec(StrictModel):
+    indicator_id: str = Field(min_length=1, max_length=40)
+    indicator_kind: Literal["oscillator", "overlay", "price_structure", "pattern"]
+    lesson_goal: str = Field(min_length=1, max_length=60)
+
+    @model_validator(mode="after")
+    def indicator_kind_matches_plugin(self) -> "PhotoTeachingSpec":
+        normalized = self.indicator_id.lower()
+        rsi_goals = {"range_overview", "oversold_recovery", "overbought_reversal", "worked_example"}
+        ict_goals = {
+            "bullish_order_block", "bearish_order_block",
+            "bullish_liquidity_sweep", "bearish_liquidity_sweep",
+            "bullish_fvg", "bearish_fvg", "bullish_bos", "bearish_bos",
+        }
+        if normalized in {"rsi", "rsi_14"} and self.indicator_kind != "oscillator":
+            raise ValueError("INDICATOR_KIND_MISMATCH")
+        if normalized in {"rsi", "rsi_14"} and self.lesson_goal not in rsi_goals:
+            raise ValueError("LESSON_GOAL_NOT_SUPPORTED")
+        if normalized in {"ict", "ict_structure"} and self.indicator_kind != "price_structure":
+            raise ValueError("INDICATOR_KIND_MISMATCH")
+        if normalized in {"ict", "ict_structure"} and self.lesson_goal not in ict_goals:
+            raise ValueError("LESSON_GOAL_NOT_SUPPORTED")
+        return self
+
+
 class PhotoChartPage(StrictModel):
     page_no: int = Field(ge=1, le=10)
     visual_type: str = Field(min_length=1, max_length=40)
@@ -23,6 +48,7 @@ class PhotoChartPage(StrictModel):
     required_elements: list[str] = Field(default_factory=list, max_length=12)
     annotations: list[dict[str, Any]] = Field(default_factory=list, max_length=8)
     risk_note: str = Field(default="", max_length=120)
+    teaching_spec: PhotoTeachingSpec | None = None
 
 
 class PhotoChartRequest(StrictModel):

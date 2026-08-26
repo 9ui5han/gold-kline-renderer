@@ -7,7 +7,6 @@ from PIL import Image, ImageDraw
 
 from .chart_renderer import CYAN, INK, _font
 
-NAVY, GOLD, SKIN = "#123052", "#D9A62E", "#D3A17E"
 MUTED, PANEL = "#66717D", "#F3F7FA"
 ENGLISH_DISCLAIMER = "Educational illustration | Not real-time market data"
 
@@ -56,14 +55,22 @@ def _wrapped_lines(text: str, limit: int) -> list[str]:
     return result
 
 
-def _draw_teacher(draw: ImageDraw.ImageDraw, x: int, y: int, scale: float = 1.0) -> tuple[int, int, int, int]:
-    head = (x + int(90 * scale), y, x + int(250 * scale), y + int(190 * scale))
-    draw.ellipse(head, fill=SKIN)
-    draw.pieslice((x + int(85 * scale), y - int(18 * scale), x + int(255 * scale), y + int(120 * scale)), 180, 360, fill="#252A34")
-    draw.polygon([(x + int(25 * scale), y + int(400 * scale)), (x + int(70 * scale), y + int(180 * scale)), (x + int(270 * scale), y + int(180 * scale)), (x + int(315 * scale), y + int(400 * scale))], fill=NAVY)
-    draw.polygon([(x + int(130 * scale), y + int(180 * scale)), (x + int(210 * scale), y + int(180 * scale)), (x + int(195 * scale), y + int(300 * scale)), (x + int(145 * scale), y + int(300 * scale))], fill="white")
-    draw.polygon([(x + int(170 * scale), y + int(190 * scale)), (x + int(190 * scale), y + int(230 * scale)), (x + int(170 * scale), y + int(360 * scale)), (x + int(150 * scale), y + int(230 * scale))], fill=GOLD)
-    return x + int(25 * scale), y - int(18 * scale), x + int(315 * scale), y + int(400 * scale)
+def _paste_character(image: Image.Image, visual_assets: list[dict[str, Any]],
+                     box: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    item = next((asset for asset in visual_assets if asset.get("asset_key") == "teacher_front"), None)
+    path = Path(str((item or {}).get("asset_path") or ""))
+    if not path.is_file() or path.suffix.lower() != ".png":
+        return None
+    character = Image.open(path).convert("RGBA")
+    alpha_box = character.getchannel("A").getbbox()
+    if alpha_box:
+        character = character.crop(alpha_box)
+    left, top, right, bottom = box
+    character.thumbnail((right - left, bottom - top), Image.Resampling.LANCZOS)
+    x = left + (right - left - character.width) // 2
+    y = top + (bottom - top - character.height) // 2
+    image.paste(character, (x, y), character)
+    return (x, y, x + character.width, y + character.height)
 
 
 def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
@@ -142,8 +149,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         _draw_market_background(draw, width, height)
         _, overflow, content_box = _draw_header(draw, title, body, width, compact)
         chart_present = _paste_chart(image, chart, (40, 330, width - 40, 790))
-        character_box = _draw_teacher(draw, width // 2 - 175, 420, .98)
-        character_present = True
+        character_box = _paste_character(image, visual_assets, (285, 350, width - 285, height - 90))
+        character_present = character_box is not None
         draw.rounded_rectangle((width - 270, height - 145, width - 75, height - 82), radius=28, fill=INK)
         draw.text((width - 226, height - 132), "SWIPE", fill="white", font=_font(27, True))
     else:
@@ -153,12 +160,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         else:
             top = max(390, header_bottom + 25)
             chart_present = _paste_chart(image, chart, (72, top, width - 72, height - 105))
-        if (not chart_present and
-                any(str(item.get("asset_key")) == "teacher_front" for item in visual_assets) and
-                layout == "standard"):
-            # A small teacher is allowed only in the lower-right reserved margin.
-            character_box = _draw_teacher(draw, width - 265, height - 390, .58)
-            character_present = True
+        # Characters are cover-only. Content pages reserve the canvas for teaching evidence.
 
     draw.text((72, height - 55), ENGLISH_DISCLAIMER, fill=MUTED, font=_font(22))
     disclaimer_count += 1
@@ -175,6 +177,16 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     english_contract_valid = all(_english_contract_valid(value) for value in (
         title, body, ENGLISH_DISCLAIMER,
     ))
+    teaching_evidence = {
+        "engine_version": str((chart or {}).get("teaching_engine_version") or ""),
+        "indicator_id": str((chart or {}).get("indicator_id") or ""),
+        "scenario_id": str((chart or {}).get("scenario_id") or ""),
+        "ohlc_count": int((chart or {}).get("ohlc_count") or 0),
+        "signal_anchors": list((chart or {}).get("signal_anchors") or []),
+        "visual_layers": list((chart or {}).get("visual_layers") or []),
+        "signal_contract_valid": (chart or {}).get("signal_contract_valid") is True,
+        "data_fingerprint": str((chart or {}).get("data_fingerprint") or ""),
+    }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="PNG")
     return {
@@ -188,4 +200,5 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "character_box": character_box, "content_box": content_box,
         "character_box_intersects_content": character_content_overlap,
         "disclaimer_count": disclaimer_count,
+        "teaching_evidence": teaching_evidence,
     }

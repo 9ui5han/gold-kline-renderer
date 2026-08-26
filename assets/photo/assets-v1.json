@@ -1,7 +1,7 @@
 {
   "schema_version": "photo-assets-manifest-v1",
   "assets": {
-    "teacher_front": {"asset_type":"character","relative_path":"characters/teacher_front.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "teacher_front": {"asset_type":"character","relative_path":"characters/teacher_front_premium.png","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
     "teacher_point_left": {"asset_type":"character","relative_path":"characters/teacher_point_left.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
     "teacher_point_right": {"asset_type":"character","relative_path":"characters/teacher_point_right.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
     "teacher_warning": {"asset_type":"character","relative_path":"characters/teacher_warning.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},

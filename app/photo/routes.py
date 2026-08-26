@@ -39,7 +39,10 @@ def build_photo_router(
         assets = []
         for page in payload.pages:
             output = chart_dir / f"chart_{page.page_no:02d}.png"
-            assets.append(render_chart(page.model_dump(), output))
+            try:
+                assets.append(render_chart(page.model_dump(), output, payload.route_payload))
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"schema_version": "photo-chart-v1", "assets": assets}
 
     @router.post("/assets/resolve")
@@ -108,6 +111,7 @@ def build_photo_router(
             "TIME_",
             "SYMBOL_",
             "INDICATOR_VALUE_",
+            "TEACHING_",
             "MARKET_DIRECTION_",
             "FORECAST_CONDITION_",
             "INVALIDATION_",

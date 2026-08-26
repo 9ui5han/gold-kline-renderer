@@ -106,8 +106,8 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 self.assertEqual(result["render_language"], "en")
                 self.assertFalse(result["disclaimer_drawn"])
                 self.assertEqual(result["template_key"], [
-                    "rsi_panel", "rsi_overbought", "rsi_oversold",
-                    "checklist", "price_rsi_example",
+                    "rsi_range_overview", "rsi_overbought_reversal",
+                    "rsi_oversold_recovery", "checklist", "rsi_worked_example",
                 ][page_no - 1])
             self.assertEqual(len({_digest(path) for path in outputs}), len(outputs))
 
@@ -167,7 +167,10 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 "visual_type": "cover_illustration",
                 "required_elements": ["RSI", "Price chart"],
                 "risk_note": "教学示意图｜不代表实时行情",
-            }, None, [{"asset_key": "teacher_front"}], output, 1080, 1080)
+            }, None, [{
+                "asset_key": "teacher_front",
+                "asset_path": str(Path(__file__).resolve().parents[1] / "assets" / "photo" / "characters" / "teacher_front_premium.png"),
+            }], output, 1080, 1080)
             self.assertTrue(result["character_present"])
             self.assertTrue(result["character_in_safe_area"])
             self.assertFalse(result["layout_overlap"])

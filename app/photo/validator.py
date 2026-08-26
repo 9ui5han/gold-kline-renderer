@@ -40,6 +40,17 @@ def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> 
         if int(item.get("disclaimer_count") or 0) != 1:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "DISCLAIMER_COUNT_INVALID", "message": "英文免责声明必须且只能出现一次"})
+        if page.get("visual_type") in {"indicator_panel", "zone_diagram", "candlestick_demo", "market_chart"}:
+            evidence = item.get("teaching_evidence") if isinstance(item.get("teaching_evidence"), dict) else {}
+            if (
+                evidence.get("engine_version") != "indicator-teaching-v1" or
+                evidence.get("signal_contract_valid") is not True or
+                int(evidence.get("ohlc_count") or 0) < 40 or
+                not evidence.get("signal_anchors") or
+                not evidence.get("data_fingerprint")
+            ):
+                bad_pages.add(page_no)
+                errors.append({"page_no": page_no, "code": "TEACHING_SIGNAL_INVALID", "message": "指标信号没有绑定到有效教学K线"})
         if photo_plan.get("content_type") == "knowledge" and page.get("visual_type") in {"indicator_panel", "candlestick_demo", "market_chart"}:
             if item.get("risk_note_present") is not True:
                 bad_pages.add(page_no)

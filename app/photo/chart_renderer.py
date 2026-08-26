@@ -4,6 +4,8 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont
 
+from .indicator_engine import resolve_teaching_scene
+
 CYAN, INK, MUTED = "#32C4EA", "#17212B", "#6B7785"
 GRID, RED = "#D9E0E6", "#E99AA5"
 BLUE_FILL, RED_FILL = "#D9F3FA", "#FBE3E6"
@@ -90,6 +92,132 @@ def _draw_candles(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]) -> 
         draw.rectangle((x - 10, body_top, x + 10, max(body_top + 3, body_bottom)), fill=color, outline=INK)
 
 
+def _chart_transform(candles: list[dict[str, float]], box: tuple[int, int, int, int]):
+    left, top, right, bottom = box
+    price_min = min(item["low"] for item in candles)
+    price_max = max(item["high"] for item in candles)
+    padding = max((price_max - price_min) * .08, .1)
+    price_min -= padding
+    price_max += padding
+
+    def x_for(index: int) -> float:
+        return left + (index + .5) * (right - left) / len(candles)
+
+    def y_for(value: float) -> float:
+        return bottom - (value - price_min) / (price_max - price_min) * (bottom - top)
+
+    return x_for, y_for
+
+
+def _draw_realistic_candles(draw: ImageDraw.ImageDraw, candles: list[dict[str, float]],
+                            box: tuple[int, int, int, int]) -> tuple[Any, Any]:
+    x_for, y_for = _chart_transform(candles, box)
+    step = (box[2] - box[0]) / len(candles)
+    half_body = max(2.0, min(5.5, step * .34))
+    for index, candle in enumerate(candles):
+        x = x_for(index)
+        color = CYAN if candle["close"] >= candle["open"] else "#5E6873"
+        draw.line((x, y_for(candle["high"]), x, y_for(candle["low"])), fill=INK, width=1)
+        body_top, body_bottom = sorted((y_for(candle["open"]), y_for(candle["close"])))
+        draw.rectangle((x - half_body, body_top, x + half_body, max(body_top + 2, body_bottom)), fill=color, outline=INK, width=1)
+    return x_for, y_for
+
+
+def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
+                             scene: dict[str, Any]) -> None:
+    candles = scene["ohlc"]
+    signal = scene["signals"][0]
+    price_box = (58, 42, width - 28, 306)
+    panel_box = (58, 350, width - 28, height - 32)
+    heading = {
+        "range_overview": "HOW RSI RELATES TO PRICE",
+        "overbought_reversal": "RSI OVERBOUGHT REVERSAL",
+        "worked_example": "WORKED EXAMPLE: SIGNAL TO CONFIRMATION",
+    }.get(scene["scenario_id"], "RSI OVERSOLD RECOVERY")
+    draw.text((58, 5), heading, fill=INK, font=_font(23, True))
+    x_for, price_y = _draw_realistic_candles(draw, candles, price_box)
+    for value, color in ((70, RED), (50, GRID), (30, CYAN)):
+        y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+        draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
+        draw.text((18, y - 10), str(value), fill=INK, font=_font(15, True))
+    if signal["threshold"] == 30:
+        y30 = panel_box[3] - .30 * (panel_box[3] - panel_box[1])
+        draw.rectangle((panel_box[0], y30, panel_box[2], panel_box[3]), fill=BLUE_FILL)
+    else:
+        y70 = panel_box[3] - .70 * (panel_box[3] - panel_box[1])
+        draw.rectangle((panel_box[0], panel_box[1], panel_box[2], y70), fill=RED_FILL)
+    points = []
+    for index, value in enumerate(scene["indicator_values"]):
+        if value is not None:
+            y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+            points.append((x_for(index), y))
+    draw.line(points, fill="#138EB9", width=4, joint="curve")
+    labels = [] if scene["scenario_id"] == "range_overview" else [
+        (signal["indicator_candle_index"], "INDICATOR CONDITION", "#E99AA5"),
+        (signal["cross_candle_index"], "RSI TRIGGER", CYAN),
+        (signal["confirmation_candle_index"], "PRICE CONFIRMATION", "#D9A62E"),
+    ]
+    for position, (index, label, color) in enumerate(labels):
+        x = x_for(index)
+        draw.line((x, price_box[1], x, panel_box[3]), fill=color, width=2)
+        candle = candles[index]
+        py = price_y(candle["high"])
+        draw.ellipse((x - 5, py - 5, x + 5, py + 5), fill=color)
+        label_y = 52 + position * 25
+        label_x = min(width - 220, max(65, x - 90))
+        draw.rounded_rectangle((label_x, label_y, label_x + 185, label_y + 22), radius=8, fill=color)
+        draw.text((label_x + 7, label_y + 3), label, fill=INK, font=_font(12, True))
+    draw.text((58, 320), "RSI (14) — SAME TIME AXIS", fill=INK, font=_font(20, True))
+    if scene["scenario_id"] == "range_overview":
+        draw.text((width - 220, panel_box[1] + 8), "OVERBOUGHT", fill=INK, font=_font(14, True))
+        draw.text((width - 205, panel_box[3] - 24), "OVERSOLD", fill=INK, font=_font(14, True))
+    draw.rectangle(price_box, outline="#C8D2DB", width=1)
+    draw.rectangle(panel_box, outline="#C8D2DB", width=1)
+
+
+def _draw_ict_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
+                             scene: dict[str, Any]) -> None:
+    candles = scene["ohlc"]
+    box = (50, 52, width - 30, height - 36)
+    x_for, y_for = _draw_realistic_candles(draw, candles, box)
+    signals = {item["signal_type"]: item for item in scene["signals"]}
+    bearish = "bearish_order_block" in signals
+    order_block = signals["bearish_order_block" if bearish else "bullish_order_block"]
+    fvg = signals["fair_value_gap"]
+    bos = signals["break_of_structure"]
+    sweep = signals["liquidity_sweep"]
+
+    def zone(item: dict[str, Any], fill: str, label: str) -> None:
+        left = x_for(item["zone_start_index"]) - 5
+        right = x_for(item["zone_end_index"]) + 8
+        top, bottom = sorted((y_for(item["price_high"]), y_for(item["price_low"])))
+        draw.rectangle((left, top, right, bottom), fill=fill, outline=INK, width=1)
+        draw.text((left + 5, top + 4), label, fill=INK, font=_font(14, True))
+
+    zone(order_block, "#FBE3E6" if bearish else "#D9F3FA", "BEARISH ORDER BLOCK" if bearish else "BULLISH ORDER BLOCK")
+    zone(fvg, "#FCE6B8", "FAIR VALUE GAP")
+    bos_y = y_for(bos["price"])
+    draw.line((x_for(bos["reference_index"]), bos_y, x_for(bos["event_index"]) + 42, bos_y), fill="#D9A62E", width=3)
+    draw.text((x_for(bos["event_index"]) + 10, bos_y - 24), "BOS", fill=INK, font=_font(17, True))
+    sweep_x = x_for(sweep["event_index"])
+    sweep_y = y_for(candles[sweep["event_index"]]["high"] if bearish else candles[sweep["event_index"]]["low"])
+    draw.ellipse((sweep_x - 7, sweep_y - 7, sweep_x + 7, sweep_y + 7), fill=RED)
+    draw.text((max(55, sweep_x - 115), sweep_y + 12), "LIQUIDITY SWEEP", fill=INK, font=_font(15, True))
+    retest_x = x_for(order_block["retest_index"])
+    retest_y = y_for(candles[order_block["retest_index"]]["low"])
+    if bearish:
+        retest_y = y_for(candles[order_block["retest_index"]]["high"])
+        draw.line((retest_x, retest_y + 5, retest_x, retest_y + 55), fill=RED, width=4)
+        draw.polygon([(retest_x - 7, retest_y + 10), (retest_x + 7, retest_y + 10), (retest_x, retest_y)], fill=RED)
+        draw.text((retest_x - 45, retest_y + 60), "RETEST", fill=INK, font=_font(16, True))
+    else:
+        draw.line((retest_x, retest_y - 55, retest_x, retest_y - 5), fill=CYAN, width=4)
+        draw.polygon([(retest_x - 7, retest_y - 10), (retest_x + 7, retest_y - 10), (retest_x, retest_y)], fill=CYAN)
+        draw.text((retest_x - 45, retest_y - 80), "RETEST", fill=INK, font=_font(16, True))
+    draw.text((50, 10), "ICT STRUCTURE — COMPUTED FROM THE CANDLES", fill=INK, font=_font(23, True))
+    draw.rectangle(box, outline="#C8D2DB", width=1)
+
+
 def _draw_price_rsi_example(draw: ImageDraw.ImageDraw, width: int, height: int) -> None:
     draw.text((55, 10), "PRICE + RSI CONFIRMATION", fill=INK, font=_font(28, True))
     _draw_candles(draw, (55, 55, width - 45, 265))
@@ -147,21 +275,24 @@ def _template_key(page: dict[str, Any]) -> str:
     return "rsi_panel"
 
 
-def render_chart(page: dict[str, Any], output_path: Path) -> dict[str, Any]:
-    width, height = 900, 480
+def render_chart(page: dict[str, Any], output_path: Path,
+                 route_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    width, height = 900, 560
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     template = _template_key(page)
-    if template == "rsi_panel":
-        _draw_rsi_panel(draw, width, height, "panel")
-    elif template == "rsi_overbought":
-        _draw_rsi_panel(draw, width, height, "overbought")
-    elif template == "rsi_oversold":
-        _draw_rsi_panel(draw, width, height, "oversold")
+    scene = resolve_teaching_scene(page, route_payload)
+    use_teaching_scene = str(page.get("visual_type") or "") in {
+        "indicator_panel", "zone_diagram", "candlestick_demo", "market_chart",
+    }
+    if use_teaching_scene and scene["indicator_id"] == "ict":
+        template = "ict_structure"
+        _draw_ict_teaching_scene(draw, width, height, scene)
+    elif use_teaching_scene and scene["indicator_id"] in {"rsi", "generic"}:
+        template = f"rsi_{scene['scenario_id']}"
+        _draw_rsi_teaching_scene(draw, width, height, scene)
     elif template == "checklist":
         _draw_checklist(draw, width, height, list(page.get("required_elements") or []))
-    elif template == "price_rsi_example":
-        _draw_price_rsi_example(draw, width, height)
     else:
         _draw_steps(draw, width, height, list(page.get("required_elements") or []))
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,4 +302,10 @@ def render_chart(page: dict[str, Any], output_path: Path) -> dict[str, Any]:
         "asset_type": str(page.get("visual_type") or ""), "asset_path": str(output_path),
         "is_teaching_demo": True, "included_elements": list(page.get("required_elements") or []),
         "template_key": template, "render_language": "en", "disclaimer_drawn": False,
+        "teaching_engine_version": scene["engine_version"],
+        "indicator_id": scene["indicator_id"], "indicator_family": scene["indicator_family"],
+        "scenario_id": scene["scenario_id"], "ohlc_count": len(scene["ohlc"]),
+        "signal_anchors": scene["signals"], "visual_layers": scene["layers"],
+        "signal_contract_valid": scene["signal_contract_valid"],
+        "data_fingerprint": scene["data_fingerprint"],
     }
