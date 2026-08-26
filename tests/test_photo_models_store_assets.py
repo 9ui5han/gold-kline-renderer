@@ -75,6 +75,46 @@ class PhotoModelsStoreAssetsTests(unittest.TestCase):
                 "route_payload": {},
             })
 
+    def test_chart_request_accepts_generic_and_legacy_rsi_goals(self):
+        from app.photo.models import PhotoChartRequest
+
+        for lesson_goal in ("overview", "state_a", "state_b", "worked_example", "range_overview"):
+            with self.subTest(lesson_goal=lesson_goal):
+                request = PhotoChartRequest.model_validate({
+                    "schema_version": "photo-chart-request-v1",
+                    "content_type": "knowledge",
+                    "pages": [{
+                        "page_no": 2,
+                        "visual_type": "indicator_panel",
+                        "teaching_spec": {
+                            "indicator_id": "rsi",
+                            "indicator_kind": "oscillator",
+                            "lesson_goal": lesson_goal,
+                        },
+                    }],
+                    "route_payload": {"topic_text": "RSI tutorial"},
+                })
+                self.assertEqual(request.pages[0].teaching_spec.lesson_goal, lesson_goal)
+
+    def test_chart_request_rejects_unknown_rsi_goal(self):
+        from app.photo.models import PhotoChartRequest
+
+        with self.assertRaises(ValueError):
+            PhotoChartRequest.model_validate({
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "pages": [{
+                    "page_no": 2,
+                    "visual_type": "indicator_panel",
+                    "teaching_spec": {
+                        "indicator_id": "rsi",
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": "not_a_real_goal",
+                    },
+                }],
+                "route_payload": {"topic_text": "RSI tutorial"},
+            })
+
     def test_asset_request_rejects_paid_and_unknown_sources(self):
         from app.photo.models import PhotoAssetRequest
 

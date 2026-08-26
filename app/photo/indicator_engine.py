@@ -8,6 +8,46 @@ from typing import Any
 ENGINE_VERSION = "indicator-teaching-v1"
 CANDLE_BODY_SCALE = 1.55
 
+LESSON_GOAL_MAP = {
+    "rsi": {
+        "overview": "range_overview",
+        "state_a": "overbought_reversal",
+        "state_b": "oversold_recovery",
+        "components": "range_overview",
+        "setup": "worked_example",
+        "worked_example": "worked_example",
+    },
+    "ict": {
+        "overview": "bullish_order_block",
+        "state_a": "bullish_order_block",
+        "state_b": "bearish_order_block",
+        "components": "bullish_fvg",
+        "setup": "bullish_liquidity_sweep",
+        "worked_example": "bullish_bos",
+    },
+}
+
+LEGACY_LESSON_GOALS = {
+    "rsi": {
+        "range_overview", "oversold_recovery", "overbought_reversal", "worked_example",
+    },
+    "ict": {
+        "bullish_order_block", "bearish_order_block",
+        "bullish_liquidity_sweep", "bearish_liquidity_sweep",
+        "bullish_fvg", "bearish_fvg", "bullish_bos", "bearish_bos",
+    },
+}
+
+
+def _resolve_lesson_goal(indicator_id: str, lesson_goal: str) -> str:
+    normalized = str(lesson_goal or "").strip().lower()
+    mapped = LESSON_GOAL_MAP.get(indicator_id, {}).get(normalized)
+    if mapped:
+        return mapped
+    if normalized in LEGACY_LESSON_GOALS.get(indicator_id, set()):
+        return normalized
+    raise ValueError(f"LESSON_GOAL_NOT_SUPPORTED:{indicator_id}:{normalized}")
+
 
 def identify_indicator(topic_text: str, visual_focus: str = "") -> str:
     text = f"{topic_text} {visual_focus}".lower()
@@ -288,7 +328,13 @@ def resolve_teaching_scene(page: dict[str, Any], route_payload: dict[str, Any] |
         "indicator_panel", "zone_diagram", "candlestick_demo", "market_chart",
     }:
         raise ValueError("INDICATOR_TOPIC_NOT_RECOGNIZED")
-    scenario_id = str(teaching_spec.get("lesson_goal") or _scenario(indicator_id, str(page.get("visual_focus") or "")))
+    if teaching_spec:
+        scenario_id = _resolve_lesson_goal(
+            indicator_id,
+            str(teaching_spec.get("lesson_goal") or ""),
+        )
+    else:
+        scenario_id = _scenario(indicator_id, str(page.get("visual_focus") or ""))
     if not teaching_spec and indicator_id == "rsi" and str(page.get("visual_type") or "") == "candlestick_demo":
         scenario_id = "worked_example"
     return build_teaching_scene(indicator_id, scenario_id)

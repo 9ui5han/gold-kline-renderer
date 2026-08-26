@@ -143,6 +143,40 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("LESSON_GOAL_NOT_SUPPORTED", response.text)
 
+    def test_generic_rsi_lesson_goal_renders_through_http_contract(self):
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "pages": [{
+                    "page_no": 2,
+                    "visual_type": "indicator_panel",
+                    "visual_focus": "RSI range overview",
+                    "required_elements": ["RSI", "30", "70"],
+                    "annotations": [],
+                    "risk_note": "教学示意图｜不代表实时行情",
+                    "teaching_spec": {
+                        "indicator_id": "rsi",
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": "overview",
+                    },
+                }],
+                "route_payload": {
+                    "schema_version": "photo-route-v1",
+                    "route_name": "knowledge",
+                    "topic_text": "RSI指标是什么意思？如何使用？",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        asset = response.json()["assets"][0]
+        self.assertEqual(asset["indicator_id"], "rsi")
+        self.assertTrue(asset["signal_contract_valid"])
+        self.assertTrue(Path(asset["asset_path"]).is_file())
+
     def test_missing_required_asset_is_rejected(self):
         response = self.api.post(
             "/v1/photo/assets/resolve",

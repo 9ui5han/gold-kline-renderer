@@ -24,12 +24,17 @@ class PhotoTeachingSpec(StrictModel):
     @model_validator(mode="after")
     def indicator_kind_matches_plugin(self) -> "PhotoTeachingSpec":
         normalized = self.indicator_id.lower()
-        rsi_goals = {"range_overview", "oversold_recovery", "overbought_reversal", "worked_example"}
+        generic_goals = {
+            "overview", "state_a", "state_b", "components", "setup", "worked_example",
+        }
+        rsi_goals = generic_goals | {
+            "range_overview", "oversold_recovery", "overbought_reversal",
+        }
         ict_goals = {
             "bullish_order_block", "bearish_order_block",
             "bullish_liquidity_sweep", "bearish_liquidity_sweep",
             "bullish_fvg", "bearish_fvg", "bullish_bos", "bearish_bos",
-        }
+        } | generic_goals
         if normalized in {"rsi", "rsi_14"} and self.indicator_kind != "oscillator":
             raise ValueError("INDICATOR_KIND_MISMATCH")
         if normalized in {"rsi", "rsi_14"} and self.lesson_goal not in rsi_goals:

@@ -4,10 +4,95 @@ import copy
 from pathlib import Path
 
 from app.photo.chart_renderer import render_chart
-from app.photo.indicator_engine import build_teaching_scene, identify_indicator, validate_teaching_scene
+from app.photo.indicator_engine import (
+    build_teaching_scene,
+    identify_indicator,
+    resolve_teaching_scene,
+    validate_teaching_scene,
+)
 
 
 class IndicatorTeachingEngineTests(unittest.TestCase):
+    def test_rsi_generic_lesson_goals_map_to_existing_scenarios(self):
+        expected = {
+            "overview": "range_overview",
+            "state_a": "overbought_reversal",
+            "state_b": "oversold_recovery",
+            "components": "range_overview",
+            "setup": "worked_example",
+            "worked_example": "worked_example",
+        }
+
+        for lesson_goal, scenario_id in expected.items():
+            with self.subTest(lesson_goal=lesson_goal):
+                scene = resolve_teaching_scene({
+                    "page_no": 2,
+                    "visual_type": "indicator_panel",
+                    "visual_focus": "RSI teaching chart",
+                    "required_elements": ["RSI"],
+                    "teaching_spec": {
+                        "indicator_id": "rsi",
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": lesson_goal,
+                    },
+                }, {"topic_text": "RSI tutorial"})
+                self.assertEqual(scene["scenario_id"], scenario_id)
+                self.assertTrue(scene["signal_contract_valid"])
+
+    def test_rsi_legacy_lesson_goal_remains_supported(self):
+        scene = resolve_teaching_scene({
+            "page_no": 3,
+            "visual_type": "zone_diagram",
+            "visual_focus": "RSI overbought reversal",
+            "required_elements": ["RSI", "70"],
+            "teaching_spec": {
+                "indicator_id": "rsi",
+                "indicator_kind": "oscillator",
+                "lesson_goal": "overbought_reversal",
+            },
+        }, {"topic_text": "RSI tutorial"})
+        self.assertEqual(scene["scenario_id"], "overbought_reversal")
+
+    def test_ict_generic_lesson_goals_map_to_existing_scenarios(self):
+        expected = {
+            "overview": "bullish_order_block",
+            "state_a": "bullish_order_block",
+            "state_b": "bearish_order_block",
+            "components": "bullish_fvg",
+            "setup": "bullish_liquidity_sweep",
+            "worked_example": "bullish_bos",
+        }
+
+        for lesson_goal, scenario_id in expected.items():
+            with self.subTest(lesson_goal=lesson_goal):
+                scene = resolve_teaching_scene({
+                    "page_no": 2,
+                    "visual_type": "candlestick_demo",
+                    "visual_focus": "ICT teaching chart",
+                    "required_elements": ["ICT"],
+                    "teaching_spec": {
+                        "indicator_id": "ict",
+                        "indicator_kind": "price_structure",
+                        "lesson_goal": lesson_goal,
+                    },
+                }, {"topic_text": "ICT tutorial"})
+                self.assertEqual(scene["scenario_id"], scenario_id)
+                self.assertTrue(scene["signal_contract_valid"])
+
+    def test_unknown_explicit_lesson_goal_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "LESSON_GOAL_NOT_SUPPORTED"):
+            resolve_teaching_scene({
+                "page_no": 2,
+                "visual_type": "indicator_panel",
+                "visual_focus": "RSI teaching chart",
+                "required_elements": ["RSI"],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "not_a_real_goal",
+                },
+            }, {"topic_text": "RSI tutorial"})
+
     def test_generated_candles_have_readable_bodies_without_changing_indicator_contract(self):
         scene = build_teaching_scene("rsi", "oversold_recovery")
         visible_bodies = [
