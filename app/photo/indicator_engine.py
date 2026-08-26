@@ -6,6 +6,7 @@ from typing import Any
 
 
 ENGINE_VERSION = "indicator-teaching-v1"
+CANDLE_BODY_SCALE = 1.55
 
 
 def identify_indicator(topic_text: str, visual_focus: str = "") -> str:
@@ -54,8 +55,14 @@ def _candles_from_closes(closes: list[float]) -> list[dict[str, float]]:
     candles = []
     previous = closes[0] - 0.35
     for index, close in enumerate(closes):
-        open_price = previous
-        wick = 0.35 + (index % 5) * 0.07
+        movement = close - previous
+        # Preserve the authoritative close series used by each indicator while
+        # making the candle body easier to read in a 1080px teaching graphic.
+        # The small opening gap is intentional and remains proportional to the
+        # actual close-to-close movement instead of inventing a new direction.
+        open_price = close - movement * CANDLE_BODY_SCALE
+        body_size = abs(close - open_price)
+        wick = max(0.24, min(0.58, body_size * 0.42 + (index % 3) * 0.04))
         candles.append({
             "open": round(open_price, 4),
             "high": round(max(open_price, close) + wick, 4),

@@ -8,6 +8,18 @@ from app.photo.indicator_engine import build_teaching_scene, identify_indicator,
 
 
 class IndicatorTeachingEngineTests(unittest.TestCase):
+    def test_generated_candles_have_readable_bodies_without_changing_indicator_contract(self):
+        scene = build_teaching_scene("rsi", "oversold_recovery")
+        visible_bodies = [
+            abs(candle["close"] - candle["open"])
+            for candle in scene["ohlc"]
+            if abs(candle["close"] - candle["open"]) > 0.05
+        ]
+
+        self.assertGreater(len(visible_bodies), 50)
+        self.assertGreater(sum(visible_bodies) / len(visible_bodies), 0.45)
+        self.assertTrue(scene["signal_contract_valid"])
+
     def test_rsi_scene_computes_signal_from_same_ohlc_series(self):
         scene = build_teaching_scene("rsi", "oversold_recovery")
 
