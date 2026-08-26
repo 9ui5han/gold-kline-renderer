@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 900" role="img" aria-label="Original finance teacher standing front">
+  <g data-pose="front">
+    <ellipse cx="300" cy="190" rx="108" ry="132" fill="#D3A17E"/>
+    <path d="M195 174C199 63 276 35 350 61c47 16 68 61 55 132-21-31-51-46-87-47-48-1-84 13-123 28Z" fill="#252A34"/>
+    <path d="M142 850V425c0-95 66-151 158-151s158 56 158 151v425Z" fill="#123052"/>
+    <path d="M235 292h130l-25 177h-80Z" fill="#F5F7FA"/>
+    <path d="m300 304 34 56-34 302-34-302Z" fill="#D9A62E"/>
+    <path d="M142 448 45 772c-12 42 45 64 65 25l114-240Z" fill="#123052"/>
+    <path d="m458 448 97 324c12 42-45 64-65 25L376 557Z" fill="#123052"/>
+    <path d="M92 780c61-34 124-48 208-25-13 39-50 72-101 78-44 5-79-14-107-53Z" fill="#D3A17E"/>
+    <path d="M508 780c-61-34-124-48-208-25 13 39 50 72 101 78 44 5 79-14 107-53Z" fill="#D3A17E"/>
+    <path d="M160 454 300 627 440 454" fill="none" stroke="#6E87A3" stroke-width="8"/>
+  </g>
+</svg>

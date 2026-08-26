@@ -1,0 +1,8 @@
+Asset: Lucide Icons
+Official source: https://lucide.dev/
+Repository: https://github.com/lucide-icons/lucide
+License: ISC (some inherited Feather icons remain under MIT as stated in LICENSE.txt)
+Commercial use: permitted
+Modification: permitted
+Downloaded: 2026-08-26
+

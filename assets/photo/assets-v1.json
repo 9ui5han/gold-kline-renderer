@@ -1,0 +1,19 @@
+{
+  "schema_version": "photo-assets-manifest-v1",
+  "assets": {
+    "teacher_front": {"asset_type":"character","relative_path":"characters/teacher_front.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "teacher_point_left": {"asset_type":"character","relative_path":"characters/teacher_point_left.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "teacher_point_right": {"asset_type":"character","relative_path":"characters/teacher_point_right.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "teacher_warning": {"asset_type":"character","relative_path":"characters/teacher_warning.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "teacher_thinking": {"asset_type":"character","relative_path":"characters/teacher_thinking.svg","source":"project_owned","license":"PROJECT-OWNED","license_file":"licenses/project-owned/CHARACTER-NOTICE.md"},
+    "search": {"asset_type":"icon","relative_path":"icons/search.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "arrow-right": {"asset_type":"icon","relative_path":"icons/arrow-right.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "corner-down-right": {"asset_type":"icon","relative_path":"icons/corner-down-right.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "bookmark": {"asset_type":"icon","relative_path":"icons/bookmark.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "hand-pointer": {"asset_type":"icon","relative_path":"icons/hand-pointer.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "triangle-alert": {"asset_type":"icon","relative_path":"icons/triangle-alert.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "lightbulb": {"asset_type":"icon","relative_path":"icons/lightbulb.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "circle-check": {"asset_type":"icon","relative_path":"icons/circle-check.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "circle-x": {"asset_type":"icon","relative_path":"icons/circle-x.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"}
+  }
+}

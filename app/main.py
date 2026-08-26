@@ -25,6 +25,7 @@ from .segment_renderer import router as segment_render_router
 from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
+from .photo.routes import build_photo_router
 from .scenario_repair import process_scenario_step
 from .segment_narration_validation import (
     complete_tool08,
@@ -68,11 +69,14 @@ def resolve_data_dir() -> Path:
 DATA_DIR = resolve_data_dir()
 MEDIA_DIR = DATA_DIR / "media"
 WORK_DIR = DATA_DIR / "work"
+PHOTO_WORK_DIR = DATA_DIR / "photo-work"
 APP_DIR = Path(__file__).resolve().parent
+PHOTO_ASSET_DIR = APP_DIR.parent / "assets" / "photo"
 TIKTOK_PREVIEW_DIR = APP_DIR / "tiktok_preview"
 MACRO_STATUS_DIR = APP_DIR / "macro_status"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
+PHOTO_WORK_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def normalize_ai302_api_key(value: str) -> str:
@@ -421,6 +425,11 @@ app = FastAPI(
 )
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.mount(
+    "/photo-media",
+    StaticFiles(directory=PHOTO_WORK_DIR),
+    name="photo-media",
+)
+app.mount(
     "/preview/tiktok",
     StaticFiles(directory=TIKTOK_PREVIEW_DIR, html=True),
     name="tiktok-preview",
@@ -593,6 +602,10 @@ app.include_router(
 )
 app.include_router(
     video_composer_router,
+    dependencies=[Depends(require_token)],
+)
+app.include_router(
+    build_photo_router(DATA_DIR, PHOTO_ASSET_DIR, PUBLIC_BASE_URL),
     dependencies=[Depends(require_token)],
 )
 
