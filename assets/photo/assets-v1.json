@@ -14,6 +14,18 @@
     "triangle-alert": {"asset_type":"icon","relative_path":"icons/triangle-alert.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
     "lightbulb": {"asset_type":"icon","relative_path":"icons/lightbulb.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
     "circle-check": {"asset_type":"icon","relative_path":"icons/circle-check.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
-    "circle-x": {"asset_type":"icon","relative_path":"icons/circle-x.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"}
+    "circle-x": {"asset_type":"icon","relative_path":"icons/circle-x.svg","source":"lucide","license":"ISC","license_file":"licenses/lucide/LICENSE.txt"},
+    "undraw_budgeting": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_budgeting_klon.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_business_analytics": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_business-analytics_y8m6.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_business_plan": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_business-plan_zrf7.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_data_at_work": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_data-at-work_3tbf.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_finance": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_finance_m6vw.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_financial_data": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_financial-data_lbci.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_investing": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_investing_uzcu.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_predictive_analytics": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_predictive-analytics_6gsu.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_progress_data": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_progress-data_gvcq.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_projections": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_projections_fhch.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_revenue_analysis": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_revenue-analysis_fjh2.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"},
+    "undraw_visual_data": {"asset_type":"background","relative_path":"illustrations/undraw/undraw_visual-data_1eya.svg","source":"undraw","license":"UNDRAW-2026","license_file":"licenses/undraw/LICENSE.txt"}
   }
 }

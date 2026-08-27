@@ -27,6 +27,20 @@ def build_photo_router(
     registry = AssetRegistry(asset_root)
     base_url = public_base_url.rstrip("/")
 
+    def page_visuals(page: dict, supplied: list[dict]) -> list[dict]:
+        result = [dict(item) for item in supplied]
+        role = str(page.get("page_role") or "")
+        visual_type = str(page.get("visual_type") or "")
+        has_undraw = any(item.get("source") == "undraw" for item in result)
+        if (role == "cover" or visual_type == "cover_illustration") and not has_undraw:
+            topic = " ".join(str(page.get(key) or "") for key in (
+                "title", "body", "key_message", "visual_focus",
+            ))
+            selected = registry.select_cover_asset(topic)
+            selected["page_no"] = int(page.get("page_no") or 0)
+            result.append(selected)
+        return result
+
     @router.post("/charts/render")
     def charts_render(payload: PhotoChartRequest) -> dict:
         if payload.content_type != "knowledge":
@@ -93,7 +107,7 @@ def build_photo_router(
                 item = render_page(
                     page,
                     chart_by_page.get(page_no),
-                    visual_by_page.get(page_no, []),
+                    page_visuals(page, visual_by_page.get(page_no, [])),
                     output,
                     payload.canvas.width,
                     payload.canvas.height,
@@ -162,7 +176,7 @@ def build_photo_router(
                 repaired = render_page(
                     page,
                     chart_by_page.get(page_no),
-                    visual_by_page.get(page_no, []),
+                    page_visuals(page, visual_by_page.get(page_no, [])),
                     output,
                     int(existing["width"]),
                     int(existing["height"]),

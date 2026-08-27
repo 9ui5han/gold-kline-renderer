@@ -9,6 +9,7 @@ AllowedAssetSource = Literal[
     "lucide",
     "brand_library",
     "generated_background",
+    "undraw",
 ]
 
 

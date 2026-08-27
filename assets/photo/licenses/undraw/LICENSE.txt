@@ -1,0 +1,18 @@
+unDraw License
+
+Copyright 2026 Katerina Limpitsouni
+
+All images, assets and vectors published on unDraw can be used for free for
+noncommercial and commercial purposes. Permission and attribution are not
+required. The license does not allow compiling or redistributing the assets
+as packs, replicating a similar or competing service, automated linking,
+embedding, scraping, searching or downloading without consent, or use for
+training, fine-tuning, validating or testing AI/ML systems.
+
+The files in this directory were selected and downloaded manually by the
+project owner for use as supporting illustrations in generated finance posts.
+They are not redistributed as a standalone asset pack and are not used for
+AI/ML training or testing.
+
+Canonical license text:
+https://undraw.co/license

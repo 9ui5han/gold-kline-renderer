@@ -229,9 +229,32 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 "risk_note": "教学示意图｜不代表实时行情",
             }, None, [], output, 1080, 1080)
             self.assertEqual(result["cover_visual_type"], "indicator_rsi")
+            self.assertEqual(result["cover_focus_label"], "RSI")
+            self.assertGreaterEqual(result["typography_metrics"]["focus_size"], 80)
             self.assertTrue(result["topic_visual_present"])
             self.assertFalse(result["character_present"])
             self.assertGreater(_non_white_ratio(output), 0.055)
+
+    def test_cover_composites_registered_svg_illustration(self):
+        project_root = Path(__file__).resolve().parents[1]
+        svg_path = project_root / "assets" / "photo" / "illustrations" / "undraw" / "undraw_predictive-analytics_6gsu.svg"
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "cover-svg.png"
+            result = render_page({
+                "page_no": 1, "page_role": "cover",
+                "title": "RSI指标", "body": "零基础使用指南", "key_message": "认识RSI",
+                "visual_type": "cover_illustration", "visual_focus": "RSI指标",
+                "required_elements": ["RSI曲线"],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, None, [{
+                "asset_key": "undraw_predictive_analytics",
+                "asset_type": "background",
+                "asset_path": str(svg_path),
+                "source": "undraw",
+                "license": "UNDRAW-2026",
+            }], output, 1080, 1080)
+            self.assertTrue(result["cover_asset_present"])
+            self.assertEqual(result["cover_asset_key"], "undraw_predictive_analytics")
 
     def test_checklist_renders_from_page_elements_without_chart_asset(self):
         with tempfile.TemporaryDirectory() as directory:

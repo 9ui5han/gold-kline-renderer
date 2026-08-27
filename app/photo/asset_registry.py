@@ -3,13 +3,23 @@ from pathlib import Path
 from typing import Any
 
 
-ALLOWED_LICENSES = {"CC0-1.0", "ISC", "PROJECT-OWNED"}
+ALLOWED_LICENSES = {"CC0-1.0", "ISC", "PROJECT-OWNED", "UNDRAW-2026"}
 ALLOWED_SOURCES = {
     "project_owned",
     "lucide",
     "brand_library",
     "generated_background",
+    "undraw",
 }
+
+COVER_TOPIC_ASSETS = (
+    (("RSI", "MACD", "KDJ", "ATR", "OBV", "指标", "预测"), "undraw_predictive_analytics"),
+    (("营收", "收入", "利润", "REVENUE"), "undraw_revenue_analysis"),
+    (("数据", "图表", "DATA"), "undraw_visual_data"),
+    (("投资", "INVEST"), "undraw_investing"),
+    (("预算", "BUDGET"), "undraw_budgeting"),
+    (("计划", "PLAN"), "undraw_business_plan"),
+)
 
 
 class AssetRegistry:
@@ -49,3 +59,12 @@ class AssetRegistry:
             "license": item["license"],
             "license_file": str(item.get("license_file") or ""),
         }
+
+    def select_cover_asset(self, topic_text: str) -> dict[str, Any]:
+        topic = str(topic_text or "").upper()
+        selected = "undraw_business_analytics"
+        for keywords, asset_key in COVER_TOPIC_ASSETS:
+            if any(keyword in topic for keyword in keywords):
+                selected = asset_key
+                break
+        return self.resolve(selected, "background")

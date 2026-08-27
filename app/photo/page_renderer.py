@@ -1,3 +1,4 @@
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -76,6 +77,38 @@ def _paste_character(image: Image.Image, visual_assets: list[dict[str, Any]],
     return (x, y, x + character.width, y + character.height)
 
 
+def _paste_cover_illustration(
+    image: Image.Image,
+    visual_assets: list[dict[str, Any]],
+    box: tuple[int, int, int, int],
+) -> tuple[tuple[int, int, int, int] | None, str]:
+    item = next((
+        asset for asset in visual_assets
+        if asset.get("source") == "undraw" and asset.get("asset_type") == "background"
+    ), None)
+    path = Path(str((item or {}).get("asset_path") or ""))
+    if not path.is_file() or path.suffix.lower() != ".svg":
+        return None, ""
+    try:
+        import cairosvg
+
+        png = cairosvg.svg2png(url=str(path), output_width=520)
+        illustration = Image.open(BytesIO(png)).convert("RGBA")
+    except (ImportError, OSError, ValueError):
+        return None, ""
+    alpha_box = illustration.getchannel("A").getbbox()
+    if alpha_box:
+        illustration = illustration.crop(alpha_box)
+    left, top, right, bottom = box
+    illustration.thumbnail((right - left, bottom - top), Image.Resampling.LANCZOS)
+    alpha = illustration.getchannel("A").point(lambda value: int(value * .88))
+    illustration.putalpha(alpha)
+    x = left + (right - left - illustration.width) // 2
+    y = top + (bottom - top - illustration.height) // 2
+    image.paste(illustration, (x, y), illustration)
+    return (x, y, x + illustration.width, y + illustration.height), str(item.get("asset_key") or "")
+
+
 def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
                  compact: bool) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
     margin = 72
@@ -127,24 +160,41 @@ def _topic_key(page: dict[str, Any]) -> str:
     return "generic_finance"
 
 
-def _draw_cover_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
-    title_font = _font(58, True)
-    body_font = _font(29)
-    title_lines = _wrapped_lines(title, width - 160, title_font)
-    body_lines = _wrapped_lines(body, 760, body_font)
-    overflow = len(title_lines) > 2 or len(body_lines) > 2
-    y = 50
-    for line in title_lines[:2]:
-        line_width = draw.textbbox((0, 0), line, font=title_font)[2]
-        draw.text(((width - line_width) // 2, y), line, fill=INK, font=title_font)
-        y += 70
-    subtitle_y = y + 4
-    for line in body_lines[:2]:
-        line_width = draw.textbbox((0, 0), line, font=body_font)[2]
-        draw.text(((width - line_width) // 2, subtitle_y), line, fill=MUTED, font=body_font)
-        subtitle_y += 43
-    return subtitle_y, overflow, (80, 50, width - 80, subtitle_y), {
-        "title_size": 58, "body_size": 29, "body_line_width": 760,
+def _cover_focus_label(page: dict[str, Any]) -> str:
+    topic = _topic_key(page)
+    return {
+        "rsi": "RSI", "macd": "MACD", "kdj": "KDJ", "atr": "ATR",
+        "obv": "OBV", "ict": "ICT", "bollinger": "BOLL",
+        "moving_average": "MA",
+    }.get(topic, "市场分析")
+
+
+def _draw_cover_header(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
+    title = str(page.get("title") or "").strip()
+    body = str(page.get("body") or "").strip()
+    focus = _cover_focus_label(page)
+    focus_font = _font(96, True)
+    title_font = _font(31, True)
+    body_font = _font(25)
+    title_lines = _wrapped_lines(title, 760, title_font)
+    body_lines = _wrapped_lines(body, 720, body_font)
+    overflow = len(title_lines) > 1 or len(body_lines) > 1
+    focus_width = draw.textbbox((0, 0), focus, font=focus_font)[2]
+    draw.text(((width - focus_width) // 2, 35), focus, fill=INK, font=focus_font)
+    y = 145
+    secondary = title_lines[0] if title_lines else title
+    if secondary.upper().replace(" ", "") != focus.upper().replace(" ", ""):
+        secondary_width = draw.textbbox((0, 0), secondary, font=title_font)[2]
+        draw.text(((width - secondary_width) // 2, y), secondary, fill="#2F6B9A", font=title_font)
+        y += 44
+    if body_lines:
+        subtitle = body_lines[0]
+        subtitle_width = draw.textbbox((0, 0), subtitle, font=body_font)[2]
+        draw.text(((width - subtitle_width) // 2, y), subtitle, fill=MUTED, font=body_font)
+        y += 38
+    return y, overflow, (80, 35, width - 80, y), {
+        "focus_size": 96, "title_size": 31, "body_size": 25,
+        "body_line_width": 720,
     }
 
 
@@ -191,10 +241,8 @@ def _draw_cover_topic_visual(draw: ImageDraw.ImageDraw, page: dict[str, Any], wi
         draw.line((left, panel_top + .3 * (panel_bottom - panel_top), right, panel_top + .3 * (panel_bottom - panel_top)), fill=RED, width=2)
         draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
         draw.text((left, panel_top - 35), "RSI（14）", fill=INK, font=_font(24, True))
-        _draw_magnifier(draw, (770, 500), 95)
         return "indicator_rsi"
 
-    _draw_magnifier(draw, (760, 535), 105)
     label = {
         "macd": "MACD", "kdj": "KDJ", "atr": "ATR", "obv": "OBV",
         "ict": "ICT", "bollinger": "BOLL", "moving_average": "MA",
@@ -272,15 +320,20 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     checklist_item_count = 0
     cover_visual_type = ""
     topic_visual_present = False
+    cover_asset_box = None
+    cover_asset_key = ""
     typography_metrics: dict[str, int] = {}
     character_box = None
     content_box = None
     disclaimer_count = 0
 
     if layout == "cover":
-        _, overflow, content_box, typography_metrics = _draw_cover_header(draw, title, body, width)
+        _, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
         cover_visual_type = _draw_cover_topic_visual(draw, page, width, height)
         topic_visual_present = True
+        cover_asset_box, cover_asset_key = _paste_cover_illustration(
+            image, visual_assets, (600, 285, width - 55, 700)
+        )
         character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
         character_present = character_box is not None
         draw.text((width - 205, height - 65), "滑动查看  →", fill=INK, font=_font(20, True))
@@ -332,7 +385,11 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "typography_metrics": typography_metrics,
         "visible_page_number": False,
         "cover_visual_type": cover_visual_type,
+        "cover_focus_label": _cover_focus_label(page) if layout == "cover" else "",
         "topic_visual_present": topic_visual_present,
+        "cover_asset_present": cover_asset_box is not None,
+        "cover_asset_key": cover_asset_key,
+        "cover_asset_box": cover_asset_box,
         "checklist_present": checklist_item_count > 0,
         "checklist_item_count": checklist_item_count,
         "chinese_contract_valid": chinese_contract_valid,

@@ -64,6 +64,36 @@ class PhotoModelsStoreAssetsTests(unittest.TestCase):
             (root / "licenses" / "project-owned" / "CHARACTER-NOTICE.md").is_file()
         )
 
+    def test_production_manifest_contains_commercial_undraw_finance_library(self):
+        from app.photo.asset_registry import AssetRegistry
+
+        root = Path(__file__).resolve().parents[1] / "assets" / "photo"
+        registry = AssetRegistry(root)
+        keys = (
+            "undraw_budgeting", "undraw_business_analytics", "undraw_business_plan",
+            "undraw_data_at_work", "undraw_finance", "undraw_financial_data",
+            "undraw_investing", "undraw_predictive_analytics", "undraw_progress_data",
+            "undraw_projections", "undraw_revenue_analysis", "undraw_visual_data",
+        )
+        for key in keys:
+            item = registry.resolve(key, "background")
+            self.assertEqual(item["source"], "undraw")
+            self.assertEqual(item["license"], "UNDRAW-2026")
+            self.assertEqual(Path(item["asset_path"]).suffix.lower(), ".svg")
+        self.assertTrue((root / "licenses" / "undraw" / "LICENSE.txt").is_file())
+        self.assertTrue((root / "licenses" / "undraw" / "SOURCE.txt").is_file())
+
+    def test_registry_selects_topic_related_cover_illustration(self):
+        from app.photo.asset_registry import AssetRegistry
+
+        root = Path(__file__).resolve().parents[1] / "assets" / "photo"
+        registry = AssetRegistry(root)
+        rsi = registry.select_cover_asset("RSI指标零基础教学")
+        revenue = registry.select_cover_asset("收入与营收分析")
+        self.assertEqual(rsi["asset_key"], "undraw_predictive_analytics")
+        self.assertEqual(revenue["asset_key"], "undraw_revenue_analysis")
+        self.assertEqual(rsi["asset_type"], "background")
+
     def test_chart_request_rejects_unknown_schema(self):
         from app.photo.models import PhotoChartRequest
 
