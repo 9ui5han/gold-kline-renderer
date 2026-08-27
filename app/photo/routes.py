@@ -54,7 +54,14 @@ def build_photo_router(
         for page in payload.pages:
             output = chart_dir / f"chart_{page.page_no:02d}.png"
             try:
-                assets.append(render_chart(page.model_dump(), output, payload.route_payload))
+                assets.append(
+                    render_chart(
+                        page.model_dump(),
+                        output,
+                        payload.route_payload,
+                        language=payload.language,
+                    )
+                )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
         fingerprints: dict[str, int] = {}

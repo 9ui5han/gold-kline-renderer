@@ -134,6 +134,34 @@ class PhotoModelsStoreAssetsTests(unittest.TestCase):
                 })
                 self.assertEqual(request.pages[0].teaching_spec.lesson_goal, lesson_goal)
 
+    def test_chart_request_defaults_to_chinese_and_accepts_english(self):
+        from app.photo.models import PhotoChartRequest
+
+        base = {
+            "schema_version": "photo-chart-request-v1",
+            "content_type": "knowledge",
+            "pages": [],
+            "route_payload": {},
+        }
+
+        chinese = PhotoChartRequest.model_validate(base)
+        self.assertEqual(chinese.language, "zh-CN")
+
+        english = PhotoChartRequest.model_validate({**base, "language": "en"})
+        self.assertEqual(english.language, "en")
+
+    def test_chart_request_rejects_unknown_language(self):
+        from app.photo.models import PhotoChartRequest
+
+        with self.assertRaises(ValueError):
+            PhotoChartRequest.model_validate({
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "language": "fr",
+                "pages": [],
+                "route_payload": {},
+            })
+
     def test_chart_request_rejects_unknown_rsi_goal(self):
         from app.photo.models import PhotoChartRequest
 

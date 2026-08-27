@@ -60,6 +60,7 @@ class PhotoChartPage(StrictModel):
 class PhotoChartRequest(StrictModel):
     schema_version: Literal["photo-chart-request-v1"]
     content_type: ContentType
+    language: Literal["zh-CN", "en"] = "zh-CN"
     pages: list[PhotoChartPage] = Field(default_factory=list, max_length=10)
     route_payload: dict[str, Any]
 

@@ -174,8 +174,60 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         asset = response.json()["assets"][0]
         self.assertEqual(asset["indicator_id"], "rsi")
+        self.assertEqual(asset["render_language"], "zh-CN")
         self.assertTrue(asset["signal_contract_valid"])
         self.assertTrue(Path(asset["asset_path"]).is_file())
+
+    def test_chart_language_is_forwarded_to_renderer(self):
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "language": "en",
+                "pages": [{
+                    "page_no": 2,
+                    "visual_type": "indicator_panel",
+                    "visual_focus": "RSI range overview",
+                    "required_elements": ["RSI", "30", "70"],
+                    "annotations": [],
+                    "risk_note": "Educational illustration",
+                    "teaching_spec": {
+                        "indicator_id": "rsi",
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": "overview",
+                    },
+                }],
+                "route_payload": {
+                    "schema_version": "photo-route-v1",
+                    "route_name": "knowledge",
+                    "topic_text": "RSI tutorial",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        asset = response.json()["assets"][0]
+        self.assertEqual(asset["render_language"], "en")
+
+    def test_chart_language_rejects_unknown_value_at_http_boundary(self):
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "language": "fr",
+                "pages": [],
+                "route_payload": {
+                    "schema_version": "photo-route-v1",
+                    "route_name": "knowledge",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
 
     def test_duplicate_teaching_charts_are_rejected_before_downstream_tools(self):
         duplicate_page = {
