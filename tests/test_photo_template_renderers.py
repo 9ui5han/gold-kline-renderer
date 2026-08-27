@@ -21,6 +21,12 @@ def _non_white_ratio(path: Path) -> float:
     return non_white / len(pixels)
 
 
+def _non_white_count(path: Path, box: tuple[int, int, int, int]) -> int:
+    with Image.open(path).convert("RGB") as image:
+        pixels = list(image.crop(box).getdata())
+    return sum(1 for pixel in pixels if pixel != (255, 255, 255))
+
+
 class PhotoTemplateRendererTests(unittest.TestCase):
     def test_page_layout_reports_content_regions_without_decorative_left_bar(self):
         """Removing the page ornament must not remove the measurable content contract."""
@@ -319,14 +325,46 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["cover_focus_label"], "RSI")
             self.assertGreaterEqual(result["typography_metrics"]["focus_size"], 80)
             self.assertEqual(result["typography_metrics"]["title_weight"], "regular")
-            self.assertGreaterEqual(result["cover_candle_count"], 42)
-            self.assertLessEqual(result["cover_candle_body_width"], 20)
-            self.assertLessEqual(result["cover_candle_gap_ratio"], 0.12)
+            self.assertGreaterEqual(result["cover_candle_count"], 54)
+            self.assertAlmostEqual(
+                result["cover_candle_body_width"], 19.6744 * .75, delta=.2,
+            )
+            self.assertGreaterEqual(result["cover_candle_gap_ratio"], 0.25)
+            self.assertNotIn("cover_chart_edges", result)
+            self.assertGreater(_non_white_count(output, (0, 350, 24, 715)), 0)
+            self.assertGreater(_non_white_count(output, (1056, 350, 1080, 715)), 0)
+            self.assertEqual(_non_white_count(output, (0, 720, 44, 758)), 0)
+            self.assertGreater(_non_white_count(output, (44, 720, 180, 758)), 0)
             self.assertGreaterEqual(result["cover_indicator_point_count"], 450)
             self.assertEqual(result["cover_indicator_supersample"], 8)
             self.assertTrue(result["topic_visual_present"])
             self.assertFalse(result["character_present"])
             self.assertGreater(_non_white_ratio(output), 0.055)
+
+    def test_content_chart_fills_the_page_from_left_edge_to_right_edge(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chart_path = Path(directory) / "chart.png"
+            render_chart({
+                "page_no": 2,
+                "visual_type": "indicator_panel",
+                "visual_focus": "RSI scale",
+                "required_elements": ["RSI", "30", "70"],
+                "annotations": [],
+            }, chart_path)
+            output = Path(directory) / "page.png"
+            result = render_page({
+                "page_no": 2,
+                "page_role": "definition",
+                "title": "RSI区间",
+                "body": "结合价格表现理解指标区间。",
+                "key_message": "先看价格，再看指标。",
+                "visual_type": "indicator_panel",
+                "required_elements": ["RSI", "30", "70"],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, {"asset_path": str(chart_path)}, [], output, 1080, 1080)
+
+            self.assertEqual(result["layout_regions"]["chart"][0], 0)
+            self.assertEqual(result["layout_regions"]["chart"][2], 1080)
 
     def test_cover_composites_registered_svg_illustration(self):
         project_root = Path(__file__).resolve().parents[1]

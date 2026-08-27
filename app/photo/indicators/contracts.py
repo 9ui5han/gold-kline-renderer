@@ -7,7 +7,7 @@ from typing import Any
 
 ENGINE_VERSION = "indicator-teaching-v1"
 CANDLE_BODY_SCALE = 1.85
-TEACHING_CANDLE_COUNT = 96
+TEACHING_CANDLE_COUNT = 120
 
 
 def demo_ohlcv(seed: int = 0, count: int = TEACHING_CANDLE_COUNT) -> list[dict[str, float]]:

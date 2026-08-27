@@ -4,7 +4,7 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from .chart_renderer import CYAN, INK, RED, _english_font, _font
+from .chart_renderer import LABEL_LEFT, CYAN, INK, RED, _english_font, _font
 
 MUTED, PANEL = "#66717D", "#F3F7FA"
 CHINESE_DISCLAIMER = "教学示意图｜不代表实时行情"
@@ -448,7 +448,7 @@ def _draw_cover_topic_visual(
     language: str = "zh-CN",
 ) -> tuple[str, int, int, float, int, float]:
     topic = _topic_key(page)
-    left, right = 70, width - 70
+    left, right = 0, width
     chart_top, chart_bottom = 350, 735
     close_levels = [
         .82, .78, .74, .77, .71, .68, .70, .64, .59, .62,
@@ -456,9 +456,11 @@ def _draw_cover_topic_visual(
         .45, .40, .44, .48, .43, .39, .35, .38, .33, .29,
         .32, .27, .24, .28, .23, .20, .24, .19, .16, .20,
         .17, .13, .16,
+        .12, .15, .11, .14, .10, .08, .11, .07, .09, .06,
+        .04,
     ]
     step = (right - left) / len(close_levels)
-    body_half = step * .45
+    body_half = step * .369
     candle_gap_ratio = 1 - body_half * 2 / step
     for index, close_ratio in enumerate(close_levels):
         open_ratio = close_levels[index - 1] if index else .82
@@ -494,7 +496,16 @@ def _draw_cover_topic_visual(
         draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
         indicator_font = _english_font(24, 600) if language == "en" else _font(24, True)
         indicator_label = "RSI (14)" if language == "en" else "RSI（14）"
-        draw.text((left, panel_top - 35), indicator_label, fill=INK, font=indicator_font)
+        indicator_x = LABEL_LEFT
+        indicator_box = draw.textbbox(
+            (indicator_x, panel_top - 35), indicator_label, font=indicator_font,
+        )
+        if indicator_box[0] < LABEL_LEFT:
+            indicator_x += LABEL_LEFT - indicator_box[0]
+        draw.text(
+            (indicator_x, panel_top - 35), indicator_label,
+            fill=INK, font=indicator_font,
+        )
         return (
             "indicator_rsi", len(close_levels), len(smooth_points),
             candle_gap_ratio, 8, body_half * 2,
@@ -558,9 +569,10 @@ def _paste_chart(
         return None
     chart_image = Image.open(path).convert("RGB")
     left, top, right, bottom = box
-    chart_image.thumbnail((right - left, bottom - top))
-    x = left + (right - left - chart_image.width) // 2
-    y = top + (bottom - top - chart_image.height) // 2
+    chart_image = chart_image.resize(
+        (right - left, bottom - top), Image.Resampling.LANCZOS,
+    )
+    x, y = left, top
     image.paste(chart_image, (x, y))
     return (x, y, x + chart_image.width, y + chart_image.height)
 
@@ -697,8 +709,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             if checklist_item_count == 0:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
         else:
-            top = max(390, header_bottom + 25)
-            chart_box = _paste_chart(image, chart, (72, top, width - 72, height - 105))
+            top = max(330, header_bottom + 25)
+            chart_box = _paste_chart(image, chart, (0, top, width, height - 105))
             chart_present = chart_box is not None
             if visual_type in CHART_REQUIRED_TYPES and not chart_present:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")

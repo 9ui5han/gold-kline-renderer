@@ -324,11 +324,18 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                     self.assertGreaterEqual(result["line_supersample"], 4)
                     self.assertFalse(result["left_plot_border"])
                     self.assertFalse(result["right_plot_border"])
-                    self.assertGreaterEqual(result["ohlc_count"], 96)
+                    self.assertGreaterEqual(result["ohlc_count"], 120)
                     self.assertFalse(result["label_overlap"])
                     layout = result["chart_layout"]
-                    self.assertGreater(layout["plot_right"], 880)
+                    self.assertEqual(layout["plot_edges"], [0, 900])
+                    self.assertEqual(layout["price_plot_edges"], [0, 900])
+                    self.assertEqual(layout["label_left"], 44)
+                    self.assertTrue(all(
+                        item["bounds"][0] >= layout["label_left"]
+                        for item in layout["title_bounds"]
+                    ))
                     self.assertGreater(layout["candle_pitch"], 0)
+                    self.assertAlmostEqual(layout["candle_body_width_ratio"], 0.60)
                     self.assertEqual(layout["price_plot_edges"], layout["indicator_plot_edges"])
 
     def test_rsi_signal_annotations_are_bilingual_centered_and_translucent(self):
@@ -423,6 +430,19 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                             labels = " | ".join(result["rendered_labels"])
                             self.assertFalse(result["label_overlap"])
                             self.assertTrue(labels)
+                            layout = result["chart_layout"]
+                            for bounds_key in (
+                                "title_bounds", "legend_bounds",
+                                "y_axis_label_bounds", "annotation_bounds",
+                                "caption_bounds",
+                            ):
+                                for item in layout[bounds_key]:
+                                    self.assertGreaterEqual(
+                                        item["bounds"][0], layout["label_left"],
+                                    )
+                                    self.assertLessEqual(
+                                        item["bounds"][2], layout["label_right"],
+                                    )
                             if language == "zh-CN":
                                 lowered = labels.lower()
                                 self.assertIn(expected_chinese_names[indicator_id], labels)
@@ -494,9 +514,8 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertGreaterEqual(interpolate.call_count, 4)
             self.assertGreaterEqual(resize_filters.count(Image.Resampling.LANCZOS), 4)
 
-    def test_full_width_pitch_preserves_prior_density_with_documented_tolerance(self):
+    def test_narrower_candles_add_data_instead_of_stretching_the_gaps(self):
         prior_pitch = (900 - 58 - 28) / 96
-        allowed_pitch_change_px = 0.35
         with tempfile.TemporaryDirectory() as directory:
             result = render_chart({
                 "page_no": 44,
@@ -511,11 +530,14 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                 },
             }, Path(directory) / "pitch.png")
 
-        self.assertLessEqual(
-            abs(result["chart_layout"]["candle_pitch"] - prior_pitch),
-            allowed_pitch_change_px,
+        self.assertGreaterEqual(result["ohlc_count"], 120)
+        self.assertLess(result["chart_layout"]["candle_pitch"], prior_pitch)
+        body_width = (
+            result["chart_layout"]["candle_pitch"]
+            * result["chart_layout"]["candle_body_width_ratio"]
         )
-        self.assertEqual(chart_renderer._plot_box(900, 48, 275), (44, 48, 888, 275))
+        self.assertAlmostEqual(body_width, 5.9783 * .75, delta=.05)
+        self.assertEqual(chart_renderer._plot_box(900, 48, 275), (0, 48, 900, 275))
 
 
 if __name__ == "__main__":
