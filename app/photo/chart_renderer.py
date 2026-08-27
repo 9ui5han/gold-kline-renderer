@@ -127,6 +127,32 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
                              scene: dict[str, Any]) -> None:
     candles = scene["ohlc"]
     signal = scene["signals"][0]
+    if scene["scenario_id"] == "range_overview":
+        panel_box = (72, 58, width - 34, height - 38)
+        draw.text((72, 12), "RSI RANGE OVERVIEW", fill=INK, font=_font(25, True))
+        for upper, lower, fill in (
+            (100, 70, RED_FILL),
+            (70, 30, "#F7FAFC"),
+            (30, 0, BLUE_FILL),
+        ):
+            y_top = panel_box[3] - upper / 100 * (panel_box[3] - panel_box[1])
+            y_bottom = panel_box[3] - lower / 100 * (panel_box[3] - panel_box[1])
+            draw.rectangle((panel_box[0], y_top, panel_box[2], y_bottom), fill=fill)
+        for value, color in ((100, GRID), (70, RED), (50, GRID), (30, CYAN), (0, GRID)):
+            y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+            draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
+            draw.text((22, y - 10), str(value), fill=INK, font=_font(15, True))
+        points = []
+        for index, value in enumerate(scene["indicator_values"]):
+            if value is not None:
+                x = panel_box[0] + (index + .5) * (panel_box[2] - panel_box[0]) / len(scene["indicator_values"])
+                y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+                points.append((x, y))
+        draw.line(points, fill="#138EB9", width=5, joint="curve")
+        draw.text((width - 195, panel_box[1] + 8), "OVERBOUGHT", fill=INK, font=_font(14, True))
+        draw.text((width - 185, panel_box[3] - 24), "OVERSOLD", fill=INK, font=_font(14, True))
+        draw.rectangle(panel_box, outline="#C8D2DB", width=1)
+        return
     price_box = (58, 42, width - 28, 306)
     panel_box = (58, 350, width - 28, height - 32)
     heading = {
@@ -171,6 +197,67 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
     if scene["scenario_id"] == "range_overview":
         draw.text((width - 220, panel_box[1] + 8), "OVERBOUGHT", fill=INK, font=_font(14, True))
         draw.text((width - 205, panel_box[3] - 24), "OVERSOLD", fill=INK, font=_font(14, True))
+    draw.rectangle(price_box, outline="#C8D2DB", width=1)
+    draw.rectangle(panel_box, outline="#C8D2DB", width=1)
+
+
+def _numeric_lines(indicator_values: Any) -> list[tuple[str, list[float | None]]]:
+    if isinstance(indicator_values, list):
+        return [("VALUE", indicator_values)]
+    if isinstance(indicator_values, dict):
+        return [
+            (str(name).upper(), values)
+            for name, values in indicator_values.items()
+            if isinstance(values, list)
+        ]
+    return []
+
+
+def _draw_generic_indicator_scene(
+    draw: ImageDraw.ImageDraw,
+    width: int,
+    height: int,
+    scene: dict[str, Any],
+) -> None:
+    candles = scene["ohlc"]
+    family = scene.get("indicator_family")
+    title = f"{str(scene['indicator_id']).replace('_', ' ').upper()} — {str(scene['scenario_id']).replace('_', ' ').upper()}"
+    draw.text((52, 10), title[:58], fill=INK, font=_font(22, True))
+    colors = ["#138EB9", "#D96B78", "#D9A62E", "#7256B8"]
+    if family == "overlay":
+        price_box = (52, 52, width - 28, height - 34)
+        x_for, y_for = _draw_realistic_candles(draw, candles, price_box)
+        for line_index, (name, values) in enumerate(_numeric_lines(scene.get("indicator_values"))):
+            points = [
+                (x_for(index), y_for(float(value)))
+                for index, value in enumerate(values)
+                if value is not None
+            ]
+            if len(points) > 1:
+                draw.line(points, fill=colors[line_index % len(colors)], width=3, joint="curve")
+            draw.text((58 + line_index * 150, height - 27), name[:16], fill=colors[line_index % len(colors)], font=_font(13, True))
+        draw.rectangle(price_box, outline="#C8D2DB", width=1)
+        return
+    price_box = (52, 48, width - 28, 275)
+    panel_box = (52, 320, width - 28, height - 34)
+    x_for, _ = _draw_realistic_candles(draw, candles, price_box)
+    lines = _numeric_lines(scene.get("indicator_values"))
+    numeric = [float(value) for _, values in lines for value in values if value is not None]
+    low, high = (min(numeric), max(numeric)) if numeric else (0.0, 1.0)
+    padding = max((high - low) * .08, .1)
+    low, high = low - padding, high + padding
+    for line_index, (name, values) in enumerate(lines):
+        points = [
+            (
+                x_for(index),
+                panel_box[3] - (float(value) - low) / (high - low) * (panel_box[3] - panel_box[1]),
+            )
+            for index, value in enumerate(values)
+            if value is not None
+        ]
+        if len(points) > 1:
+            draw.line(points, fill=colors[line_index % len(colors)], width=3, joint="curve")
+        draw.text((58 + line_index * 150, 292), name[:16], fill=colors[line_index % len(colors)], font=_font(13, True))
     draw.rectangle(price_box, outline="#C8D2DB", width=1)
     draw.rectangle(panel_box, outline="#C8D2DB", width=1)
 
@@ -291,6 +378,9 @@ def render_chart(page: dict[str, Any], output_path: Path,
     elif use_teaching_scene and scene["indicator_id"] in {"rsi", "generic"}:
         template = f"rsi_{scene['scenario_id']}"
         _draw_rsi_teaching_scene(draw, width, height, scene)
+    elif use_teaching_scene:
+        template = f"{scene['indicator_id']}_{scene['scenario_id']}"
+        _draw_generic_indicator_scene(draw, width, height, scene)
     elif template == "checklist":
         _draw_checklist(draw, width, height, list(page.get("required_elements") or []))
     else:
@@ -303,7 +393,8 @@ def render_chart(page: dict[str, Any], output_path: Path,
         "is_teaching_demo": True, "included_elements": list(page.get("required_elements") or []),
         "template_key": template, "render_language": "en", "disclaimer_drawn": False,
         "teaching_engine_version": scene["engine_version"],
-        "indicator_id": scene["indicator_id"], "indicator_family": scene["indicator_family"],
+        "indicator_id": scene["indicator_id"], "engine_id": scene["engine_id"],
+        "indicator_family": scene["indicator_family"],
         "scenario_id": scene["scenario_id"], "ohlc_count": len(scene["ohlc"]),
         "signal_anchors": scene["signals"], "visual_layers": scene["layers"],
         "signal_contract_valid": scene["signal_contract_valid"],

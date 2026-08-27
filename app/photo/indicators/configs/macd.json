@@ -1,0 +1,12 @@
+{
+  "indicator_id": "macd",
+  "display_name": "MACD",
+  "engine_id": "line_crossover",
+  "indicator_kind": "oscillator",
+  "parameters": {"fast": 12, "slow": 26, "signal": 9},
+  "goal_map": {
+    "overview": "components", "state_a": "bullish_cross", "state_b": "bearish_cross",
+    "components": "components", "setup": "cross_with_price_confirmation", "worked_example": "worked_example"
+  },
+  "legacy_goals": []
+}

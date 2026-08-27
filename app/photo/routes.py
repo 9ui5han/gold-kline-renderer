@@ -43,6 +43,18 @@ def build_photo_router(
                 assets.append(render_chart(page.model_dump(), output, payload.route_payload))
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
+        fingerprints: dict[str, int] = {}
+        for asset in assets:
+            value = str(asset.get("data_fingerprint") or "")
+            if value in fingerprints:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "DUPLICATE_TEACHING_CHART:"
+                        f"page_{fingerprints[value]}:page_{asset['page_no']}"
+                    ),
+                )
+            fingerprints[value] = int(asset["page_no"])
         return {"schema_version": "photo-chart-v1", "assets": assets}
 
     @router.post("/assets/resolve")

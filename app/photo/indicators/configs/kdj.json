@@ -1,0 +1,13 @@
+{
+  "indicator_id": "kdj",
+  "display_name": "KDJ",
+  "engine_id": "range_oscillator",
+  "indicator_kind": "oscillator",
+  "parameters": {"period": 9},
+  "levels": {"lower": 20, "middle": 50, "upper": 80},
+  "goal_map": {
+    "overview": "range_overview", "state_a": "bullish_cross", "state_b": "bearish_cross",
+    "components": "three_lines", "setup": "cross_with_price_confirmation", "worked_example": "worked_example"
+  },
+  "legacy_goals": []
+}

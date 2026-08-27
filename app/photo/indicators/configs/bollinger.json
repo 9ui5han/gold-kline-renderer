@@ -1,0 +1,12 @@
+{
+  "indicator_id": "bollinger",
+  "display_name": "Bollinger Bands",
+  "engine_id": "price_overlay",
+  "indicator_kind": "overlay",
+  "parameters": {"period": 20, "deviation": 2.0},
+  "goal_map": {
+    "overview": "three_bands", "state_a": "band_expansion", "state_b": "band_contraction",
+    "components": "upper_middle_lower", "setup": "touch_and_confirmation", "worked_example": "worked_example"
+  },
+  "legacy_goals": []
+}

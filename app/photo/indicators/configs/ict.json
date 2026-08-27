@@ -1,0 +1,19 @@
+{
+  "indicator_id": "ict",
+  "display_name": "ICT Price Structure",
+  "engine_id": "price_structure",
+  "indicator_kind": "price_structure",
+  "goal_map": {
+    "overview": "bullish_order_block",
+    "state_a": "bullish_order_block",
+    "state_b": "bearish_order_block",
+    "components": "bullish_fvg",
+    "setup": "bullish_liquidity_sweep",
+    "worked_example": "bullish_bos"
+  },
+  "legacy_goals": [
+    "bullish_order_block", "bearish_order_block",
+    "bullish_liquidity_sweep", "bearish_liquidity_sweep",
+    "bullish_fvg", "bearish_fvg", "bullish_bos", "bearish_bos"
+  ]
+}

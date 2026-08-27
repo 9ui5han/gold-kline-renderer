@@ -1,0 +1,12 @@
+{
+  "indicator_id": "obv",
+  "display_name": "OBV",
+  "engine_id": "volume",
+  "indicator_kind": "oscillator",
+  "requires_volume": true,
+  "goal_map": {
+    "overview": "cumulative_volume", "state_a": "bullish_confirmation", "state_b": "bearish_confirmation",
+    "components": "price_and_obv", "setup": "divergence_check", "worked_example": "worked_example"
+  },
+  "legacy_goals": []
+}

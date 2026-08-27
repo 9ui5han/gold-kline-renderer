@@ -13,6 +13,39 @@ from app.photo.indicator_engine import (
 
 
 class IndicatorTeachingEngineTests(unittest.TestCase):
+    def test_rsi_scenarios_have_distinct_data_and_teaching_contracts(self):
+        scenarios = {
+            name: build_teaching_scene("rsi", name)
+            for name in (
+                "range_overview",
+                "overbought_reversal",
+                "oversold_recovery",
+                "worked_example",
+            )
+        }
+
+        fingerprints = {
+            scene["data_fingerprint"] for scene in scenarios.values()
+        }
+        self.assertEqual(len(fingerprints), 4)
+        self.assertEqual(
+            scenarios["range_overview"]["signals"][0]["signal_type"],
+            "rsi_range_overview",
+        )
+        self.assertEqual(
+            scenarios["range_overview"]["signals"][0]["levels"],
+            [30, 50, 70],
+        )
+        self.assertNotIn(
+            "price_confirmation",
+            scenarios["range_overview"]["layers"],
+        )
+        self.assertEqual(
+            scenarios["worked_example"]["signals"][0]["signal_type"],
+            "rsi_worked_example",
+        )
+        self.assertIn("lesson_steps", scenarios["worked_example"]["layers"])
+
     def test_rsi_generic_lesson_goals_map_to_existing_scenarios(self):
         expected = {
             "overview": "range_overview",

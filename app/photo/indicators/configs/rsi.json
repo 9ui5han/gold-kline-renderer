@@ -1,0 +1,17 @@
+{
+  "indicator_id": "rsi",
+  "display_name": "RSI",
+  "engine_id": "range_oscillator",
+  "indicator_kind": "oscillator",
+  "parameters": {"period": 14},
+  "levels": {"lower": 30, "middle": 50, "upper": 70},
+  "goal_map": {
+    "overview": "range_overview",
+    "state_a": "overbought_reversal",
+    "state_b": "oversold_recovery",
+    "components": "range_overview",
+    "setup": "worked_example",
+    "worked_example": "worked_example"
+  },
+  "legacy_goals": ["range_overview", "overbought_reversal", "oversold_recovery", "worked_example"]
+}

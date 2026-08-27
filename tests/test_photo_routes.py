@@ -117,7 +117,7 @@ class PhotoRoutesTests(unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("INDICATOR_PLUGIN_NOT_SUPPORTED", response.text)
+        self.assertIn("INDICATOR_NOT_REGISTERED:unknown_magic", response.text)
 
         for indicator_id in ("rsi_magic", "ictx"):
             body = response.request.content
@@ -126,7 +126,7 @@ class PhotoRoutesTests(unittest.TestCase):
             payload["pages"][0]["teaching_spec"]["indicator_id"] = indicator_id
             retry = self.api.post("/v1/photo/charts/render", headers=AUTH, json=payload)
             self.assertEqual(retry.status_code, 422)
-            self.assertIn("INDICATOR_PLUGIN_NOT_SUPPORTED", retry.text)
+            self.assertIn(f"INDICATOR_NOT_REGISTERED:{indicator_id}", retry.text)
 
     def test_unsupported_lesson_goal_is_rejected(self):
         base = {
@@ -176,6 +176,81 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(asset["indicator_id"], "rsi")
         self.assertTrue(asset["signal_contract_valid"])
         self.assertTrue(Path(asset["asset_path"]).is_file())
+
+    def test_duplicate_teaching_charts_are_rejected_before_downstream_tools(self):
+        duplicate_page = {
+            "visual_type": "indicator_panel",
+            "visual_focus": "RSI oversold recovery",
+            "required_elements": ["RSI", "30"],
+            "annotations": [],
+            "risk_note": "教学示意图｜不代表实时行情",
+            "teaching_spec": {
+                "indicator_id": "rsi",
+                "indicator_kind": "oscillator",
+                "lesson_goal": "state_b",
+            },
+        }
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "pages": [
+                    {"page_no": 3, **duplicate_page},
+                    {"page_no": 4, **duplicate_page},
+                ],
+                "route_payload": {
+                    "schema_version": "photo-route-v1",
+                    "route_name": "knowledge",
+                    "topic_text": "RSI tutorial",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("DUPLICATE_TEACHING_CHART", response.text)
+
+    def test_rsi_four_page_teaching_path_returns_distinct_assets(self):
+        definitions = (
+            (2, "indicator_panel", "overview"),
+            (3, "indicator_panel", "state_a"),
+            (4, "indicator_panel", "state_b"),
+            (6, "candlestick_demo", "worked_example"),
+        )
+        pages = [{
+            "page_no": page_no,
+            "visual_type": visual_type,
+            "visual_focus": lesson_goal,
+            "required_elements": ["RSI"],
+            "annotations": [],
+            "risk_note": "教学示意图｜不代表实时行情",
+            "teaching_spec": {
+                "indicator_id": "rsi",
+                "indicator_kind": "oscillator",
+                "lesson_goal": lesson_goal,
+            },
+        } for page_no, visual_type, lesson_goal in definitions]
+        response = self.api.post(
+            "/v1/photo/charts/render",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-chart-request-v1",
+                "content_type": "knowledge",
+                "pages": pages,
+                "route_payload": {
+                    "schema_version": "photo-route-v1",
+                    "route_name": "knowledge",
+                    "topic_text": "RSI指标是什么意思？如何使用？",
+                },
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        assets = response.json()["assets"]
+        self.assertEqual([item["page_no"] for item in assets], [2, 3, 4, 6])
+        self.assertEqual(len({item["data_fingerprint"] for item in assets}), 4)
+        self.assertTrue(all(item["signal_contract_valid"] for item in assets))
 
     def test_missing_required_asset_is_rejected(self):
         response = self.api.post(
