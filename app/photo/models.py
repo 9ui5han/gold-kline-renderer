@@ -99,6 +99,7 @@ class PhotoRenderRequest(StrictModel):
     canvas: PhotoCanvas
     theme_id: Literal["finance_education_v1"]
     platform: Literal["tiktok", "instagram"]
+    language: Literal["zh-CN", "en"] = "zh-CN"
     photo_plan: dict[str, Any]
     chart_assets: dict[str, Any]
     visual_assets: dict[str, Any]
@@ -116,6 +117,7 @@ class PhotoRenderRequest(StrictModel):
 
 class PhotoQaRequest(StrictModel):
     schema_version: Literal["photo-qa-request-v1"]
+    language: Literal["zh-CN", "en"] = "zh-CN"
     photo_plan: dict[str, Any]
     render_result: dict[str, Any]
     checks: list[str] = Field(default_factory=list, max_length=20)

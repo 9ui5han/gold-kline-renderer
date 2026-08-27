@@ -4,7 +4,11 @@ from typing import Any
 from PIL import Image
 
 
-def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> dict[str, Any]:
+def validate_post(
+    photo_plan: dict[str, Any],
+    render_result: dict[str, Any],
+    expected_language: str = "zh-CN",
+) -> dict[str, Any]:
     errors = []
     bad_pages = set()
     planned_pages = photo_plan.get("pages") or []
@@ -31,9 +35,23 @@ def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> 
         if item.get("layout_overflow") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "TEXT_OVERFLOW", "message": "文字超出安全长度"})
-        if item.get("render_language") != "zh-CN" or item.get("chinese_contract_valid") is not True:
+        language_valid = (
+            item.get("render_language") == expected_language
+            and item.get("copy_contract_valid", item.get("chinese_contract_valid")) is True
+        )
+        if expected_language == "zh-CN":
+            language_valid = language_valid and item.get("chinese_contract_valid") is True
+        if not language_valid:
             bad_pages.add(page_no)
-            errors.append({"page_no": page_no, "code": "NON_CHINESE_RENDER", "message": "当前版本的最终图片必须使用中文"})
+            errors.append({
+                "page_no": page_no,
+                "code": (
+                    "NON_CHINESE_RENDER"
+                    if expected_language == "zh-CN"
+                    else "LANGUAGE_RENDER_MISMATCH"
+                ),
+                "message": f"页面语言必须为{expected_language}",
+            })
         if item.get("layout_overlap") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "LAYOUT_OVERLAP", "message": "人物、图表或文字发生遮挡"})

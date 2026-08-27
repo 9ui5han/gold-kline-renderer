@@ -1,0 +1,6 @@
+Font family: Montserrat
+Source: Google Fonts official repository
+Font URL: https://github.com/google/fonts/blob/main/ofl/montserrat/Montserrat%5Bwght%5D.ttf
+License URL: https://github.com/google/fonts/blob/main/ofl/montserrat/OFL.txt
+License: SIL Open Font License 1.1
+Downloaded for embedded photo rendering; the font file is not sold separately.

@@ -4,10 +4,11 @@ from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from .chart_renderer import CYAN, INK, RED, _font
+from .chart_renderer import CYAN, INK, RED, _english_font, _font
 
 MUTED, PANEL = "#66717D", "#F3F7FA"
 CHINESE_DISCLAIMER = "教学示意图｜不代表实时行情"
+ENGLISH_DISCLAIMER = "Educational illustration | Not real-time market data"
 CHART_REQUIRED_TYPES = {"indicator_panel", "zone_diagram", "candlestick_demo", "market_chart"}
 
 
@@ -25,6 +26,16 @@ def _chinese_copy_valid(title: str, body: str) -> bool:
         _text_contract_valid(title)
         and _text_contract_valid(body)
         and _contains_chinese(f"{title}{body}")
+    )
+
+
+def _english_copy_valid(title: str, body: str) -> bool:
+    combined = f"{title} {body}"
+    return (
+        _text_contract_valid(title)
+        and _text_contract_valid(body)
+        and any(character.isalpha() and ord(character) < 128 for character in combined)
+        and not _contains_chinese(combined)
     )
 
 
@@ -57,6 +68,97 @@ def _wrapped_lines(text: str, max_width: int, font=None) -> list[str]:
                 current = candidate
         result.append(current.rstrip())
     return result
+
+
+def _wrapped_word_lines(text: str, max_width: int, font) -> list[str]:
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    lines: list[str] = []
+    current = ""
+    for word in str(text or "").split():
+        candidate = f"{current} {word}".strip()
+        if current and measure.textbbox((0, 0), candidate, font=font)[2] > max_width:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _draw_shadow_text(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[float, float],
+    text: str,
+    font,
+    fill: str,
+    shadow: bool = True,
+) -> None:
+    if shadow:
+        layer = Image.new("RGBA", draw._image.size, (255, 255, 255, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        layer_draw.text(
+            (position[0] + 2, position[1] + 3), text,
+            font=font, fill=(0, 0, 0, 41),
+        )
+        layer = layer.filter(ImageFilter.GaussianBlur(radius=3))
+        draw._image.paste(layer, (0, 0), layer)
+    draw.text(position, text, font=font, fill=fill)
+
+
+def _draw_english_header(
+    draw: ImageDraw.ImageDraw,
+    page: dict[str, Any],
+    width: int,
+    cover: bool,
+) -> tuple[int, bool, tuple[int, int, int, int], dict[str, Any]]:
+    title = str(page.get("title") or "").strip().upper()
+    body = str(page.get("body") or "").strip()
+    focus = _cover_focus_label(page).upper()
+    title_size = 58 if cover else 50
+    body_size = 31 if cover else 34
+    title_font = _english_font(title_size, 800)
+    body_font = _english_font(body_size, 400)
+    title_lines = _wrapped_word_lines(title, 920, title_font)
+    body_lines = _wrapped_word_lines(body, 900, body_font)
+    overflow = len(title_lines) > 2 or len(body_lines) > 3
+    highlight_words: list[str] = []
+    y = 62 if cover else 72
+    for line in title_lines[:2]:
+        words = line.split()
+        widths = [draw.textlength(word, font=title_font) for word in words]
+        space = draw.textlength(" ", font=title_font)
+        total = sum(widths) + space * max(0, len(words) - 1)
+        x = (width - total) / 2
+        for word, word_width in zip(words, widths):
+            clean = "".join(character for character in word if character.isalnum()).upper()
+            highlighted = clean == focus or (focus and focus in clean)
+            color = CYAN if highlighted else INK
+            if highlighted:
+                highlight_words.append(word)
+            _draw_shadow_text(draw, (x, y), word, title_font, color, shadow=True)
+            x += word_width + space
+        y += title_size + 16
+    y += 20
+    for line in body_lines[:3]:
+        line_width = draw.textlength(line, font=body_font)
+        draw.text(((width - line_width) / 2, y), line, font=body_font, fill=INK)
+        y += body_size + 15
+    return y, overflow, (70, 62, width - 70, y), {
+        "font_family": "Montserrat",
+        "title_size": title_size,
+        "body_size": body_size,
+        "title_weight": 800,
+        "body_weight": 400,
+        "chart_label_weight": 600,
+        "alignment": "center",
+        "highlight_words": highlight_words,
+        "title_shadow": {
+            "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
+        },
+        "body_shadow": False,
+        "body_line_width": 900,
+    }
 
 
 def _paste_character(image: Image.Image, visual_assets: list[dict[str, Any]],
@@ -260,6 +362,7 @@ def _draw_cover_topic_visual(
     page: dict[str, Any],
     width: int,
     height: int,
+    language: str = "zh-CN",
 ) -> tuple[str, int, int, float, int, float]:
     topic = _topic_key(page)
     left, right = 70, width - 70
@@ -306,7 +409,9 @@ def _draw_cover_topic_visual(
         _draw_antialiased_line(draw._image, smooth_points, fill="#1597C3", width=6, scale=8)
         draw.line((left, panel_top + .3 * (panel_bottom - panel_top), right, panel_top + .3 * (panel_bottom - panel_top)), fill=RED, width=2)
         draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
-        draw.text((left, panel_top - 35), "RSI（14）", fill=INK, font=_font(24, True))
+        indicator_font = _english_font(24, 600) if language == "en" else _font(24, True)
+        indicator_label = "RSI (14)" if language == "en" else "RSI（14）"
+        draw.text((left, panel_top - 35), indicator_label, fill=INK, font=indicator_font)
         return (
             "indicator_rsi", len(close_levels), len(smooth_points),
             candle_gap_ratio, 8, body_half * 2,
@@ -323,12 +428,18 @@ def _draw_cover_topic_visual(
     return visual_type, len(close_levels), 0, candle_gap_ratio, 0, body_half * 2
 
 
-def _draw_checklist_page(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int, top: int) -> int:
+def _draw_checklist_page(
+    draw: ImageDraw.ImageDraw,
+    page: dict[str, Any],
+    width: int,
+    top: int,
+    language: str = "zh-CN",
+) -> int:
     items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
     if not items:
         return 0
     y = max(top, 360)
-    item_font = _font(28)
+    item_font = _english_font(27, 400) if language == "en" else _font(28)
     for index, item in enumerate(items[:4], start=1):
         draw.rounded_rectangle((105, y, width - 105, y + 105), radius=20, fill=PANEL, outline="#DCE5EB", width=2)
         draw.ellipse((135, y + 24, 191, y + 80), fill=CYAN)
@@ -357,8 +468,17 @@ def _paste_chart(image: Image.Image, chart: dict[str, Any] | None, box: tuple[in
     return True
 
 
-def _draw_summary(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -> None:
-    defaults = ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
+def _draw_summary(
+    draw: ImageDraw.ImageDraw,
+    page: dict[str, Any],
+    width: int,
+    language: str = "zh-CN",
+) -> None:
+    defaults = (
+        ["Identify the indicator state", "Confirm with price", "Do not rely on one indicator"]
+        if language == "en" else
+        ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
+    )
     source_items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
     items = (source_items + defaults)[:3]
     y = 390
@@ -366,13 +486,15 @@ def _draw_summary(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -
         draw.rounded_rectangle((100, y, width - 100, y + 120), radius=22, fill=PANEL, outline="#DCE5EB", width=2)
         draw.ellipse((135, y + 27, 201, y + 93), fill=CYAN)
         draw.text((158, y + 43), str(index), fill="white", font=_font(24, True))
-        draw.text((235, y + 38), item[:42], fill=INK, font=_font(29, True))
+        item_font = _english_font(27, 600) if language == "en" else _font(29, True)
+        draw.text((235, y + 38), item[:42], fill=INK, font=item_font)
         y += 145
 
 
 def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
                 visual_assets: list[dict[str, Any]], output_path: Path,
-                width: int, height: int, compact: bool = False) -> dict[str, Any]:
+                width: int, height: int, compact: bool = False,
+                language: str = "zh-CN") -> dict[str, Any]:
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     draw.line((38, 72, 38, height - 72), fill="#E5F4F8", width=5)
@@ -381,10 +503,15 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     layout = "cover" if role == "cover" or visual_type == "cover_illustration" else "summary" if role == "summary" or visual_type == "summary_card" else "checklist" if role in {"checklist", "mistakes"} or visual_type == "checklist" else "example" if role == "example" or visual_type == "candlestick_demo" else "standard"
     source_title = str(page.get("title") or "").strip()
     source_body = str(page.get("body") or "").strip()
-    source_copy_valid = _chinese_copy_valid(source_title, source_body)
+    source_copy_valid = (
+        _english_copy_valid(source_title, source_body)
+        if language == "en" else
+        _chinese_copy_valid(source_title, source_body)
+    )
     if not source_copy_valid:
-        raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHINESE_COPY_REQUIRED")
-    title = source_title
+        contract = "ENGLISH" if language == "en" else "CHINESE"
+        raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_{contract}_COPY_REQUIRED")
+    title = source_title.upper() if language == "en" else source_title
     body = source_body
     chart_present, character_present = False, False
     checklist_item_count = 0
@@ -404,7 +531,12 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     disclaimer_count = 0
 
     if layout == "cover":
-        _, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
+        if language == "en":
+            _, overflow, content_box, typography_metrics = _draw_english_header(
+                draw, page, width, cover=True
+            )
+        else:
+            _, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
         (
             cover_visual_type,
             cover_candle_count,
@@ -412,20 +544,31 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             cover_candle_gap_ratio,
             cover_indicator_supersample,
             cover_candle_body_width,
-        ) = _draw_cover_topic_visual(draw, page, width, height)
+        ) = _draw_cover_topic_visual(draw, page, width, height, language=language)
         topic_visual_present = True
         cover_asset_box, cover_asset_key, cover_asset_opacity = _paste_cover_illustration(
             image, visual_assets, (600, 285, width - 55, 700)
         )
         character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
         character_present = character_box is not None
-        draw.text((width - 205, height - 65), "滑动查看  →", fill=INK, font=_font(20, True))
+        swipe_text = "SWIPE  →" if language == "en" else "滑动查看  →"
+        swipe_font = _english_font(20, 600) if language == "en" else _font(20, True)
+        draw.text((width - 205, height - 65), swipe_text, fill=INK, font=swipe_font)
     else:
-        header_bottom, overflow, content_box, typography_metrics = _draw_header(draw, title, body, width, compact)
+        if language == "en":
+            header_bottom, overflow, content_box, typography_metrics = _draw_english_header(
+                draw, page, width, cover=False
+            )
+        else:
+            header_bottom, overflow, content_box, typography_metrics = _draw_header(
+                draw, title, body, width, compact
+            )
         if layout == "summary":
-            _draw_summary(draw, page, width)
+            _draw_summary(draw, page, width, language=language)
         elif layout == "checklist":
-            checklist_item_count = _draw_checklist_page(draw, page, width, header_bottom + 28)
+            checklist_item_count = _draw_checklist_page(
+                draw, page, width, header_bottom + 28, language=language
+            )
             if checklist_item_count == 0:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
         else:
@@ -435,7 +578,9 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")
         # Characters are cover-only. Content pages reserve the canvas for teaching evidence.
 
-    draw.text((72, height - 55), CHINESE_DISCLAIMER, fill=MUTED, font=_font(22))
+    disclaimer = ENGLISH_DISCLAIMER if language == "en" else CHINESE_DISCLAIMER
+    disclaimer_font = _english_font(19, 400) if language == "en" else _font(22)
+    draw.text((72, height - 55), disclaimer, fill=MUTED, font=disclaimer_font)
     disclaimer_count += 1
     footer_box = (0, height - 75, width, height)
     character_content_overlap = _intersects(character_box, content_box)
@@ -446,7 +591,11 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     )
     character_safe = character_in_bounds and not character_content_overlap and not character_footer_overlap
     overlap = character_content_overlap or character_footer_overlap
-    chinese_contract_valid = _chinese_copy_valid(title, body) and _contains_chinese(CHINESE_DISCLAIMER)
+    chinese_contract_valid = (
+        language == "zh-CN"
+        and _chinese_copy_valid(title, body)
+        and _contains_chinese(CHINESE_DISCLAIMER)
+    )
     teaching_evidence = {
         "engine_version": str((chart or {}).get("teaching_engine_version") or ""),
         "indicator_id": str((chart or {}).get("indicator_id") or ""),
@@ -462,8 +611,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     return {
         "page_no": int(page["page_no"]), "path": str(output_path), "width": width, "height": height,
         "layout_overflow": overflow, "risk_note_present": True, "chart_present": chart_present,
-        "character_present": character_present, "layout_template": layout, "render_language": "zh-CN",
-        "rendered_disclaimer": CHINESE_DISCLAIMER, "disclaimer_count": 1,
+        "character_present": character_present, "layout_template": layout, "render_language": language,
+        "rendered_disclaimer": disclaimer, "disclaimer_count": 1,
         "rendered_title": title, "rendered_body": body,
         "typography_metrics": typography_metrics,
         "visible_page_number": False,
@@ -482,6 +631,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "checklist_present": checklist_item_count > 0,
         "checklist_item_count": checklist_item_count,
         "chinese_contract_valid": chinese_contract_valid,
+        "copy_contract_valid": source_copy_valid,
         "character_in_safe_area": character_safe, "layout_overlap": overlap,
         "character_box": character_box, "content_box": content_box,
         "character_box_intersects_content": character_content_overlap,

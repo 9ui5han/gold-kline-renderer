@@ -22,6 +22,35 @@ def _non_white_ratio(path: Path) -> float:
 
 
 class PhotoTemplateRendererTests(unittest.TestCase):
+    def test_english_release_typography_uses_montserrat_centered_highlight_and_shadow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "english.png"
+            result = render_page({
+                "page_no": 1,
+                "page_role": "cover",
+                "title": "What is RSI?",
+                "body": "Learn how the Relative Strength Index works.",
+                "key_message": "Understand RSI before using it.",
+                "visual_type": "cover_illustration",
+                "visual_focus": "RSI indicator",
+                "required_elements": ["RSI", "price chart"],
+                "risk_note": "Educational illustration | Not real-time market data",
+            }, None, [], output, 1080, 1080, language="en")
+
+            self.assertEqual(result["render_language"], "en")
+            self.assertEqual(result["rendered_title"], "WHAT IS RSI?")
+            self.assertEqual(result["typography_metrics"]["font_family"], "Montserrat")
+            self.assertEqual(result["typography_metrics"]["title_weight"], 800)
+            self.assertEqual(result["typography_metrics"]["body_weight"], 400)
+            self.assertEqual(result["typography_metrics"]["alignment"], "center")
+            self.assertEqual(result["typography_metrics"]["highlight_words"], ["RSI?"])
+            self.assertEqual(result["typography_metrics"]["title_shadow"], {
+                "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
+            })
+            self.assertFalse(result["typography_metrics"]["body_shadow"])
+            self.assertTrue(result["copy_contract_valid"])
+            self.assertGreater(_non_white_ratio(output), 0.055)
+
     def test_chinese_header_uses_compact_readable_typography(self):
         image = Image.new("RGB", (1080, 1080), "white")
         draw = ImageDraw.Draw(image)

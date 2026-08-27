@@ -5,6 +5,14 @@ from pathlib import Path
 
 
 class PhotoModelsStoreAssetsTests(unittest.TestCase):
+    def test_bundled_montserrat_font_and_license_are_present(self):
+        root = Path(__file__).resolve().parents[1]
+        font_path = root / "assets/photo/fonts/montserrat/Montserrat-VariableFont_wght.ttf"
+        license_path = root / "assets/photo/licenses/montserrat/OFL.txt"
+        self.assertTrue(font_path.is_file())
+        self.assertGreater(font_path.stat().st_size, 700_000)
+        self.assertIn("SIL OPEN FONT LICENSE", license_path.read_text())
+
     def test_docker_image_packages_photo_assets(self):
         project_root = Path(__file__).resolve().parents[1]
         dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")

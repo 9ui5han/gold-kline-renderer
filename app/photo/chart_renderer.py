@@ -9,6 +9,11 @@ from .indicator_engine import resolve_teaching_scene
 CYAN, INK, MUTED = "#32C4EA", "#17212B", "#6B7785"
 GRID, RED = "#D9E0E6", "#E99AA5"
 BLUE_FILL, RED_FILL = "#D9F3FA", "#FBE3E6"
+MONTSERRAT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "assets" / "photo" / "fonts" / "montserrat"
+    / "Montserrat-VariableFont_wght.ttf"
+)
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
@@ -25,6 +30,17 @@ def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
         except OSError:
             continue
     return ImageFont.load_default()
+
+
+def _english_font(size: int, weight: int = 400) -> ImageFont.ImageFont:
+    """Load the bundled commercial-safe Montserrat variable font."""
+    try:
+        font = ImageFont.truetype(str(MONTSERRAT_PATH), size=size)
+        if hasattr(font, "set_variation_by_axes"):
+            font.set_variation_by_axes([float(weight)])
+        return font
+    except (OSError, ValueError):
+        return _font(size, bold=weight >= 600)
 
 
 def _rsi_points(left: int, top: int, right: int, bottom: int, mode: str) -> list[tuple[float, float]]:

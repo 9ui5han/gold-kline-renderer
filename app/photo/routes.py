@@ -111,6 +111,7 @@ def build_photo_router(
                     output,
                     payload.canvas.width,
                     payload.canvas.height,
+                    language=payload.language,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -128,7 +129,11 @@ def build_photo_router(
 
     @router.post("/validate")
     def validate(payload: PhotoQaRequest) -> dict:
-        return validate_post(payload.photo_plan, payload.render_result)
+        return validate_post(
+            payload.photo_plan,
+            payload.render_result,
+            expected_language=payload.language,
+        )
 
     @router.post("/repair")
     def repair(payload: PhotoRepairRequest) -> dict:
@@ -181,6 +186,7 @@ def build_photo_router(
                     int(existing["width"]),
                     int(existing["height"]),
                     compact=True,
+                    language=str(context.get("language") or "zh-CN"),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc

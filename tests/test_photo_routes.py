@@ -295,6 +295,39 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("PAGE_1_CHINESE_COPY_REQUIRED", response.text)
 
+    def test_render_post_accepts_optional_english_release_mode(self):
+        plan = photo_plan()
+        plan["post_title"] = "WHAT IS RSI?"
+        plan["pages"][0].update({
+            "title": "What is RSI?",
+            "body": "Learn how the Relative Strength Index works.",
+            "key_message": "Understand RSI before using it.",
+            "visual_type": "cover_illustration",
+            "visual_focus": "RSI indicator",
+            "required_elements": ["RSI", "price chart"],
+            "risk_note": "Educational illustration | Not real-time market data",
+        })
+        response = self.api.post(
+            "/v1/photo/render-post",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-render-request-v1",
+                "photo_request_id": "photo-english-release-001",
+                "language": "en",
+                "canvas": {"width": 1080, "height": 1080},
+                "theme_id": "finance_education_v1",
+                "platform": "tiktok",
+                "photo_plan": plan,
+                "chart_assets": {"schema_version": "photo-chart-v1", "assets": []},
+                "visual_assets": {"schema_version": "photo-assets-v1", "assets": []},
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        image = response.json()["images"][0]
+        self.assertEqual(image["render_language"], "en")
+        self.assertEqual(image["rendered_title"], "WHAT IS RSI?")
+        self.assertEqual(image["typography_metrics"]["font_family"], "Montserrat")
+
     def test_repair_rejects_financial_fact_changes(self):
         for error_code in ("PRICE_MISMATCH", "FORECAST_CONDITION_MISMATCH", "TEACHING_SIGNAL_INVALID"):
             with self.subTest(error_code=error_code):
