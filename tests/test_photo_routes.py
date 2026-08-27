@@ -438,7 +438,7 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(repair_response.status_code, 200, repair_response.text)
         repaired = repair_response.json()
         self.assertEqual(repaired["status"], "completed")
-        self.assertTrue(repaired["images"][0]["chart_present"])
+        self.assertTrue(repaired["images"][0]["topic_visual_present"])
         self.assertTrue(repaired["images"][0]["character_present"])
 
         job_response = self.api.get(

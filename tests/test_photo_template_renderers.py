@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from app.photo.chart_renderer import render_chart
-from app.photo.page_renderer import _wrapped_lines, render_page
+from app.photo.page_renderer import _draw_header, _wrapped_lines, render_page
 from app.photo.validator import validate_post
 
 
@@ -22,6 +22,22 @@ def _non_white_ratio(path: Path) -> float:
 
 
 class PhotoTemplateRendererTests(unittest.TestCase):
+    def test_chinese_header_uses_compact_readable_typography(self):
+        image = Image.new("RGB", (1080, 1080), "white")
+        draw = ImageDraw.Draw(image)
+        bottom, overflow, box, metrics = _draw_header(
+            draw,
+            "复习总结",
+            "RSI工具为技术分析带来便捷，配合价格表现可有效判断市场状态。",
+            1080,
+            False,
+        )
+        self.assertFalse(overflow)
+        self.assertLessEqual(metrics["title_size"], 48)
+        self.assertLessEqual(metrics["body_size"], 29)
+        self.assertLessEqual(metrics["body_line_width"], 820)
+        self.assertGreater(bottom, box[1])
+
     def test_chinese_copy_wraps_by_rendered_pixel_width(self):
         image = Image.new("RGB", (1080, 1080), "white")
         draw = ImageDraw.Draw(image)
@@ -100,6 +116,32 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertFalse(qa["passed"])
             self.assertIn("NON_CHINESE_RENDER", {item["code"] for item in qa["errors"]})
 
+    def test_qa_rejects_empty_checklist_and_empty_cover_topic_visual(self):
+        with tempfile.TemporaryDirectory() as directory:
+            paths = []
+            for page_no in (1, 2):
+                path = Path(directory) / f"page_{page_no}.png"
+                Image.new("RGB", (1080, 1080), "white").save(path)
+                paths.append(path)
+            plan = {"content_type": "knowledge", "pages": [
+                {"page_no": 1, "page_role": "cover", "visual_type": "cover_illustration"},
+                {"page_no": 2, "page_role": "checklist", "visual_type": "checklist"},
+            ]}
+            images = []
+            for page_no, path in enumerate(paths, start=1):
+                images.append({
+                    "page_no": page_no, "path": str(path), "width": 1080, "height": 1080,
+                    "layout_overflow": False, "risk_note_present": True,
+                    "render_language": "zh-CN", "layout_overlap": False,
+                    "chinese_contract_valid": True, "disclaimer_count": 1,
+                    "topic_visual_present": False, "checklist_present": False,
+                    "checklist_item_count": 0,
+                })
+            qa = validate_post(plan, {"photo_job_id": "photo-test", "images": images})
+            codes = {item["code"] for item in qa["errors"]}
+            self.assertIn("COVER_TOPIC_VISUAL_MISSING", codes)
+            self.assertIn("CHECKLIST_CONTENT_MISSING", codes)
+
     def test_rsi_visual_types_render_distinct_chinese_charts(self):
         cases = [
             ("indicator_panel", "RSI scale from 0 to 100", ["RSI", "30", "70"]),
@@ -171,6 +213,73 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 [item["layout_template"] for item in results],
                 ["cover", "standard", "checklist", "example", "summary"],
             )
+
+    def test_cover_builds_topic_related_indicator_visual_without_character(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "cover.png"
+            result = render_page({
+                "page_no": 1,
+                "page_role": "cover",
+                "title": "什么是RSI指标？",
+                "body": "零基础使用指南",
+                "key_message": "认识RSI。",
+                "visual_type": "cover_illustration",
+                "visual_focus": "RSI指标与价格走势",
+                "required_elements": ["K线图", "RSI曲线", "30与70区间"],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, None, [], output, 1080, 1080)
+            self.assertEqual(result["cover_visual_type"], "indicator_rsi")
+            self.assertTrue(result["topic_visual_present"])
+            self.assertFalse(result["character_present"])
+            self.assertGreater(_non_white_ratio(output), 0.055)
+
+    def test_checklist_renders_from_page_elements_without_chart_asset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "checklist.png"
+            result = render_page({
+                "page_no": 5,
+                "page_role": "checklist",
+                "title": "使用RSI的检查清单",
+                "body": "按顺序完成以下检查。",
+                "key_message": "不要只看一个数值。",
+                "visual_type": "checklist",
+                "visual_focus": "RSI使用步骤",
+                "required_elements": ["确认30与70区间", "观察价格是否确认", "检查趋势背景"],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, None, [], output, 1080, 1080)
+            self.assertTrue(result["checklist_present"])
+            self.assertEqual(result["checklist_item_count"], 3)
+            self.assertFalse(result["chart_present"])
+            self.assertGreater(_non_white_ratio(output), 0.035)
+
+    def test_required_financial_chart_missing_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "PAGE_2_CHART_REQUIRED"):
+                render_page({
+                    "page_no": 2,
+                    "page_role": "definition",
+                    "title": "RSI是什么？",
+                    "body": "RSI用于衡量价格强弱。",
+                    "key_message": "观察强弱。",
+                    "visual_type": "indicator_panel",
+                    "required_elements": ["RSI曲线"],
+                    "risk_note": "教学示意图｜不代表实时行情",
+                }, None, [], Path(directory) / "missing-chart.png", 1080, 1080)
+
+    def test_visible_page_number_is_disabled(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "summary.png"
+            result = render_page({
+                "page_no": 7,
+                "page_role": "summary",
+                "title": "复习总结",
+                "body": "结合价格确认指标信号。",
+                "key_message": "完成复习。",
+                "visual_type": "summary_card",
+                "required_elements": ["指标状态", "价格确认"],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, None, [], output, 1080, 1080)
+            self.assertFalse(result["visible_page_number"])
 
     def test_character_is_confined_to_reserved_cover_area(self):
         with tempfile.TemporaryDirectory() as directory:

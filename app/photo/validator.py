@@ -39,7 +39,16 @@ def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> 
             errors.append({"page_no": page_no, "code": "LAYOUT_OVERLAP", "message": "人物、图表或文字发生遮挡"})
         if int(item.get("disclaimer_count") or 0) != 1:
             bad_pages.add(page_no)
-            errors.append({"page_no": page_no, "code": "DISCLAIMER_COUNT_INVALID", "message": "英文免责声明必须且只能出现一次"})
+            errors.append({"page_no": page_no, "code": "DISCLAIMER_COUNT_INVALID", "message": "教学示意说明必须且只能出现一次"})
+        role = str(page.get("page_role") or "")
+        visual_type = str(page.get("visual_type") or "")
+        if (role == "cover" or visual_type == "cover_illustration") and item.get("topic_visual_present") is not True:
+            bad_pages.add(page_no)
+            errors.append({"page_no": page_no, "code": "COVER_TOPIC_VISUAL_MISSING", "message": "封面缺少与主题相关的主视觉"})
+        if role in {"checklist", "mistakes"} or visual_type == "checklist":
+            if item.get("checklist_present") is not True or int(item.get("checklist_item_count") or 0) < 1:
+                bad_pages.add(page_no)
+                errors.append({"page_no": page_no, "code": "CHECKLIST_CONTENT_MISSING", "message": "检查清单主体为空"})
         if page.get("visual_type") in {"indicator_panel", "zone_diagram", "candlestick_demo", "market_chart"}:
             evidence = item.get("teaching_evidence") if isinstance(item.get("teaching_evidence"), dict) else {}
             if (

@@ -3,10 +3,11 @@ from typing import Any
 
 from PIL import Image, ImageDraw
 
-from .chart_renderer import CYAN, INK, _font
+from .chart_renderer import CYAN, INK, RED, _font
 
 MUTED, PANEL = "#66717D", "#F3F7FA"
 CHINESE_DISCLAIMER = "教学示意图｜不代表实时行情"
+CHART_REQUIRED_TYPES = {"indicator_panel", "zone_diagram", "candlestick_demo", "market_chart"}
 
 
 def _text_contract_valid(value: Any) -> bool:
@@ -76,25 +77,32 @@ def _paste_character(image: Image.Image, visual_assets: list[dict[str, Any]],
 
 
 def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
-                 compact: bool) -> tuple[int, bool, tuple[int, int, int, int]]:
+                 compact: bool) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
     margin = 72
-    title_size, body_size = (52, 31) if compact else (60, 35)
+    title_size, body_size = (44, 27) if compact else (48, 29)
     title_font = _font(title_size, True)
     body_font = _font(body_size)
-    available_width = width - margin * 2
-    title_lines = _wrapped_lines(title, available_width, title_font)
-    body_lines = _wrapped_lines(body, available_width, body_font)
-    overflow = len(title_lines) > 2 or len(body_lines) > 4
-    y = 58
+    title_width = width - margin * 2
+    body_width = min(820, title_width)
+    title_lines = _wrapped_lines(title, title_width, title_font)
+    body_lines = _wrapped_lines(body, body_width, body_font)
+    overflow = len(title_lines) > 2 or len(body_lines) > 3
+    y = 62
     for line in title_lines[:2]:
         draw.text((margin, y), line, fill=INK, font=title_font)
-        y += title_size + 10
-    draw.rectangle((margin, y + 2, margin + 160, y + 10), fill=CYAN)
-    y += 34
-    for line in body_lines[:4]:
+        y += title_size + 12
+    first_title_width = draw.textbbox((0, 0), title_lines[0] if title_lines else title, font=title_font)[2]
+    underline_width = min(150, max(88, first_title_width // 3))
+    draw.rectangle((margin, y, margin + underline_width, y + 7), fill=CYAN)
+    y += 38
+    for line in body_lines[:3]:
         draw.text((margin, y), line, fill=INK, font=body_font)
-        y += body_size + 9
-    return y, overflow, (margin, 58, width - margin, y)
+        y += body_size + 14
+    return y, overflow, (margin, 62, width - margin, y), {
+        "title_size": title_size,
+        "body_size": body_size,
+        "body_line_width": body_width,
+    }
 
 
 def _draw_market_background(draw: ImageDraw.ImageDraw, width: int, height: int) -> None:
@@ -103,6 +111,119 @@ def _draw_market_background(draw: ImageDraw.ImageDraw, width: int, height: int) 
     for x, y in points[1:-1]:
         draw.line((x, y - 52, x, y + 52), fill="#BBC9D3", width=3)
         draw.rectangle((x - 10, y - 25, x + 10, y + 25), fill=CYAN, outline=INK)
+
+
+def _topic_key(page: dict[str, Any]) -> str:
+    haystack = " ".join(str(page.get(key) or "") for key in (
+        "title", "body", "key_message", "visual_focus",
+    )).upper()
+    for key in ("RSI", "MACD", "KDJ", "ATR", "OBV", "ICT"):
+        if key in haystack:
+            return key.lower()
+    if "布林" in haystack or "BOLL" in haystack:
+        return "bollinger"
+    if "均线" in haystack or "MA" in haystack:
+        return "moving_average"
+    return "generic_finance"
+
+
+def _draw_cover_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
+    title_font = _font(58, True)
+    body_font = _font(29)
+    title_lines = _wrapped_lines(title, width - 160, title_font)
+    body_lines = _wrapped_lines(body, 760, body_font)
+    overflow = len(title_lines) > 2 or len(body_lines) > 2
+    y = 50
+    for line in title_lines[:2]:
+        line_width = draw.textbbox((0, 0), line, font=title_font)[2]
+        draw.text(((width - line_width) // 2, y), line, fill=INK, font=title_font)
+        y += 70
+    subtitle_y = y + 4
+    for line in body_lines[:2]:
+        line_width = draw.textbbox((0, 0), line, font=body_font)[2]
+        draw.text(((width - line_width) // 2, subtitle_y), line, fill=MUTED, font=body_font)
+        subtitle_y += 43
+    return subtitle_y, overflow, (80, 50, width - 80, subtitle_y), {
+        "title_size": 58, "body_size": 29, "body_line_width": 760,
+    }
+
+
+def _draw_magnifier(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: int) -> None:
+    x, y = center
+    draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline=INK, width=9)
+    draw.line((x + radius - 5, y + radius - 5, x + radius + 62, y + radius + 62), fill=INK, width=13)
+
+
+def _draw_cover_topic_visual(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int, height: int) -> str:
+    topic = _topic_key(page)
+    left, right = 70, width - 70
+    chart_top, chart_bottom = 350, 735
+    candles = [
+        (0.08, .72, .56, True), (0.16, .64, .47, True), (0.24, .52, .62, False),
+        (0.32, .61, .39, True), (0.40, .42, .30, True), (0.48, .32, .46, False),
+        (0.56, .44, .55, False), (0.64, .57, .42, True), (0.72, .45, .26, True),
+        (0.80, .28, .38, False), (0.88, .39, .22, True),
+    ]
+    for ratio, open_ratio, close_ratio, up in candles:
+        x = int(left + ratio * (right - left))
+        open_y = int(chart_top + open_ratio * (chart_bottom - chart_top))
+        close_y = int(chart_top + close_ratio * (chart_bottom - chart_top))
+        high = min(open_y, close_y) - 34
+        low = max(open_y, close_y) + 34
+        draw.line((x, high, x, low), fill=INK, width=3)
+        color = CYAN if up else "#6C7782"
+        draw.rectangle((x - 13, min(open_y, close_y), x + 13, max(open_y, close_y)), fill=color, outline=INK, width=2)
+
+    if topic == "rsi":
+        panel_top, panel_bottom = 760, 940
+        overlay = Image.new("RGBA", (width, height), (255, 255, 255, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        overlay_draw.rectangle((left, panel_top, right, panel_top + 48), fill=(233, 154, 165, 72))
+        overlay_draw.rectangle((left, panel_bottom - 48, right, panel_bottom), fill=(50, 196, 234, 65))
+        draw._image.paste(overlay, (0, 0), overlay)
+        values = [48, 58, 72, 77, 66, 54, 38, 25, 31, 46, 62, 74, 69]
+        points = []
+        for index, value in enumerate(values):
+            x = left + index * (right - left) / (len(values) - 1)
+            y = panel_bottom - value / 100 * (panel_bottom - panel_top)
+            points.append((x, y))
+        draw.line(points, fill="#1597C3", width=6, joint="curve")
+        draw.line((left, panel_top + .3 * (panel_bottom - panel_top), right, panel_top + .3 * (panel_bottom - panel_top)), fill=RED, width=2)
+        draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
+        draw.text((left, panel_top - 35), "RSI（14）", fill=INK, font=_font(24, True))
+        _draw_magnifier(draw, (770, 500), 95)
+        return "indicator_rsi"
+
+    _draw_magnifier(draw, (760, 535), 105)
+    label = {
+        "macd": "MACD", "kdj": "KDJ", "atr": "ATR", "obv": "OBV",
+        "ict": "ICT", "bollinger": "BOLL", "moving_average": "MA",
+    }.get(topic, "MARKET")
+    draw.rounded_rectangle((350, 780, 730, 875), radius=26, fill=PANEL, outline="#D9E2E8", width=2)
+    label_width = draw.textbbox((0, 0), label, font=_font(40, True))[2]
+    draw.text(((width - label_width) // 2, 805), label, fill=INK, font=_font(40, True))
+    return f"indicator_{topic}" if topic != "generic_finance" else "topic_magnifier"
+
+
+def _draw_checklist_page(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int, top: int) -> int:
+    items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
+    if not items:
+        return 0
+    y = max(top, 360)
+    item_font = _font(28)
+    for index, item in enumerate(items[:4], start=1):
+        draw.rounded_rectangle((105, y, width - 105, y + 105), radius=20, fill=PANEL, outline="#DCE5EB", width=2)
+        draw.ellipse((135, y + 24, 191, y + 80), fill=CYAN)
+        number = str(index)
+        number_width = draw.textbbox((0, 0), number, font=_font(21, True))[2]
+        draw.text((163 - number_width // 2, y + 38), number, fill="white", font=_font(21, True))
+        lines = _wrapped_lines(item, width - 360, item_font)
+        line_y = y + (31 if len(lines) == 1 else 15)
+        for line in lines[:2]:
+            draw.text((225, line_y), line, fill=INK, font=item_font)
+            line_y += 38
+        y += 125
+    return min(4, len(items))
 
 
 def _paste_chart(image: Image.Image, chart: dict[str, Any] | None, box: tuple[int, int, int, int]) -> bool:
@@ -148,30 +269,38 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     title = source_title
     body = source_body
     chart_present, character_present = False, False
+    checklist_item_count = 0
+    cover_visual_type = ""
+    topic_visual_present = False
+    typography_metrics: dict[str, int] = {}
     character_box = None
     content_box = None
     disclaimer_count = 0
 
     if layout == "cover":
-        _draw_market_background(draw, width, height)
-        _, overflow, content_box = _draw_header(draw, title, body, width, compact)
-        chart_present = _paste_chart(image, chart, (40, 330, width - 40, 790))
-        character_box = _paste_character(image, visual_assets, (285, 350, width - 285, height - 90))
+        _, overflow, content_box, typography_metrics = _draw_cover_header(draw, title, body, width)
+        cover_visual_type = _draw_cover_topic_visual(draw, page, width, height)
+        topic_visual_present = True
+        character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
         character_present = character_box is not None
-        draw.rounded_rectangle((width - 270, height - 145, width - 75, height - 82), radius=28, fill=INK)
-        draw.text((width - 235, height - 132), "滑动查看", fill="white", font=_font(25, True))
+        draw.text((width - 205, height - 65), "滑动查看  →", fill=INK, font=_font(20, True))
     else:
-        header_bottom, overflow, content_box = _draw_header(draw, title, body, width, compact)
+        header_bottom, overflow, content_box, typography_metrics = _draw_header(draw, title, body, width, compact)
         if layout == "summary":
             _draw_summary(draw, page, width)
+        elif layout == "checklist":
+            checklist_item_count = _draw_checklist_page(draw, page, width, header_bottom + 28)
+            if checklist_item_count == 0:
+                raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
         else:
             top = max(390, header_bottom + 25)
             chart_present = _paste_chart(image, chart, (72, top, width - 72, height - 105))
+            if visual_type in CHART_REQUIRED_TYPES and not chart_present:
+                raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")
         # Characters are cover-only. Content pages reserve the canvas for teaching evidence.
 
     draw.text((72, height - 55), CHINESE_DISCLAIMER, fill=MUTED, font=_font(22))
     disclaimer_count += 1
-    draw.text((width - 115, height - 55), f"{int(page['page_no']):02d}", fill=CYAN, font=_font(28, True))
     footer_box = (0, height - 75, width, height)
     character_content_overlap = _intersects(character_box, content_box)
     character_footer_overlap = _intersects(character_box, footer_box)
@@ -200,6 +329,12 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "character_present": character_present, "layout_template": layout, "render_language": "zh-CN",
         "rendered_disclaimer": CHINESE_DISCLAIMER, "disclaimer_count": 1,
         "rendered_title": title, "rendered_body": body,
+        "typography_metrics": typography_metrics,
+        "visible_page_number": False,
+        "cover_visual_type": cover_visual_type,
+        "topic_visual_present": topic_visual_present,
+        "checklist_present": checklist_item_count > 0,
+        "checklist_item_count": checklist_item_count,
         "chinese_contract_valid": chinese_contract_valid,
         "character_in_safe_area": character_safe, "layout_overlap": overlap,
         "character_box": character_box, "content_box": content_box,
