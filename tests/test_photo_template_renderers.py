@@ -327,13 +327,12 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["typography_metrics"]["title_weight"], "regular")
             self.assertGreaterEqual(result["cover_candle_count"], 54)
             self.assertAlmostEqual(
-                result["cover_candle_body_width"], 19.6744 * .75, delta=.2,
+                result["cover_candle_body_width"], 12.0, delta=.2,
             )
-            self.assertGreaterEqual(result["cover_candle_gap_ratio"], 0.25)
+            self.assertGreaterEqual(result["cover_candle_gap_ratio"], 0.39)
             self.assertNotIn("cover_chart_edges", result)
             self.assertGreater(_non_white_count(output, (0, 350, 24, 715)), 0)
             self.assertGreater(_non_white_count(output, (1056, 350, 1080, 715)), 0)
-            self.assertEqual(_non_white_count(output, (0, 720, 44, 758)), 0)
             self.assertGreater(_non_white_count(output, (44, 720, 180, 758)), 0)
             self.assertGreaterEqual(result["cover_indicator_point_count"], 450)
             self.assertEqual(result["cover_indicator_supersample"], 8)

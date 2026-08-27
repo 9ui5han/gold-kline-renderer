@@ -1,3 +1,4 @@
+import math
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -451,25 +452,31 @@ def _draw_cover_topic_visual(
     left, right = 0, width
     chart_top, chart_bottom = 350, 735
     close_levels = [
-        .82, .78, .74, .77, .71, .68, .70, .64, .59, .62,
-        .56, .52, .49, .53, .47, .43, .46, .41, .38, .42,
-        .45, .40, .44, .48, .43, .39, .35, .38, .33, .29,
-        .32, .27, .24, .28, .23, .20, .24, .19, .16, .20,
-        .17, .13, .16,
-        .12, .15, .11, .14, .10, .08, .11, .07, .09, .06,
-        .04,
+        .70, .74, .68, .72, .63, .66, .59, .55, .62, .50,
+        .54, .47, .60, .38, .34, .41, .44, .40, .47, .43,
+        .50, .36, .30, .22, .46, .34, .40, .38, .45, .36,
+        .42, .30, .34, .26, .32, .28, .38, .31, .35, .25,
+        .30, .20, .24, .17, .29, .22, .27, .16, .21, .12,
+        .18, .10, .14, .08,
     ]
     step = (right - left) / len(close_levels)
-    body_half = step * .369
+    body_half = step * .30
     candle_gap_ratio = 1 - body_half * 2 / step
     for index, close_ratio in enumerate(close_levels):
-        open_ratio = close_levels[index - 1] if index else .82
+        previous_close = close_levels[index - 1] if index else .82
+        movement = close_ratio - previous_close
+        body_multiplier = 3.0 * (.55 + ((math.sin(index * 1.37) + 1.0) / 2.0) * .90)
+        # Keep the intentionally emphatic cover candles inside the chart stage,
+        # so a large impulse cannot run into the title above it.
+        open_ratio = min(.88, max(.12, close_ratio - movement * body_multiplier))
         up = close_ratio <= open_ratio
         x = left + (index + .5) * step
         open_y = int(chart_top + open_ratio * (chart_bottom - chart_top))
         close_y = int(chart_top + close_ratio * (chart_bottom - chart_top))
-        high = min(open_y, close_y) - 25
-        low = max(open_y, close_y) + 25
+        upper_wick = 7 + int(((math.sin(index * 1.91) + 1.0) / 2.0) * 24)
+        lower_wick = 6 + int(((math.cos(index * 1.17 + .63) + 1.0) / 2.0) * 27)
+        high = max(chart_top, min(open_y, close_y) - upper_wick)
+        low = min(chart_bottom, max(open_y, close_y) + lower_wick)
         draw.line((x, high, x, low), fill=INK, width=2)
         color = CYAN if up else "#6C7782"
         draw.rectangle(

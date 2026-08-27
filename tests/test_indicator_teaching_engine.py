@@ -51,6 +51,15 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         for values in macd_values.values():
             self.assertEqual(len(values), len(scenes["macd"]["ohlc"]))
 
+    def test_every_indicator_uses_valid_display_ohlc_before_drawing(self):
+        for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
+            with self.subTest(indicator_id=indicator_id):
+                source = build_teaching_scene(indicator_id, "overview")["ohlc"]
+                display = chart_renderer._display_candles(source)
+
+                self.assertEqual(len(display), len(source))
+                self.assertTrue(ohlc_series_valid(display))
+
     def test_validator_rejects_short_or_invalid_ohlc_before_signal_validation(self):
         for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
             with self.subTest(indicator_id=indicator_id):
@@ -335,7 +344,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                         for item in layout["title_bounds"]
                     ))
                     self.assertGreater(layout["candle_pitch"], 0)
-                    self.assertAlmostEqual(layout["candle_body_width_ratio"], 0.60)
+                    self.assertAlmostEqual(layout["candle_body_width_ratio"], 0.40)
                     self.assertEqual(layout["price_plot_edges"], layout["indicator_plot_edges"])
 
     def test_rsi_signal_annotations_are_bilingual_centered_and_translucent(self):
@@ -384,38 +393,37 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertGreaterEqual(candle["high"], max(candle["open"], candle["close"]))
             self.assertEqual(candle["close"] >= candle["open"], movement >= 0)
 
-    def test_visual_candle_bodies_are_tripled_but_keep_size_differences(self):
-        tiny_top, tiny_bottom = chart_renderer._visible_candle_body_bounds(100.0, 100.6)
-        normal_top, normal_bottom = chart_renderer._visible_candle_body_bounds(100.0, 108.0)
-        large_top, large_bottom = chart_renderer._visible_candle_body_bounds(100.0, 114.0)
+    def test_drawn_candle_geometry_uses_the_exact_ohlc_values(self):
+        candle = {"open": 102.0, "high": 108.0, "low": 96.0, "close": 99.0}
+        geometry = chart_renderer._candle_geometry(candle, lambda value: -value)
 
-        tiny_height = tiny_bottom - tiny_top
-        normal_height = normal_bottom - normal_top
-        large_height = large_bottom - large_top
+        self.assertEqual(geometry["body_top"], -102.0)
+        self.assertEqual(geometry["body_bottom"], -99.0)
+        self.assertEqual(geometry["wick_top"], -108.0)
+        self.assertEqual(geometry["wick_bottom"], -96.0)
 
-        self.assertGreaterEqual(tiny_height, 5.0)
-        self.assertAlmostEqual(normal_height, 24.0, delta=.01)
-        self.assertAlmostEqual(large_height, 42.0, delta=.01)
-        self.assertGreater(large_height, normal_height)
+    def test_display_candles_have_tripled_bodies_and_varied_asymmetric_wicks(self):
+        source_candles = candles_from_closes([
+            100.0, 100.2, 100.0, 100.8, 100.1, 101.4,
+            101.2, 102.3, 101.6, 101.9, 100.7, 101.0,
+        ])
+        candles = chart_renderer._display_candles(source_candles)
+        upper_wicks = [round(item["high"] - max(item["open"], item["close"]), 4) for item in candles]
+        lower_wicks = [round(min(item["open"], item["close"]) - item["low"], 4) for item in candles]
 
-    def test_visual_candle_body_uses_each_candle_volatility_to_keep_rhythm(self):
-        quiet_top, quiet_bottom = chart_renderer._visible_candle_body_bounds(
-            100.0, 108.0, volatility_emphasis=.70,
-        )
-        active_top, active_bottom = chart_renderer._visible_candle_body_bounds(
-            100.0, 108.0, volatility_emphasis=1.35,
-        )
-
-        self.assertAlmostEqual(quiet_bottom - quiet_top, 16.8, delta=.01)
-        self.assertAlmostEqual(active_bottom - active_top, 32.4, delta=.01)
-
-    def test_visual_candle_wicks_remain_visible_and_keep_range_differences(self):
-        quiet_wick = chart_renderer._visible_candle_wick_length(.6)
-        active_wick = chart_renderer._visible_candle_wick_length(10.0)
-
-        self.assertGreaterEqual(quiet_wick, 3.0)
-        self.assertAlmostEqual(active_wick, 12.0, delta=.01)
-        self.assertGreater(active_wick, quiet_wick)
+        self.assertGreaterEqual(len(set(upper_wicks)), 7)
+        self.assertGreaterEqual(len(set(lower_wicks)), 7)
+        self.assertTrue(any(upper != lower for upper, lower in zip(upper_wicks, lower_wicks)))
+        body_multipliers = []
+        for source, display in zip(source_candles, candles):
+            source_body = abs(source["close"] - source["open"])
+            display_body = abs(display["close"] - display["open"])
+            body_multipliers.append(display_body / source_body)
+            self.assertLessEqual(display["low"], min(display["open"], display["close"]))
+            self.assertGreaterEqual(display["high"], max(display["open"], display["close"]))
+        self.assertAlmostEqual(sum(body_multipliers) / len(body_multipliers), 3.0, delta=.25)
+        self.assertLess(min(body_multipliers), 2.0)
+        self.assertGreater(max(body_multipliers), 4.0)
 
     def test_all_supported_indicator_scenarios_render_in_chinese_and_english(self):
         indicator_kinds = {
@@ -569,7 +577,8 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             result["chart_layout"]["candle_pitch"]
             * result["chart_layout"]["candle_body_width_ratio"]
         )
-        self.assertAlmostEqual(body_width, 5.9783 * .75, delta=.05)
+        self.assertAlmostEqual(result["chart_layout"]["candle_body_width_ratio"], .40)
+        self.assertLess(body_width, 5.9783 * (2 / 3))
         self.assertEqual(chart_renderer._plot_box(900, 48, 275), (0, 48, 900, 275))
 
 
