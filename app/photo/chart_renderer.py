@@ -11,11 +11,6 @@ GRID, RED = "#D9E0E6", "#E99AA5"
 BLUE_FILL, RED_FILL = "#D9F3FA", "#FBE3E6"
 
 
-def _english_contract_valid(value: Any) -> bool:
-    text = str(value or "").strip()
-    return bool(text) and all(character in "\n\r\t" or 32 <= ord(character) <= 126 for character in text)
-
-
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
     candidates = [
         "/System/Library/Fonts/PingFang.ttc",
@@ -30,11 +25,6 @@ def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
         except OSError:
             continue
     return ImageFont.load_default()
-
-
-def _english(value: Any, fallback: str) -> str:
-    text = str(value or "").strip()
-    return text if _english_contract_valid(text) else fallback
 
 
 def _rsi_points(left: int, top: int, right: int, bottom: int, mode: str) -> list[tuple[float, float]]:
@@ -62,18 +52,18 @@ def _draw_rsi_panel(draw: ImageDraw.ImageDraw, width: int, height: int, mode: st
         y = bottom - (bottom - top) * value / 100
         draw.line((left, y, right, y), fill=color, width=3)
         draw.text((25, y - 14), str(value), fill=INK, font=_font(22, True))
-    label = {"overbought": "OVERBOUGHT ZONE", "oversold": "OVERSOLD ZONE"}.get(mode, "RSI (0-100)")
+    label = {"overbought": "超买区域", "oversold": "超卖区域"}.get(mode, "RSI区间（0—100）")
     draw.text((left, 15), label, fill=INK, font=_font(28, True))
     points = _rsi_points(left, top, right, bottom, mode)
     draw.line(points, fill=CYAN, width=6, joint="curve")
     if mode == "overbought":
         target = min(points, key=lambda item: item[1])
         draw.ellipse((target[0] - 8, target[1] - 8, target[0] + 8, target[1] + 8), fill=RED)
-        draw.text((target[0] - 80, max(top, target[1] - 38)), "Above 70", fill=INK, font=_font(20, True))
+        draw.text((target[0] - 80, max(top, target[1] - 38)), "高于70", fill=INK, font=_font(20, True))
     elif mode == "oversold":
         target = max(points, key=lambda item: item[1])
         draw.ellipse((target[0] - 8, target[1] - 8, target[0] + 8, target[1] + 8), fill=CYAN)
-        draw.text((target[0] - 75, min(bottom - 28, target[1] + 12)), "Below 30", fill=INK, font=_font(20, True))
+        draw.text((target[0] - 75, min(bottom - 28, target[1] + 12)), "低于30", fill=INK, font=_font(20, True))
     draw.rectangle((left, top, right, bottom), outline="#BFCAD4", width=2)
 
 
@@ -129,7 +119,7 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
     signal = scene["signals"][0]
     if scene["scenario_id"] == "range_overview":
         panel_box = (72, 58, width - 34, height - 38)
-        draw.text((72, 12), "RSI RANGE OVERVIEW", fill=INK, font=_font(25, True))
+        draw.text((72, 12), "RSI区间总览", fill=INK, font=_font(25, True))
         for upper, lower, fill in (
             (100, 70, RED_FILL),
             (70, 30, "#F7FAFC"),
@@ -149,17 +139,17 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
                 y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
                 points.append((x, y))
         draw.line(points, fill="#138EB9", width=5, joint="curve")
-        draw.text((width - 195, panel_box[1] + 8), "OVERBOUGHT", fill=INK, font=_font(14, True))
-        draw.text((width - 185, panel_box[3] - 24), "OVERSOLD", fill=INK, font=_font(14, True))
+        draw.text((width - 150, panel_box[1] + 8), "超买区", fill=INK, font=_font(14, True))
+        draw.text((width - 150, panel_box[3] - 24), "超卖区", fill=INK, font=_font(14, True))
         draw.rectangle(panel_box, outline="#C8D2DB", width=1)
         return
     price_box = (58, 42, width - 28, 306)
     panel_box = (58, 350, width - 28, height - 32)
     heading = {
-        "range_overview": "HOW RSI RELATES TO PRICE",
-        "overbought_reversal": "RSI OVERBOUGHT REVERSAL",
-        "worked_example": "WORKED EXAMPLE: SIGNAL TO CONFIRMATION",
-    }.get(scene["scenario_id"], "RSI OVERSOLD RECOVERY")
+        "range_overview": "RSI与价格的关系",
+        "overbought_reversal": "RSI超买转弱示例",
+        "worked_example": "完整示例：指标信号到价格确认",
+    }.get(scene["scenario_id"], "RSI超卖回升示例")
     draw.text((58, 5), heading, fill=INK, font=_font(23, True))
     x_for, price_y = _draw_realistic_candles(draw, candles, price_box)
     for value, color in ((70, RED), (50, GRID), (30, CYAN)):
@@ -179,9 +169,9 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
             points.append((x_for(index), y))
     draw.line(points, fill="#138EB9", width=4, joint="curve")
     labels = [] if scene["scenario_id"] == "range_overview" else [
-        (signal["indicator_candle_index"], "INDICATOR CONDITION", "#E99AA5"),
-        (signal["cross_candle_index"], "RSI TRIGGER", CYAN),
-        (signal["confirmation_candle_index"], "PRICE CONFIRMATION", "#D9A62E"),
+        (signal["indicator_candle_index"], "指标条件出现", "#E99AA5"),
+        (signal["cross_candle_index"], "RSI触发", CYAN),
+        (signal["confirmation_candle_index"], "价格确认", "#D9A62E"),
     ]
     for position, (index, label, color) in enumerate(labels):
         x = x_for(index)
@@ -193,20 +183,25 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
         label_x = min(width - 220, max(65, x - 90))
         draw.rounded_rectangle((label_x, label_y, label_x + 185, label_y + 22), radius=8, fill=color)
         draw.text((label_x + 7, label_y + 3), label, fill=INK, font=_font(12, True))
-    draw.text((58, 320), "RSI (14) — SAME TIME AXIS", fill=INK, font=_font(20, True))
+    draw.text((58, 320), "RSI（14）— 与K线使用同一时间轴", fill=INK, font=_font(20, True))
     if scene["scenario_id"] == "range_overview":
-        draw.text((width - 220, panel_box[1] + 8), "OVERBOUGHT", fill=INK, font=_font(14, True))
-        draw.text((width - 205, panel_box[3] - 24), "OVERSOLD", fill=INK, font=_font(14, True))
+        draw.text((width - 150, panel_box[1] + 8), "超买区", fill=INK, font=_font(14, True))
+        draw.text((width - 150, panel_box[3] - 24), "超卖区", fill=INK, font=_font(14, True))
     draw.rectangle(price_box, outline="#C8D2DB", width=1)
     draw.rectangle(panel_box, outline="#C8D2DB", width=1)
 
 
 def _numeric_lines(indicator_values: Any) -> list[tuple[str, list[float | None]]]:
+    labels = {
+        "value": "指标线", "fast": "快线", "slow": "慢线", "signal": "信号线",
+        "histogram": "柱状差值", "middle": "中轨", "upper": "上轨", "lower": "下轨",
+        "k": "K线", "d": "D线", "j": "J线", "atr": "ATR波动", "obv": "OBV能量潮",
+    }
     if isinstance(indicator_values, list):
-        return [("VALUE", indicator_values)]
+        return [("指标线", indicator_values)]
     if isinstance(indicator_values, dict):
         return [
-            (str(name).upper(), values)
+            (labels.get(str(name).lower(), str(name).upper()), values)
             for name, values in indicator_values.items()
             if isinstance(values, list)
         ]
@@ -221,7 +216,19 @@ def _draw_generic_indicator_scene(
 ) -> None:
     candles = scene["ohlc"]
     family = scene.get("indicator_family")
-    title = f"{str(scene['indicator_id']).replace('_', ' ').upper()} — {str(scene['scenario_id']).replace('_', ' ').upper()}"
+    scenario_names = {
+        "overview": "指标总览", "state_a": "状态一", "state_b": "状态二",
+        "components": "组成部分", "setup": "使用条件", "worked_example": "完整示例",
+        "bullish_cross": "向上交叉", "bearish_cross": "向下交叉",
+        "bullish_alignment": "多头排列", "bearish_alignment": "空头排列",
+        "volatility_measure": "波动率总览", "volatility_expansion": "波动扩大",
+        "volatility_contraction": "波动收缩", "three_bands": "三条轨道",
+        "band_expansion": "轨道扩张", "band_contraction": "轨道收缩",
+        "cumulative_volume": "累计成交量", "bullish_confirmation": "上涨确认",
+        "bearish_confirmation": "下跌确认",
+    }
+    scenario_name = scenario_names.get(str(scene["scenario_id"]), str(scene["scenario_id"]).replace("_", " "))
+    title = f"{str(scene['indicator_id']).replace('_', ' ').upper()}｜{scenario_name}"
     draw.text((52, 10), title[:58], fill=INK, font=_font(22, True))
     colors = ["#138EB9", "#D96B78", "#D9A62E", "#7256B8"]
     if family == "overlay":
@@ -281,32 +288,32 @@ def _draw_ict_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
         draw.rectangle((left, top, right, bottom), fill=fill, outline=INK, width=1)
         draw.text((left + 5, top + 4), label, fill=INK, font=_font(14, True))
 
-    zone(order_block, "#FBE3E6" if bearish else "#D9F3FA", "BEARISH ORDER BLOCK" if bearish else "BULLISH ORDER BLOCK")
-    zone(fvg, "#FCE6B8", "FAIR VALUE GAP")
+    zone(order_block, "#FBE3E6" if bearish else "#D9F3FA", "看跌订单块" if bearish else "看涨订单块")
+    zone(fvg, "#FCE6B8", "公允价值缺口")
     bos_y = y_for(bos["price"])
     draw.line((x_for(bos["reference_index"]), bos_y, x_for(bos["event_index"]) + 42, bos_y), fill="#D9A62E", width=3)
-    draw.text((x_for(bos["event_index"]) + 10, bos_y - 24), "BOS", fill=INK, font=_font(17, True))
+    draw.text((x_for(bos["event_index"]) + 10, bos_y - 24), "结构突破", fill=INK, font=_font(17, True))
     sweep_x = x_for(sweep["event_index"])
     sweep_y = y_for(candles[sweep["event_index"]]["high"] if bearish else candles[sweep["event_index"]]["low"])
     draw.ellipse((sweep_x - 7, sweep_y - 7, sweep_x + 7, sweep_y + 7), fill=RED)
-    draw.text((max(55, sweep_x - 115), sweep_y + 12), "LIQUIDITY SWEEP", fill=INK, font=_font(15, True))
+    draw.text((max(55, sweep_x - 115), sweep_y + 12), "流动性扫损", fill=INK, font=_font(15, True))
     retest_x = x_for(order_block["retest_index"])
     retest_y = y_for(candles[order_block["retest_index"]]["low"])
     if bearish:
         retest_y = y_for(candles[order_block["retest_index"]]["high"])
         draw.line((retest_x, retest_y + 5, retest_x, retest_y + 55), fill=RED, width=4)
         draw.polygon([(retest_x - 7, retest_y + 10), (retest_x + 7, retest_y + 10), (retest_x, retest_y)], fill=RED)
-        draw.text((retest_x - 45, retest_y + 60), "RETEST", fill=INK, font=_font(16, True))
+        draw.text((retest_x - 45, retest_y + 60), "回测", fill=INK, font=_font(16, True))
     else:
         draw.line((retest_x, retest_y - 55, retest_x, retest_y - 5), fill=CYAN, width=4)
         draw.polygon([(retest_x - 7, retest_y - 10), (retest_x + 7, retest_y - 10), (retest_x, retest_y)], fill=CYAN)
-        draw.text((retest_x - 45, retest_y - 80), "RETEST", fill=INK, font=_font(16, True))
-    draw.text((50, 10), "ICT STRUCTURE — COMPUTED FROM THE CANDLES", fill=INK, font=_font(23, True))
+        draw.text((retest_x - 45, retest_y - 80), "回测", fill=INK, font=_font(16, True))
+    draw.text((50, 10), "ICT结构｜根据演示K线计算", fill=INK, font=_font(23, True))
     draw.rectangle(box, outline="#C8D2DB", width=1)
 
 
 def _draw_price_rsi_example(draw: ImageDraw.ImageDraw, width: int, height: int) -> None:
-    draw.text((55, 10), "PRICE + RSI CONFIRMATION", fill=INK, font=_font(28, True))
+    draw.text((55, 10), "价格与RSI相互确认", fill=INK, font=_font(28, True))
     _draw_candles(draw, (55, 55, width - 45, 265))
     left, top, right, bottom = 75, 305, width - 45, height - 35
     y30 = bottom - (bottom - top) * .30
@@ -321,10 +328,10 @@ def _draw_price_rsi_example(draw: ImageDraw.ImageDraw, width: int, height: int) 
 
 
 def _draw_checklist(draw: ImageDraw.ImageDraw, width: int, height: int, elements: list[Any]) -> None:
-    draw.text((55, 18), "RSI USAGE CHECKLIST", fill=INK, font=_font(30, True))
-    defaults = ["Confirm the broader trend", "Check price structure", "Wait for confirmation", "Manage risk"]
-    # Checklist copy is renderer-owned English; plan labels are semantic hints only.
-    items = defaults
+    draw.text((55, 18), "指标使用检查清单", fill=INK, font=_font(30, True))
+    defaults = ["确认更大级别趋势", "检查价格结构", "等待价格确认", "做好风险管理"]
+    source_items = [str(item).strip() for item in elements if str(item).strip()]
+    items = (source_items + defaults)[:4]
     y = 88
     for item in items[:4]:
         draw.rounded_rectangle((55, y, width - 55, y + 68), radius=16, fill="#F3F7FA", outline="#DCE5EB", width=2)
@@ -335,12 +342,14 @@ def _draw_checklist(draw: ImageDraw.ImageDraw, width: int, height: int, elements
 
 
 def _draw_steps(draw: ImageDraw.ImageDraw, width: int, height: int, elements: list[Any]) -> None:
-    defaults = ["Identify the setup", "Check context", "Wait for confirmation"]
+    defaults = ["识别指标条件", "检查市场背景", "等待价格确认"]
+    source_items = [str(item).strip() for item in elements if str(item).strip()]
+    items = (source_items + defaults)[:3]
     for index in range(3):
         x = 55 + index * 280
         draw.ellipse((x, 120, x + 76, 196), fill=CYAN)
         draw.text((x + 27, 136), str(index + 1), fill="white", font=_font(28, True))
-        text = defaults[index]
+        text = items[index]
         draw.text((x - 5, 225), text[:20], fill=INK, font=_font(22, True))
         if index < 2:
             draw.line((x + 90, 158, x + 250, 158), fill="#AAB7C2", width=4)
@@ -391,7 +400,7 @@ def render_chart(page: dict[str, Any], output_path: Path,
         "page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}",
         "asset_type": str(page.get("visual_type") or ""), "asset_path": str(output_path),
         "is_teaching_demo": True, "included_elements": list(page.get("required_elements") or []),
-        "template_key": template, "render_language": "en", "disclaimer_drawn": False,
+        "template_key": template, "render_language": "zh-CN", "disclaimer_drawn": False,
         "teaching_engine_version": scene["engine_version"],
         "indicator_id": scene["indicator_id"], "engine_id": scene["engine_id"],
         "indicator_family": scene["indicator_family"],

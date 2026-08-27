@@ -274,6 +274,27 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("PHOTO_ASSET_NOT_FOUND", response.text)
 
+    def test_render_rejects_missing_chinese_copy_without_shared_fallback(self):
+        invalid_plan = photo_plan()
+        invalid_plan["pages"][0]["title"] = ""
+        invalid_plan["pages"][0]["body"] = ""
+        response = self.api.post(
+            "/v1/photo/render-post",
+            headers=AUTH,
+            json={
+                "schema_version": "photo-render-request-v1",
+                "photo_request_id": "photo-missing-copy-001",
+                "canvas": {"width": 1080, "height": 1080},
+                "theme_id": "finance_education_v1",
+                "platform": "tiktok",
+                "photo_plan": invalid_plan,
+                "chart_assets": {"schema_version": "photo-chart-v1", "assets": []},
+                "visual_assets": {"schema_version": "photo-assets-v1", "assets": []},
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("PAGE_1_CHINESE_COPY_REQUIRED", response.text)
+
     def test_repair_rejects_financial_fact_changes(self):
         for error_code in ("PRICE_MISMATCH", "FORECAST_CONDITION_MISMATCH", "TEACHING_SIGNAL_INVALID"):
             with self.subTest(error_code=error_code):
@@ -375,6 +396,12 @@ class PhotoRoutesTests(unittest.TestCase):
         self.assertEqual(rendered["schema_version"], "photo-render-v1")
         self.assertEqual(rendered["status"], "completed")
         self.assertEqual(len(rendered["images"]), 1)
+        self.assertEqual(rendered["images"][0]["render_language"], "zh-CN")
+        self.assertEqual(rendered["images"][0]["rendered_title"], "3分钟看懂RSI")
+        self.assertEqual(
+            rendered["images"][0]["rendered_disclaimer"],
+            "教学示意图｜不代表实时行情",
+        )
         page_path = Path(rendered["images"][0]["path"])
         self.assertTrue(page_path.is_file())
         self.assertIn("photo-work", str(page_path))

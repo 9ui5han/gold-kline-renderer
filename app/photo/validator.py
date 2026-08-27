@@ -31,9 +31,9 @@ def validate_post(photo_plan: dict[str, Any], render_result: dict[str, Any]) -> 
         if item.get("layout_overflow") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "TEXT_OVERFLOW", "message": "文字超出安全长度"})
-        if item.get("render_language") != "en" or item.get("english_contract_valid") is not True:
+        if item.get("render_language") != "zh-CN" or item.get("chinese_contract_valid") is not True:
             bad_pages.add(page_no)
-            errors.append({"page_no": page_no, "code": "NON_ENGLISH_RENDER", "message": "最终图片必须使用英文"})
+            errors.append({"page_no": page_no, "code": "NON_CHINESE_RENDER", "message": "当前版本的最终图片必须使用中文"})
         if item.get("layout_overlap") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "LAYOUT_OVERLAP", "message": "人物、图表或文字发生遮挡"})

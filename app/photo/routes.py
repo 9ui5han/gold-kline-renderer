@@ -89,14 +89,17 @@ def build_photo_router(
         for page in payload.photo_plan.get("pages", []):
             page_no = int(page.get("page_no") or 0)
             output = job_dir / f"page_{page_no:02d}.png"
-            item = render_page(
-                page,
-                chart_by_page.get(page_no),
-                visual_by_page.get(page_no, []),
-                output,
-                payload.canvas.width,
-                payload.canvas.height,
-            )
+            try:
+                item = render_page(
+                    page,
+                    chart_by_page.get(page_no),
+                    visual_by_page.get(page_no, []),
+                    output,
+                    payload.canvas.width,
+                    payload.canvas.height,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             item["url"] = f"{base_url}/photo-media/{photo_job_id}/{output.name}"
             images.append(item)
         result = {
@@ -155,15 +158,18 @@ def build_photo_router(
             if not existing:
                 continue
             output = Path(existing["path"])
-            repaired = render_page(
-                page,
-                chart_by_page.get(page_no),
-                visual_by_page.get(page_no, []),
-                output,
-                int(existing["width"]),
-                int(existing["height"]),
-                compact=True,
-            )
+            try:
+                repaired = render_page(
+                    page,
+                    chart_by_page.get(page_no),
+                    visual_by_page.get(page_no, []),
+                    output,
+                    int(existing["width"]),
+                    int(existing["height"]),
+                    compact=True,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             repaired["url"] = existing.get("url", "")
             image_by_page[page_no] = repaired
         result["images"] = [image_by_page[key] for key in sorted(image_by_page)]

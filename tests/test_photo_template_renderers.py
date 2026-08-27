@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app.photo.chart_renderer import render_chart
-from app.photo.page_renderer import render_page
+from app.photo.page_renderer import _wrapped_lines, render_page
 from app.photo.validator import validate_post
 
 
@@ -22,12 +22,21 @@ def _non_white_ratio(path: Path) -> float:
 
 
 class PhotoTemplateRendererTests(unittest.TestCase):
-    def test_non_english_text_is_replaced_by_deterministic_english_copy(self):
+    def test_chinese_copy_wraps_by_rendered_pixel_width(self):
+        image = Image.new("RGB", (1080, 1080), "white")
+        draw = ImageDraw.Draw(image)
+        font = __import__("app.photo.chart_renderer", fromlist=["_font"])._font(35)
+        lines = _wrapped_lines(
+            "RSI是相对强弱指标，数值在0到100之间，用来观察近期价格上涨与下跌动能的变化。",
+            936,
+        )
+        self.assertGreater(len(lines), 1)
+        self.assertTrue(all(draw.textbbox((0, 0), line, font=font)[2] <= 936 for line in lines))
+
+    def test_chinese_page_copy_is_preserved_instead_of_replaced(self):
         cases = [
-            ("¿Qué es RSI?", "Что такое RSI?"),
-            ("什么是RSI？", "RSI是什么？"),
-            ("Définition du RSI", "Utilisez le RSI avec prudence."),
-            ("Que es RSI?", "Aprenda como usar RSI en el mercado."),
+            ("什么是RSI？", "RSI用于观察近期价格上涨和下跌力量的相对强弱。"),
+            ("如何理解超买？", "RSI进入高位区域后，还要继续观察价格是否转弱。"),
         ]
         with tempfile.TemporaryDirectory() as directory:
             for index, (title, body) in enumerate(cases, start=1):
@@ -38,15 +47,23 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                     "visual_type": "none", "required_elements": [],
                     "risk_note": "教学示意图｜不代表实时行情",
                 }, None, [], output, 1080, 1080)
-                self.assertEqual(result["render_language"], "en")
-                self.assertEqual(result["rendered_title"], "RSI Step-by-Step Guide")
-                self.assertEqual(
-                    result["rendered_body"],
-                    "Understand RSI with price context and confirmation.",
-                )
-                self.assertTrue(result["english_contract_valid"])
+                self.assertEqual(result["render_language"], "zh-CN")
+                self.assertEqual(result["rendered_title"], title)
+                self.assertEqual(result["rendered_body"], body)
+                self.assertEqual(result["rendered_disclaimer"], "教学示意图｜不代表实时行情")
+                self.assertTrue(result["chinese_contract_valid"])
 
-    def test_qa_rejects_non_english_or_overlapping_layout_metadata(self):
+    def test_missing_page_copy_is_rejected_instead_of_using_shared_fallback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(ValueError, "PAGE_2_CHINESE_COPY_REQUIRED"):
+                render_page({
+                    "page_no": 2, "page_role": "definition",
+                    "title": "", "body": "", "key_message": "",
+                    "visual_type": "none", "required_elements": [],
+                    "risk_note": "教学示意图｜不代表实时行情",
+                }, None, [], Path(directory) / "missing.png", 1080, 1080)
+
+    def test_qa_rejects_non_chinese_or_overlapping_layout_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "page.png"
             Image.new("RGB", (1080, 1080), "white").save(image_path)
@@ -56,17 +73,17 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             rendered = {"photo_job_id": "photo-test", "images": [{
                 "page_no": 1, "path": str(image_path), "width": 1080, "height": 1080,
                 "layout_overflow": False, "risk_note_present": True,
-                "render_language": "zh-CN", "layout_overlap": True,
-                "english_contract_valid": False,
+                "render_language": "en", "layout_overlap": True,
+                "chinese_contract_valid": False,
                 "disclaimer_count": 2,
             }]}
             qa = validate_post(plan, rendered)
             codes = {item["code"] for item in qa["errors"]}
-            self.assertIn("NON_ENGLISH_RENDER", codes)
+            self.assertIn("NON_CHINESE_RENDER", codes)
             self.assertIn("LAYOUT_OVERLAP", codes)
             self.assertIn("DISCLAIMER_COUNT_INVALID", codes)
 
-    def test_qa_rejects_missing_english_contract(self):
+    def test_qa_rejects_missing_chinese_contract(self):
         with tempfile.TemporaryDirectory() as directory:
             image_path = Path(directory) / "page.png"
             Image.new("RGB", (1080, 1080), "white").save(image_path)
@@ -76,14 +93,14 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             rendered = {"photo_job_id": "photo-test", "images": [{
                 "page_no": 1, "path": str(image_path), "width": 1080, "height": 1080,
                 "layout_overflow": False, "risk_note_present": True,
-                "render_language": "en", "layout_overlap": False,
+                "render_language": "zh-CN", "layout_overlap": False,
                 "disclaimer_count": 1,
             }]}
             qa = validate_post(plan, rendered)
             self.assertFalse(qa["passed"])
-            self.assertIn("NON_ENGLISH_RENDER", {item["code"] for item in qa["errors"]})
+            self.assertIn("NON_CHINESE_RENDER", {item["code"] for item in qa["errors"]})
 
-    def test_rsi_visual_types_render_distinct_english_charts(self):
+    def test_rsi_visual_types_render_distinct_chinese_charts(self):
         cases = [
             ("indicator_panel", "RSI scale from 0 to 100", ["RSI", "30", "70"]),
             ("zone_diagram", "RSI above 70 overbought zone", ["Overbought", "70"]),
@@ -103,7 +120,7 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                     "annotations": [],
                 }, path)
                 outputs.append(path)
-                self.assertEqual(result["render_language"], "en")
+                self.assertEqual(result["render_language"], "zh-CN")
                 self.assertFalse(result["disclaimer_drawn"])
                 self.assertEqual(result["template_key"], [
                     "rsi_range_overview", "rsi_overbought_reversal",
@@ -111,7 +128,7 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 ][page_no - 1])
             self.assertEqual(len({_digest(path) for path in outputs}), len(outputs))
 
-    def test_page_roles_use_distinct_layouts_and_one_english_disclaimer(self):
+    def test_page_roles_use_distinct_layouts_and_one_chinese_disclaimer(self):
         pages = [
             ("cover", "cover_illustration"),
             ("definition", "indicator_panel"),
@@ -134,9 +151,9 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 page = {
                     "page_no": page_no,
                     "page_role": page_role,
-                    "title": f"RSI Lesson {page_no}",
-                    "body": "Use RSI with price structure and confirmation, not as a standalone signal.",
-                    "key_message": "Context matters.",
+                    "title": f"RSI第{page_no}课",
+                    "body": "结合价格结构与确认信号理解RSI，不把单一指标作为买卖依据。",
+                    "key_message": "必须结合市场背景。",
                     "visual_type": visual_type,
                     "required_elements": ["RSI", "Context", "Confirmation"],
                     "risk_note": "教学示意图｜不代表实时行情",
@@ -146,9 +163,9 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 }
                 result = render_page(page, chart, [], output, 1080, 1080)
                 results.append(result)
-                self.assertEqual(result["render_language"], "en")
+                self.assertEqual(result["render_language"], "zh-CN")
                 self.assertEqual(result["disclaimer_count"], 1)
-                self.assertNotIn("教学", result["rendered_disclaimer"])
+                self.assertEqual(result["rendered_disclaimer"], "教学示意图｜不代表实时行情")
                 self.assertGreater(_non_white_ratio(output), 0.035)
             self.assertEqual(
                 [item["layout_template"] for item in results],
@@ -161,9 +178,9 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             result = render_page({
                 "page_no": 1,
                 "page_role": "cover",
-                "title": "RSI Step-by-Step Guide",
-                "body": "Understand momentum without treating one indicator as a trade signal.",
-                "key_message": "Read RSI in context.",
+                "title": "RSI零基础教学",
+                "body": "理解价格动能，同时不要把单一指标直接当作交易信号。",
+                "key_message": "结合价格背景理解RSI。",
                 "visual_type": "cover_illustration",
                 "required_elements": ["RSI", "Price chart"],
                 "risk_note": "教学示意图｜不代表实时行情",

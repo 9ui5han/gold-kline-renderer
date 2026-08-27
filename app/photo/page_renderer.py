@@ -1,5 +1,3 @@
-import textwrap
-import re
 from pathlib import Path
 from typing import Any
 
@@ -8,34 +6,24 @@ from PIL import Image, ImageDraw
 from .chart_renderer import CYAN, INK, _font
 
 MUTED, PANEL = "#66717D", "#F3F7FA"
-ENGLISH_DISCLAIMER = "Educational illustration | Not real-time market data"
+CHINESE_DISCLAIMER = "教学示意图｜不代表实时行情"
 
 
-def _english_contract_valid(value: Any) -> bool:
+def _text_contract_valid(value: Any) -> bool:
     text = str(value or "").strip()
-    return bool(text) and all(character in "\n\r\t" or 32 <= ord(character) <= 126 for character in text)
+    return bool(text) and all(character in "\n\r\t" or ord(character) >= 32 for character in text)
 
 
-ENGLISH_SIGNAL_WORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "below", "by", "can",
-    "for", "from", "how", "in", "into", "is", "it", "not", "of", "on",
-    "or", "the", "then", "this", "to", "use", "using", "what", "when",
-    "with", "without", "above", "understand", "learn", "helps", "price",
-    "market", "indicator", "momentum", "signal", "trend", "risk",
-}
+def _contains_chinese(value: Any) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in str(value or ""))
 
 
-def _looks_like_english_copy(title: str, body: str) -> bool:
-    combined = f"{title} {body}"
-    if not _english_contract_valid(title) or not _english_contract_valid(body):
-        return False
-    words = {word.lower() for word in re.findall(r"[A-Za-z]+", combined)}
-    return bool(words & ENGLISH_SIGNAL_WORDS)
-
-
-def _english(value: Any, fallback: str) -> str:
-    text = str(value or "").strip()
-    return text if _english_contract_valid(text) else fallback
+def _chinese_copy_valid(title: str, body: str) -> bool:
+    return (
+        _text_contract_valid(title)
+        and _text_contract_valid(body)
+        and _contains_chinese(f"{title}{body}")
+    )
 
 
 def _intersects(first: tuple[int, int, int, int] | None,
@@ -48,10 +36,24 @@ def _intersects(first: tuple[int, int, int, int] | None,
     )
 
 
-def _wrapped_lines(text: str, limit: int) -> list[str]:
-    result = []
+def _wrapped_lines(text: str, max_width: int, font=None) -> list[str]:
+    active_font = font or _font(35)
+    measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+    result: list[str] = []
     for paragraph in str(text or "").splitlines() or [""]:
-        result.extend(textwrap.wrap(paragraph, width=limit) or [""])
+        if not paragraph:
+            result.append("")
+            continue
+        current = ""
+        for character in paragraph:
+            candidate = current + character
+            width = measure.textbbox((0, 0), candidate, font=active_font)[2]
+            if current and width > max_width:
+                result.append(current.rstrip())
+                current = character.lstrip()
+            else:
+                current = candidate
+        result.append(current.rstrip())
     return result
 
 
@@ -77,17 +79,20 @@ def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
                  compact: bool) -> tuple[int, bool, tuple[int, int, int, int]]:
     margin = 72
     title_size, body_size = (52, 31) if compact else (60, 35)
-    title_lines = _wrapped_lines(title, 20)
-    body_lines = _wrapped_lines(body, 38)
+    title_font = _font(title_size, True)
+    body_font = _font(body_size)
+    available_width = width - margin * 2
+    title_lines = _wrapped_lines(title, available_width, title_font)
+    body_lines = _wrapped_lines(body, available_width, body_font)
     overflow = len(title_lines) > 2 or len(body_lines) > 4
     y = 58
     for line in title_lines[:2]:
-        draw.text((margin, y), line, fill=INK, font=_font(title_size, True))
+        draw.text((margin, y), line, fill=INK, font=title_font)
         y += title_size + 10
     draw.rectangle((margin, y + 2, margin + 160, y + 10), fill=CYAN)
     y += 34
     for line in body_lines[:4]:
-        draw.text((margin, y), line, fill=INK, font=_font(body_size))
+        draw.text((margin, y), line, fill=INK, font=body_font)
         y += body_size + 9
     return y, overflow, (margin, 58, width - margin, y)
 
@@ -114,9 +119,9 @@ def _paste_chart(image: Image.Image, chart: dict[str, Any] | None, box: tuple[in
 
 
 def _draw_summary(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -> None:
-    defaults = ["Read the 30/70 zones", "Confirm with price", "Never rely on RSI alone"]
-    # Summary labels are renderer-owned English copy; unverified plan labels never reach the PNG.
-    items = defaults
+    defaults = ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
+    source_items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
+    items = (source_items + defaults)[:3]
     y = 390
     for index, item in enumerate(items[:3], start=1):
         draw.rounded_rectangle((100, y, width - 100, y + 120), radius=22, fill=PANEL, outline="#DCE5EB", width=2)
@@ -137,9 +142,11 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     layout = "cover" if role == "cover" or visual_type == "cover_illustration" else "summary" if role == "summary" or visual_type == "summary_card" else "checklist" if role in {"checklist", "mistakes"} or visual_type == "checklist" else "example" if role == "example" or visual_type == "candlestick_demo" else "standard"
     source_title = str(page.get("title") or "").strip()
     source_body = str(page.get("body") or "").strip()
-    source_copy_valid = _looks_like_english_copy(source_title, source_body)
-    title = source_title if source_copy_valid else "RSI Step-by-Step Guide"
-    body = source_body if source_copy_valid else "Understand RSI with price context and confirmation."
+    source_copy_valid = _chinese_copy_valid(source_title, source_body)
+    if not source_copy_valid:
+        raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHINESE_COPY_REQUIRED")
+    title = source_title
+    body = source_body
     chart_present, character_present = False, False
     character_box = None
     content_box = None
@@ -152,7 +159,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         character_box = _paste_character(image, visual_assets, (285, 350, width - 285, height - 90))
         character_present = character_box is not None
         draw.rounded_rectangle((width - 270, height - 145, width - 75, height - 82), radius=28, fill=INK)
-        draw.text((width - 226, height - 132), "SWIPE", fill="white", font=_font(27, True))
+        draw.text((width - 235, height - 132), "滑动查看", fill="white", font=_font(25, True))
     else:
         header_bottom, overflow, content_box = _draw_header(draw, title, body, width, compact)
         if layout == "summary":
@@ -162,7 +169,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             chart_present = _paste_chart(image, chart, (72, top, width - 72, height - 105))
         # Characters are cover-only. Content pages reserve the canvas for teaching evidence.
 
-    draw.text((72, height - 55), ENGLISH_DISCLAIMER, fill=MUTED, font=_font(22))
+    draw.text((72, height - 55), CHINESE_DISCLAIMER, fill=MUTED, font=_font(22))
     disclaimer_count += 1
     draw.text((width - 115, height - 55), f"{int(page['page_no']):02d}", fill=CYAN, font=_font(28, True))
     footer_box = (0, height - 75, width, height)
@@ -174,9 +181,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     )
     character_safe = character_in_bounds and not character_content_overlap and not character_footer_overlap
     overlap = character_content_overlap or character_footer_overlap
-    english_contract_valid = all(_english_contract_valid(value) for value in (
-        title, body, ENGLISH_DISCLAIMER,
-    ))
+    chinese_contract_valid = _chinese_copy_valid(title, body) and _contains_chinese(CHINESE_DISCLAIMER)
     teaching_evidence = {
         "engine_version": str((chart or {}).get("teaching_engine_version") or ""),
         "indicator_id": str((chart or {}).get("indicator_id") or ""),
@@ -192,10 +197,10 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     return {
         "page_no": int(page["page_no"]), "path": str(output_path), "width": width, "height": height,
         "layout_overflow": overflow, "risk_note_present": True, "chart_present": chart_present,
-        "character_present": character_present, "layout_template": layout, "render_language": "en",
-        "rendered_disclaimer": ENGLISH_DISCLAIMER, "disclaimer_count": 1,
+        "character_present": character_present, "layout_template": layout, "render_language": "zh-CN",
+        "rendered_disclaimer": CHINESE_DISCLAIMER, "disclaimer_count": 1,
         "rendered_title": title, "rendered_body": body,
-        "english_contract_valid": english_contract_valid,
+        "chinese_contract_valid": chinese_contract_valid,
         "character_in_safe_area": character_safe, "layout_overlap": overlap,
         "character_box": character_box, "content_box": content_box,
         "character_box_intersects_content": character_content_overlap,
