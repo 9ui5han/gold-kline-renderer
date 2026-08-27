@@ -21,6 +21,12 @@ PLOT_RIGHT_SAFETY = 0
 LABEL_LEFT = 44
 LABEL_RIGHT_SAFETY = 12
 CANDLE_BODY_WIDTH_RATIO = 0.60
+CANDLE_BODY_HEIGHT_MULTIPLIER = 3.0
+MIN_VISIBLE_CANDLE_BODY_HEIGHT = 5.0
+MAX_VISIBLE_CANDLE_BODY_HEIGHT = 54.0
+VISIBLE_CANDLE_WICK_MULTIPLIER = 1.2
+MIN_VISIBLE_CANDLE_WICK_LENGTH = 3.0
+MAX_VISIBLE_CANDLE_WICK_LENGTH = 24.0
 ANNOTATION_ALPHA = 150
 
 SEMANTIC_LABELS: dict[str, dict[str, str]] = {
@@ -526,17 +532,63 @@ def _chart_transform(candles: list[dict[str, float]], box: tuple[int, int, int, 
     return x_for, y_for
 
 
+def _visible_candle_body_bounds(
+    body_top: float,
+    body_bottom: float,
+    volatility_emphasis: float = 1.0,
+) -> tuple[float, float]:
+    """Magnify each candle body visually without flattening its size differences."""
+    top, bottom = sorted((body_top, body_bottom))
+    rendered_height = min(
+        MAX_VISIBLE_CANDLE_BODY_HEIGHT,
+        max(
+            MIN_VISIBLE_CANDLE_BODY_HEIGHT,
+            (bottom - top) * CANDLE_BODY_HEIGHT_MULTIPLIER * volatility_emphasis,
+        ),
+    )
+    middle = (top + bottom) / 2
+    return middle - rendered_height / 2, middle + rendered_height / 2
+
+
+def _visible_candle_wick_length(raw_length: float) -> float:
+    return min(
+        MAX_VISIBLE_CANDLE_WICK_LENGTH,
+        max(MIN_VISIBLE_CANDLE_WICK_LENGTH, raw_length * VISIBLE_CANDLE_WICK_MULTIPLIER),
+    )
+
+
 def _draw_realistic_candles(draw: ImageDraw.ImageDraw, candles: list[dict[str, float]],
                             box: tuple[int, int, int, int]) -> tuple[Any, Any]:
     x_for, y_for = _chart_transform(candles, box)
     step = (box[2] - box[0]) / len(candles)
     half_body = max(1.5, min(5.5, step * CANDLE_BODY_WIDTH_RATIO / 2))
+    pixel_ranges = sorted(
+        abs(y_for(candle["high"]) - y_for(candle["low"]))
+        for candle in candles
+    )
+    median_range = pixel_ranges[len(pixel_ranges) // 2] if pixel_ranges else 1.0
     for index, candle in enumerate(candles):
         x = x_for(index)
         color = CYAN if candle["close"] >= candle["open"] else "#5E6873"
-        draw.line((x, y_for(candle["high"]), x, y_for(candle["low"])), fill=INK, width=1)
         body_top, body_bottom = sorted((y_for(candle["open"]), y_for(candle["close"])))
-        draw.rectangle((x - half_body, body_top, x + half_body, max(body_top + 2, body_bottom)), fill=color, outline=INK, width=1)
+        candle_range = abs(y_for(candle["high"]) - y_for(candle["low"]))
+        volatility_emphasis = min(1.35, max(.70, candle_range / max(median_range, .01)))
+        visible_top, visible_bottom = _visible_candle_body_bounds(
+            body_top,
+            body_bottom,
+            volatility_emphasis=volatility_emphasis,
+        )
+        upper_wick = _visible_candle_wick_length(body_top - y_for(candle["high"]))
+        lower_wick = _visible_candle_wick_length(y_for(candle["low"]) - body_bottom)
+        wick_top = visible_top - upper_wick
+        wick_bottom = visible_bottom + lower_wick
+        draw.line((x, wick_top, x, wick_bottom), fill=INK, width=1)
+        draw.rectangle(
+            (x - half_body, visible_top, x + half_body, visible_bottom),
+            fill=color,
+            outline=INK,
+            width=1,
+        )
     return x_for, y_for
 
 

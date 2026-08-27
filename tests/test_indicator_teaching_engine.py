@@ -384,6 +384,39 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertGreaterEqual(candle["high"], max(candle["open"], candle["close"]))
             self.assertEqual(candle["close"] >= candle["open"], movement >= 0)
 
+    def test_visual_candle_bodies_are_tripled_but_keep_size_differences(self):
+        tiny_top, tiny_bottom = chart_renderer._visible_candle_body_bounds(100.0, 100.6)
+        normal_top, normal_bottom = chart_renderer._visible_candle_body_bounds(100.0, 108.0)
+        large_top, large_bottom = chart_renderer._visible_candle_body_bounds(100.0, 114.0)
+
+        tiny_height = tiny_bottom - tiny_top
+        normal_height = normal_bottom - normal_top
+        large_height = large_bottom - large_top
+
+        self.assertGreaterEqual(tiny_height, 5.0)
+        self.assertAlmostEqual(normal_height, 24.0, delta=.01)
+        self.assertAlmostEqual(large_height, 42.0, delta=.01)
+        self.assertGreater(large_height, normal_height)
+
+    def test_visual_candle_body_uses_each_candle_volatility_to_keep_rhythm(self):
+        quiet_top, quiet_bottom = chart_renderer._visible_candle_body_bounds(
+            100.0, 108.0, volatility_emphasis=.70,
+        )
+        active_top, active_bottom = chart_renderer._visible_candle_body_bounds(
+            100.0, 108.0, volatility_emphasis=1.35,
+        )
+
+        self.assertAlmostEqual(quiet_bottom - quiet_top, 16.8, delta=.01)
+        self.assertAlmostEqual(active_bottom - active_top, 32.4, delta=.01)
+
+    def test_visual_candle_wicks_remain_visible_and_keep_range_differences(self):
+        quiet_wick = chart_renderer._visible_candle_wick_length(.6)
+        active_wick = chart_renderer._visible_candle_wick_length(10.0)
+
+        self.assertGreaterEqual(quiet_wick, 3.0)
+        self.assertAlmostEqual(active_wick, 12.0, delta=.01)
+        self.assertGreater(active_wick, quiet_wick)
+
     def test_all_supported_indicator_scenarios_render_in_chinese_and_english(self):
         indicator_kinds = {
             "rsi": "oscillator", "kdj": "oscillator", "macd": "oscillator",
