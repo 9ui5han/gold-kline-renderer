@@ -59,6 +59,10 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
 
                 self.assertEqual(len(display), len(source))
                 self.assertTrue(ohlc_series_valid(display))
+                for index in range(1, len(display)):
+                    self.assertAlmostEqual(
+                        display[index]["open"], display[index - 1]["close"], places=4,
+                    )
 
     def test_validator_rejects_short_or_invalid_ohlc_before_signal_validation(self):
         for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
@@ -333,7 +337,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                     self.assertGreaterEqual(result["line_supersample"], 4)
                     self.assertFalse(result["left_plot_border"])
                     self.assertFalse(result["right_plot_border"])
-                    self.assertGreaterEqual(result["ohlc_count"], 120)
+                    self.assertEqual(result["ohlc_count"], 68)
                     self.assertFalse(result["label_overlap"])
                     layout = result["chart_layout"]
                     self.assertEqual(layout["plot_edges"], [0, 900])
@@ -344,7 +348,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                         for item in layout["title_bounds"]
                     ))
                     self.assertGreater(layout["candle_pitch"], 0)
-                    self.assertAlmostEqual(layout["candle_body_width_ratio"], 0.40)
+                    self.assertAlmostEqual(layout["candle_body_width"], 10.0)
                     self.assertEqual(layout["price_plot_edges"], layout["indicator_plot_edges"])
 
     def test_rsi_signal_annotations_are_bilingual_centered_and_translucent(self):
@@ -378,17 +382,16 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                     if language.startswith("en"):
                         self.assertNotIn("K-line", " ".join(result["rendered_labels"]))
 
-    def test_candle_body_scale_enlarges_bodies_without_breaking_ohlc_direction(self):
+    def test_candle_open_equals_previous_close_and_preserves_valid_ohlc(self):
         closes = [100.0, 101.0, 99.5, 102.0]
         candles = candles_from_closes(closes)
 
-        self.assertEqual(CANDLE_BODY_SCALE, 1.85)
+        self.assertEqual(CANDLE_BODY_SCALE, 1.0)
         expected_previous = closes[0] - 0.35
         for index, candle in enumerate(candles):
             previous_close = expected_previous if index == 0 else closes[index - 1]
             movement = closes[index] - previous_close
-            body = abs(candle["close"] - candle["open"])
-            self.assertAlmostEqual(body, abs(movement) * CANDLE_BODY_SCALE, places=3)
+            self.assertAlmostEqual(candle["open"], previous_close, places=4)
             self.assertLessEqual(candle["low"], min(candle["open"], candle["close"]))
             self.assertGreaterEqual(candle["high"], max(candle["open"], candle["close"]))
             self.assertEqual(candle["close"] >= candle["open"], movement >= 0)
@@ -402,7 +405,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         self.assertEqual(geometry["wick_top"], -108.0)
         self.assertEqual(geometry["wick_bottom"], -96.0)
 
-    def test_display_candles_have_tripled_bodies_and_varied_asymmetric_wicks(self):
+    def test_display_candles_preserve_source_open_close_and_valid_ohlc(self):
         source_candles = candles_from_closes([
             100.0, 100.2, 100.0, 100.8, 100.1, 101.4,
             101.2, 102.3, 101.6, 101.9, 100.7, 101.0,
@@ -414,16 +417,12 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         self.assertGreaterEqual(len(set(upper_wicks)), 7)
         self.assertGreaterEqual(len(set(lower_wicks)), 7)
         self.assertTrue(any(upper != lower for upper, lower in zip(upper_wicks, lower_wicks)))
-        body_multipliers = []
-        for source, display in zip(source_candles, candles):
-            source_body = abs(source["close"] - source["open"])
-            display_body = abs(display["close"] - display["open"])
-            body_multipliers.append(display_body / source_body)
+        for index, (source, display) in enumerate(zip(source_candles, candles)):
+            self.assertEqual(display, source)
+            if index:
+                self.assertAlmostEqual(display["open"], candles[index - 1]["close"], places=4)
             self.assertLessEqual(display["low"], min(display["open"], display["close"]))
             self.assertGreaterEqual(display["high"], max(display["open"], display["close"]))
-        self.assertAlmostEqual(sum(body_multipliers) / len(body_multipliers), 3.0, delta=.25)
-        self.assertLess(min(body_multipliers), 2.0)
-        self.assertGreater(max(body_multipliers), 4.0)
 
     def test_all_supported_indicator_scenarios_render_in_chinese_and_english(self):
         indicator_kinds = {
@@ -555,8 +554,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertGreaterEqual(interpolate.call_count, 4)
             self.assertGreaterEqual(resize_filters.count(Image.Resampling.LANCZOS), 4)
 
-    def test_narrower_candles_add_data_instead_of_stretching_the_gaps(self):
-        prior_pitch = (900 - 58 - 28) / 96
+    def test_content_candles_match_cover_width_and_reduced_gap(self):
         with tempfile.TemporaryDirectory() as directory:
             result = render_chart({
                 "page_no": 44,
@@ -571,14 +569,14 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                 },
             }, Path(directory) / "pitch.png")
 
-        self.assertGreaterEqual(result["ohlc_count"], 120)
-        self.assertLess(result["chart_layout"]["candle_pitch"], prior_pitch)
-        body_width = (
+        self.assertEqual(result["ohlc_count"], 68)
+        self.assertAlmostEqual(result["chart_layout"]["candle_body_width"], 10.0)
+        self.assertAlmostEqual(result["chart_layout"]["candle_body_width"] * 1080 / 900, 12.0)
+        rendered_gap = (
             result["chart_layout"]["candle_pitch"]
-            * result["chart_layout"]["candle_body_width_ratio"]
-        )
-        self.assertAlmostEqual(result["chart_layout"]["candle_body_width_ratio"], .40)
-        self.assertLess(body_width, 5.9783 * (2 / 3))
+            - result["chart_layout"]["candle_body_width"]
+        ) * 1080 / 900
+        self.assertAlmostEqual(rendered_gap, 1080 / 68 - 12, places=3)
         self.assertEqual(chart_renderer._plot_box(900, 48, 275), (0, 48, 900, 275))
 
 

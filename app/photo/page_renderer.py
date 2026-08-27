@@ -458,17 +458,15 @@ def _draw_cover_topic_visual(
         .42, .30, .34, .26, .32, .28, .38, .31, .35, .25,
         .30, .20, .24, .17, .29, .22, .27, .16, .21, .12,
         .18, .10, .14, .08,
+        .13, .09, .15, .11, .18, .14, .20, .16, .22, .17,
+        .24, .20, .26, .22,
     ]
     step = (right - left) / len(close_levels)
-    body_half = step * .30
+    body_half = 6.0
     candle_gap_ratio = 1 - body_half * 2 / step
     for index, close_ratio in enumerate(close_levels):
         previous_close = close_levels[index - 1] if index else .82
-        movement = close_ratio - previous_close
-        body_multiplier = 3.0 * (.55 + ((math.sin(index * 1.37) + 1.0) / 2.0) * .90)
-        # Keep the intentionally emphatic cover candles inside the chart stage,
-        # so a large impulse cannot run into the title above it.
-        open_ratio = min(.88, max(.12, close_ratio - movement * body_multiplier))
+        open_ratio = previous_close
         up = close_ratio <= open_ratio
         x = left + (index + .5) * step
         open_y = int(chart_top + open_ratio * (chart_bottom - chart_top))

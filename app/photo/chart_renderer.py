@@ -22,8 +22,7 @@ LABEL_LEFT = 44
 LABEL_RIGHT_SAFETY = 12
 # Baseline was .60; .40 is exactly one-third narrower while leaving enough
 # horizontal breathing room for a denser, full-width candle sequence.
-CANDLE_BODY_WIDTH_RATIO = 0.40
-DISPLAY_CANDLE_BODY_MULTIPLIER = 3.0
+CANDLE_BODY_WIDTH = 10.0
 ANNOTATION_ALPHA = 150
 
 SEMANTIC_LABELS: dict[str, dict[str, str]] = {
@@ -286,7 +285,10 @@ class _ChartLayout:
             "label_left": self.label_left,
             "label_right": self.label_right,
             "candle_pitch": self.candle_pitch,
-            "candle_body_width_ratio": CANDLE_BODY_WIDTH_RATIO,
+            "candle_body_width": CANDLE_BODY_WIDTH,
+            "candle_body_width_ratio": (
+                CANDLE_BODY_WIDTH / self.candle_pitch if self.candle_pitch else 0.0
+            ),
             "left_plot_border": False,
             "right_plot_border": False,
             "price_plot_edges": list(price_edges),
@@ -541,24 +543,15 @@ def _candle_geometry(candle: dict[str, float], y_for) -> dict[str, float]:
 
 
 def _display_candles(candles: list[dict[str, float]]) -> list[dict[str, float]]:
-    """Build visually emphatic, but still internally valid, OHLC display candles."""
+    """Return continuous, internally valid OHLC candles without visual exaggeration."""
     display: list[dict[str, float]] = []
-    for index, candle in enumerate(candles):
-        open_price = float(candle["open"])
+    for candle in candles:
+        open_price = display[-1]["close"] if display else float(candle["open"])
         close_price = float(candle["close"])
-        body = close_price - open_price
-        body_rhythm = .55 + ((math.sin(index * 1.37) + 1.0) / 2.0) * .90
-        display_open = close_price - body * DISPLAY_CANDLE_BODY_MULTIPLIER * body_rhythm
-        source_upper = max(0.01, float(candle["high"]) - max(open_price, close_price))
-        source_lower = max(0.01, min(open_price, close_price) - float(candle["low"]))
-        upper_rhythm = .55 + ((math.sin(index * 1.91) + 1.0) / 2.0) * 1.10
-        lower_rhythm = .50 + ((math.cos(index * 1.17 + .63) + 1.0) / 2.0) * 1.20
-        upper_wick = source_upper * upper_rhythm
-        lower_wick = source_lower * lower_rhythm
         display.append({
-            "open": display_open,
-            "high": max(display_open, close_price) + upper_wick,
-            "low": min(display_open, close_price) - lower_wick,
+            "open": open_price,
+            "high": max(float(candle["high"]), open_price, close_price),
+            "low": min(float(candle["low"]), open_price, close_price),
             "close": close_price,
         })
     return display
@@ -569,7 +562,7 @@ def _draw_realistic_candles(draw: ImageDraw.ImageDraw, candles: list[dict[str, f
     display_candles = _display_candles(candles)
     x_for, y_for = _chart_transform(display_candles, box)
     step = (box[2] - box[0]) / len(candles)
-    half_body = max(1.5, min(5.5, step * CANDLE_BODY_WIDTH_RATIO / 2))
+    half_body = min(CANDLE_BODY_WIDTH / 2, step * .45)
     for index, candle in enumerate(display_candles):
         x = x_for(index)
         color = CYAN if candle["close"] >= candle["open"] else "#5E6873"

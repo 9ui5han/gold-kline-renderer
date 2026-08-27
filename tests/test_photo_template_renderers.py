@@ -325,11 +325,11 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["cover_focus_label"], "RSI")
             self.assertGreaterEqual(result["typography_metrics"]["focus_size"], 80)
             self.assertEqual(result["typography_metrics"]["title_weight"], "regular")
-            self.assertGreaterEqual(result["cover_candle_count"], 54)
+            self.assertEqual(result["cover_candle_count"], 68)
             self.assertAlmostEqual(
                 result["cover_candle_body_width"], 12.0, delta=.2,
             )
-            self.assertGreaterEqual(result["cover_candle_gap_ratio"], 0.39)
+            self.assertAlmostEqual(result["cover_candle_gap_ratio"], .2444, delta=.01)
             self.assertNotIn("cover_chart_edges", result)
             self.assertGreater(_non_white_count(output, (0, 350, 24, 715)), 0)
             self.assertGreater(_non_white_count(output, (1056, 350, 1080, 715)), 0)
