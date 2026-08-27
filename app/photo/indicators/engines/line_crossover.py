@@ -1,10 +1,10 @@
 from typing import Any
 
-from ..contracts import closes, demo_ohlcv, ema, event_anchor_valid, series_equal
+from ..contracts import TEACHING_CANDLE_COUNT, closes, demo_ohlcv, ema, event_anchor_valid, ohlc_series_valid, series_equal
 
 
 def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payload: dict) -> dict[str, Any]:
-    candles = demo_ohlcv(seed=29 + len(scenario_id), count=84)
+    candles = demo_ohlcv(seed=29 + len(scenario_id), count=TEACHING_CANDLE_COUNT)
     price_values = closes(candles)
     parameters = config.get("parameters", {})
     fast = ema(price_values, int(parameters.get("fast", 12)))
@@ -35,7 +35,9 @@ def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payl
 def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     candles = scene.get("ohlc") or []
     values = scene.get("indicator_values") or {}
-    if len(candles) < 40 or not event_anchor_valid(scene):
+    if not ohlc_series_valid(candles):
+        return False
+    if not event_anchor_valid(scene):
         return False
     parameters = config.get("parameters", {})
     price_values = closes(candles)

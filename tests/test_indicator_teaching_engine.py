@@ -2,7 +2,11 @@ import tempfile
 import unittest
 import copy
 from pathlib import Path
+from unittest.mock import patch
 
+from PIL import Image
+
+from app.photo import chart_renderer
 from app.photo.chart_renderer import render_chart
 from app.photo.indicator_engine import (
     build_teaching_scene,
@@ -10,9 +14,70 @@ from app.photo.indicator_engine import (
     resolve_teaching_scene,
     validate_teaching_scene,
 )
+from app.photo.indicators.contracts import (
+    CANDLE_BODY_SCALE,
+    TEACHING_CANDLE_COUNT,
+    candles_from_closes,
+    ohlc_series_valid,
+)
 
 
 class IndicatorTeachingEngineTests(unittest.TestCase):
+    def test_generated_scenes_keep_full_valid_candle_series_and_indicator_lengths(self):
+        scenes = {
+            indicator_id: build_teaching_scene(indicator_id, "overview")
+            for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict")
+        }
+
+        for indicator_id, scene in scenes.items():
+            with self.subTest(indicator_id=indicator_id):
+                candles = scene["ohlc"]
+                self.assertGreaterEqual(len(candles), TEACHING_CANDLE_COUNT)
+                self.assertTrue(ohlc_series_valid(candles))
+                candle_shapes = {
+                    tuple(candle[key] for key in ("open", "high", "low", "close"))
+                    for candle in candles
+                }
+                self.assertEqual(len(candle_shapes), len(candles))
+                self.assertTrue(scene["signal_contract_valid"])
+
+        rsi_values = scenes["rsi"]["indicator_values"]
+        self.assertIsInstance(rsi_values, list)
+        self.assertEqual(len(rsi_values), len(scenes["rsi"]["ohlc"]))
+
+        macd_values = scenes["macd"]["indicator_values"]
+        self.assertIsInstance(macd_values, dict)
+        self.assertEqual(set(macd_values), {"main", "signal", "histogram"})
+        for values in macd_values.values():
+            self.assertEqual(len(values), len(scenes["macd"]["ohlc"]))
+
+    def test_validator_rejects_short_or_invalid_ohlc_before_signal_validation(self):
+        for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
+            with self.subTest(indicator_id=indicator_id):
+                scene = build_teaching_scene(indicator_id, "overview")
+                short_scene = copy.deepcopy(scene)
+                short_scene["ohlc"] = short_scene["ohlc"][:TEACHING_CANDLE_COUNT - 1]
+                values = short_scene["indicator_values"]
+                if isinstance(values, dict):
+                    short_scene["indicator_values"] = {
+                        key: value[:TEACHING_CANDLE_COUNT - 1]
+                        for key, value in values.items()
+                    }
+                elif isinstance(values, list):
+                    short_scene["indicator_values"] = values[:TEACHING_CANDLE_COUNT - 1]
+                self.assertFalse(validate_teaching_scene(short_scene))
+
+                invalid_scene = copy.deepcopy(scene)
+                invalid_scene["ohlc"][0]["low"] = invalid_scene["ohlc"][0]["high"] + 1
+                self.assertFalse(validate_teaching_scene(invalid_scene))
+
+    def test_atr_validator_rejects_nonnumeric_ohlc_without_raising(self):
+        scene = build_teaching_scene("atr", "overview")
+        tampered = copy.deepcopy(scene)
+        tampered["ohlc"][0]["high"] = "not-a-number"
+
+        self.assertFalse(validate_teaching_scene(tampered))
+
     def test_rsi_scenarios_have_distinct_data_and_teaching_contracts(self):
         scenarios = {
             name: build_teaching_scene("rsi", name)
@@ -233,6 +298,224 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertTrue(result["signal_contract_valid"])
             self.assertTrue(result["signal_anchors"])
             self.assertTrue(result["data_fingerprint"])
+
+    def test_rsi_and_macd_charts_use_shared_smooth_full_width_layout(self):
+        cases = (
+            ("rsi", "RSI below 30 then price confirmation", "zone_diagram"),
+            ("macd", "MACD bullish crossover", "indicator_panel"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for page_no, (indicator_id, focus, visual_type) in enumerate(cases, start=20):
+                with self.subTest(indicator_id=indicator_id):
+                    result = render_chart({
+                        "page_no": page_no,
+                        "visual_type": visual_type,
+                        "visual_focus": focus,
+                        "required_elements": [indicator_id.upper()],
+                        "annotations": [],
+                        "teaching_spec": {
+                            "indicator_id": indicator_id,
+                            "indicator_kind": "oscillator",
+                            "lesson_goal": "state_a",
+                        },
+                    }, Path(directory) / f"{indicator_id}.png")
+
+                    self.assertEqual(result["line_renderer"], "supersampled_catmull_rom")
+                    self.assertGreaterEqual(result["line_supersample"], 4)
+                    self.assertFalse(result["left_plot_border"])
+                    self.assertFalse(result["right_plot_border"])
+                    self.assertGreaterEqual(result["ohlc_count"], 96)
+                    self.assertFalse(result["label_overlap"])
+                    layout = result["chart_layout"]
+                    self.assertGreater(layout["plot_right"], 880)
+                    self.assertGreater(layout["candle_pitch"], 0)
+                    self.assertEqual(layout["price_plot_edges"], layout["indicator_plot_edges"])
+
+    def test_rsi_signal_annotations_are_bilingual_centered_and_translucent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for language, expected_confirmation in (
+                ("zh-CN", "价格确认"),
+                ("en-US", "Price confirmation"),
+            ):
+                with self.subTest(language=language):
+                    result = render_chart({
+                        "page_no": 30,
+                        "visual_type": "zone_diagram",
+                        "visual_focus": "RSI below 30 then price confirmation",
+                        "required_elements": ["RSI", "30", expected_confirmation],
+                        "annotations": [],
+                        "teaching_spec": {
+                            "indicator_id": "rsi",
+                            "indicator_kind": "oscillator",
+                            "lesson_goal": "state_b",
+                        },
+                    }, Path(directory) / f"rsi-{language}.png", language=language)
+
+                    annotations = result["annotation_bounds"]
+                    confirmation = next(
+                        item for item in annotations if item["text"] == expected_confirmation
+                    )
+                    self.assertTrue(confirmation["text_centered"])
+                    self.assertGreater(confirmation["background_alpha"], 0)
+                    self.assertLess(confirmation["background_alpha"], 255)
+                    self.assertFalse(result["label_overlap"])
+                    if language.startswith("en"):
+                        self.assertNotIn("K-line", " ".join(result["rendered_labels"]))
+
+    def test_candle_body_scale_enlarges_bodies_without_breaking_ohlc_direction(self):
+        closes = [100.0, 101.0, 99.5, 102.0]
+        candles = candles_from_closes(closes)
+
+        self.assertEqual(CANDLE_BODY_SCALE, 1.85)
+        expected_previous = closes[0] - 0.35
+        for index, candle in enumerate(candles):
+            previous_close = expected_previous if index == 0 else closes[index - 1]
+            movement = closes[index] - previous_close
+            body = abs(candle["close"] - candle["open"])
+            self.assertAlmostEqual(body, abs(movement) * CANDLE_BODY_SCALE, places=3)
+            self.assertLessEqual(candle["low"], min(candle["open"], candle["close"]))
+            self.assertGreaterEqual(candle["high"], max(candle["open"], candle["close"]))
+            self.assertEqual(candle["close"] >= candle["open"], movement >= 0)
+
+    def test_all_supported_indicator_scenarios_render_in_chinese_and_english(self):
+        indicator_kinds = {
+            "rsi": "oscillator", "kdj": "oscillator", "macd": "oscillator",
+            "bollinger": "overlay", "moving_average": "overlay",
+            "atr": "oscillator", "obv": "oscillator", "ict": "price_structure",
+        }
+        lesson_goals = (
+            "overview", "state_a", "state_b", "components", "setup", "worked_example",
+        )
+        known_chinese_fallbacks = (
+            "true range and average", "risk distance context", "upper middle lower",
+            "touch and confirmation", "line and price", "fast and slow lines",
+            "cross and retest", "three lines", "cross with price confirmation",
+            "price and obv", "divergence check", "moving average", "bollinger",
+        )
+        expected_chinese_names = {
+            "rsi": "RSI", "kdj": "KDJ", "macd": "MACD", "bollinger": "布林带",
+            "moving_average": "移动平均线", "atr": "ATR", "obv": "OBV", "ict": "ICT结构",
+        }
+
+        with tempfile.TemporaryDirectory() as directory:
+            for indicator_id, indicator_kind in indicator_kinds.items():
+                for lesson_goal in lesson_goals:
+                    for language in ("zh-CN", "en-US"):
+                        with self.subTest(
+                            indicator_id=indicator_id,
+                            lesson_goal=lesson_goal,
+                            language=language,
+                        ):
+                            result = render_chart({
+                                "page_no": 40,
+                                "visual_type": "market_chart",
+                                "visual_focus": indicator_id,
+                                "required_elements": [indicator_id],
+                                "annotations": [],
+                                "teaching_spec": {
+                                    "indicator_id": indicator_id,
+                                    "indicator_kind": indicator_kind,
+                                    "lesson_goal": lesson_goal,
+                                },
+                            }, Path(directory) / f"{indicator_id}-{lesson_goal}-{language}.png",
+                                language=language)
+
+                            labels = " | ".join(result["rendered_labels"])
+                            self.assertFalse(result["label_overlap"])
+                            self.assertTrue(labels)
+                            if language == "zh-CN":
+                                lowered = labels.lower()
+                                self.assertIn(expected_chinese_names[indicator_id], labels)
+                                for fallback in known_chinese_fallbacks:
+                                    self.assertNotIn(fallback, lowered)
+                                self.assertNotIn("_", labels)
+
+        with tempfile.TemporaryDirectory() as directory:
+            moving_zh = render_chart({
+                "page_no": 41, "visual_type": "market_chart", "visual_focus": "moving average",
+                "required_elements": ["moving average"], "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "moving_average", "indicator_kind": "overlay",
+                    "lesson_goal": "overview",
+                },
+            }, Path(directory) / "moving-average-zh.png", language="zh-CN")
+        self.assertIn("20周期均线", moving_zh["rendered_labels"])
+        self.assertIn("50周期均线", moving_zh["rendered_labels"])
+
+    def test_english_bearish_ict_uses_fallback_placement_before_overlap_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = render_chart({
+                "page_no": 42,
+                "visual_type": "market_chart",
+                "visual_focus": "ICT bearish order block",
+                "required_elements": ["ICT"],
+                "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "ict",
+                    "indicator_kind": "price_structure",
+                    "lesson_goal": "state_b",
+                },
+            }, Path(directory) / "ict-bearish-en.png", language="en-US")
+
+            self.assertFalse(result["label_overlap"])
+            self.assertGreaterEqual(len(result["annotation_bounds"]), 5)
+            self.assertTrue(all(item["text_centered"] for item in result["annotation_bounds"]))
+            self.assertTrue(any(
+                item.get("horizontal_offset", 0) != 0 or item.get("font_size", 12) < 12
+                for item in result["annotation_bounds"]
+            ))
+
+    def test_actual_rsi_and_macd_render_use_catmull_rom_and_lanczos(self):
+        original_resize = Image.Image.resize
+        resize_filters = []
+
+        def tracked_resize(image, *args, **kwargs):
+            resize_filters.append(kwargs.get("resample", args[1] if len(args) > 1 else None))
+            return original_resize(image, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "app.photo.chart_renderer._catmull_rom_points",
+            wraps=chart_renderer._catmull_rom_points,
+        ) as interpolate, patch.object(Image.Image, "resize", new=tracked_resize):
+            for indicator_id in ("rsi", "macd"):
+                render_chart({
+                    "page_no": 43,
+                    "visual_type": "market_chart",
+                    "visual_focus": indicator_id,
+                    "required_elements": [indicator_id],
+                    "annotations": [],
+                    "teaching_spec": {
+                        "indicator_id": indicator_id,
+                        "indicator_kind": "oscillator",
+                        "lesson_goal": "state_a",
+                    },
+                }, Path(directory) / f"instrumented-{indicator_id}.png", language="en-US")
+
+            self.assertGreaterEqual(interpolate.call_count, 4)
+            self.assertGreaterEqual(resize_filters.count(Image.Resampling.LANCZOS), 4)
+
+    def test_full_width_pitch_preserves_prior_density_with_documented_tolerance(self):
+        prior_pitch = (900 - 58 - 28) / 96
+        allowed_pitch_change_px = 0.35
+        with tempfile.TemporaryDirectory() as directory:
+            result = render_chart({
+                "page_no": 44,
+                "visual_type": "market_chart",
+                "visual_focus": "MACD",
+                "required_elements": ["MACD"],
+                "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "macd",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "state_a",
+                },
+            }, Path(directory) / "pitch.png")
+
+        self.assertLessEqual(
+            abs(result["chart_layout"]["candle_pitch"] - prior_pitch),
+            allowed_pitch_change_px,
+        )
+        self.assertEqual(chart_renderer._plot_box(900, 48, 275), (44, 48, 888, 275))
 
 
 if __name__ == "__main__":

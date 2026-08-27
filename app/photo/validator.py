@@ -4,6 +4,33 @@ from typing import Any
 from PIL import Image
 
 
+def _layout_regions_valid(item: dict[str, Any]) -> bool:
+    regions = item.get("layout_regions")
+    if not isinstance(regions, dict):
+        return False
+    required = {"header", "title", "body", "footer"}
+    if item.get("chart_present") is True:
+        required.add("chart")
+    if item.get("checklist_present") is True:
+        required.add("checklist")
+    if item.get("layout_template") == "summary":
+        required.add("summary")
+    if item.get("character_present") is True:
+        required.add("character")
+    width, height = int(item.get("width") or 0), int(item.get("height") or 0)
+    for name in required:
+        bounds = regions.get(name)
+        if (
+            not isinstance(bounds, (list, tuple)) or len(bounds) != 4 or
+            not all(isinstance(value, (int, float)) for value in bounds) or
+            bounds[0] < 0 or bounds[1] < 0 or
+            bounds[0] >= bounds[2] or bounds[1] >= bounds[3] or
+            bounds[2] > width or bounds[3] > height
+        ):
+            return False
+    return True
+
+
 def validate_post(
     photo_plan: dict[str, Any],
     render_result: dict[str, Any],
@@ -34,7 +61,7 @@ def validate_post(
                 errors.append({"page_no": page_no, "code": "PAGE_SIZE_INVALID", "message": "图片尺寸不一致"})
         if item.get("layout_overflow") is True:
             bad_pages.add(page_no)
-            errors.append({"page_no": page_no, "code": "TEXT_OVERFLOW", "message": "文字超出安全长度"})
+            errors.append({"page_no": page_no, "code": "LAYOUT_OVERFLOW", "message": "页面内容超出安全区域"})
         language_valid = (
             item.get("render_language") == expected_language
             and item.get("copy_contract_valid", item.get("chinese_contract_valid")) is True
@@ -55,6 +82,9 @@ def validate_post(
         if item.get("layout_overlap") is True:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "LAYOUT_OVERLAP", "message": "人物、图表或文字发生遮挡"})
+        if not _layout_regions_valid(item):
+            bad_pages.add(page_no)
+            errors.append({"page_no": page_no, "code": "LAYOUT_REGIONS_MISSING", "message": "缺少有效页面布局区域"})
         if int(item.get("disclaimer_count") or 0) != 1:
             bad_pages.add(page_no)
             errors.append({"page_no": page_no, "code": "DISCLAIMER_COUNT_INVALID", "message": "教学示意说明必须且只能出现一次"})

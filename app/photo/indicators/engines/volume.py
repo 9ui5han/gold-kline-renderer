@@ -1,6 +1,6 @@
 from typing import Any
 
-from ..contracts import demo_ohlcv, event_anchor_valid, series_equal
+from ..contracts import demo_ohlcv, event_anchor_valid, ohlc_series_valid, series_equal
 
 
 def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payload: dict) -> dict[str, Any]:
@@ -21,7 +21,9 @@ def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payl
 def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     candles = scene.get("ohlc") or []
     values = scene.get("indicator_values") or []
-    if len(candles) < 40 or not event_anchor_valid(scene) or not all("volume" in item for item in candles):
+    if not ohlc_series_valid(candles):
+        return False
+    if not event_anchor_valid(scene) or not all("volume" in item for item in candles):
         return False
     expected = [0.0]
     for index in range(1, len(candles)):

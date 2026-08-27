@@ -1,13 +1,13 @@
 import math
 from typing import Any
 
-from ..contracts import candles_from_closes, closes, demo_ohlcv, event_anchor_valid, rsi, series_equal
+from ..contracts import TEACHING_CANDLE_COUNT, candles_from_closes, closes, demo_ohlcv, event_anchor_valid, ohlc_series_valid, rsi, series_equal
 
 
 def _rsi_closes(scenario_id: str) -> list[float]:
     result = []
     price = 100.0
-    count = 76 if scenario_id == "worked_example" else 72
+    count = TEACHING_CANDLE_COUNT
     for index in range(count):
         if scenario_id == "overbought_reversal":
             base = 0.10 if index < 18 else 0.66 if index < 43 else -0.98 if index < 64 else -0.42
@@ -145,7 +145,9 @@ def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payl
 
 def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     candles = scene.get("ohlc") or []
-    if len(candles) < 40 or not scene.get("signals"):
+    if not ohlc_series_valid(candles):
+        return False
+    if not scene.get("signals"):
         return False
     if scene.get("indicator_id") != "rsi":
         values = scene.get("indicator_values") or {}

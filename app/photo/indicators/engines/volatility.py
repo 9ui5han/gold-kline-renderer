@@ -1,6 +1,6 @@
 from typing import Any
 
-from ..contracts import demo_ohlcv, event_anchor_valid, series_equal
+from ..contracts import demo_ohlcv, event_anchor_valid, ohlc_series_valid, series_equal
 
 
 def _atr(candles: list[dict[str, float]], period: int) -> list[float | None]:
@@ -38,5 +38,7 @@ def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payl
 def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     candles = scene.get("ohlc") or []
     values = scene.get("indicator_values") or []
-    expected = _atr(candles, int(config.get("parameters", {}).get("period", 14))) if candles else []
-    return len(candles) >= 40 and event_anchor_valid(scene) and series_equal(values, expected)
+    if not ohlc_series_valid(candles):
+        return False
+    expected = _atr(candles, int(config.get("parameters", {}).get("period", 14)))
+    return event_anchor_valid(scene) and series_equal(values, expected)

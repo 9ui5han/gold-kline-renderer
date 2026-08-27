@@ -49,6 +49,44 @@ def _intersects(first: tuple[int, int, int, int] | None,
     )
 
 
+def _merge_bounds(*boxes: tuple[int, int, int, int] | None) -> tuple[int, int, int, int] | None:
+    """Return the smallest pixel rectangle containing the supplied drawn bounds."""
+    visible = [box for box in boxes if box is not None]
+    if not visible:
+        return None
+    return (
+        min(box[0] for box in visible), min(box[1] for box in visible),
+        max(box[2] for box in visible), max(box[3] for box in visible),
+    )
+
+
+def _drawn_text_bounds(
+    draw: ImageDraw.ImageDraw,
+    position: tuple[float, float],
+    text: str,
+    font,
+    shadow_padding: int = 0,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = draw.textbbox(position, text, font=font)
+    return (
+        int(left) - shadow_padding,
+        int(top) - shadow_padding,
+        int(right) + shadow_padding,
+        int(bottom) + shadow_padding,
+    )
+
+
+def _layout_overlap(regions: dict[str, tuple[int, int, int, int]]) -> bool:
+    """Check top-level content regions; title and body are children of header."""
+    top_level = ("header", "checklist", "summary", "chart", "character", "footer")
+    visible = [(name, regions[name]) for name in top_level if name in regions]
+    return any(
+        _intersects(first_box, second_box)
+        for index, (_, first_box) in enumerate(visible)
+        for _, second_box in visible[index + 1:]
+    )
+
+
 def _wrapped_lines(text: str, max_width: int, font=None) -> list[str]:
     active_font = font or _font(35)
     measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
@@ -121,8 +159,14 @@ def _draw_english_header(
     body_font = _english_font(body_size, 400)
     title_lines = _wrapped_word_lines(title, 920, title_font)
     body_lines = _wrapped_word_lines(body, 900, body_font)
-    overflow = len(title_lines) > 2 or len(body_lines) > 3
+    overflow = (
+        len(title_lines) > 2 or len(body_lines) > 3 or
+        any(draw.textlength(line, font=title_font) > 920 for line in title_lines) or
+        any(draw.textlength(line, font=body_font) > 900 for line in body_lines)
+    )
     highlight_words: list[str] = []
+    title_bounds: list[tuple[int, int, int, int]] = []
+    body_bounds: list[tuple[int, int, int, int]] = []
     y = 62 if cover else 72
     for line in title_lines[:2]:
         words = line.split()
@@ -137,14 +181,20 @@ def _draw_english_header(
             if highlighted:
                 highlight_words.append(word)
             _draw_shadow_text(draw, (x, y), word, title_font, color, shadow=True)
+            title_bounds.append(_drawn_text_bounds(draw, (x, y), word, title_font, shadow_padding=8))
             x += word_width + space
         y += title_size + 16
     y += 20
     for line in body_lines[:3]:
         line_width = draw.textlength(line, font=body_font)
-        draw.text(((width - line_width) / 2, y), line, font=body_font, fill=INK)
+        position = ((width - line_width) / 2, y)
+        draw.text(position, line, font=body_font, fill=INK)
+        body_bounds.append(_drawn_text_bounds(draw, position, line, body_font))
         y += body_size + 15
-    return y, overflow, (70, 62, width - 70, y), {
+    title_box = _merge_bounds(*title_bounds)
+    body_box = _merge_bounds(*body_bounds)
+    header_box = _merge_bounds(title_box, body_box)
+    return y, overflow, header_box or (70, 62, width - 70, y), {
         "font_family": "Montserrat",
         "title_size": title_size,
         "body_size": body_size,
@@ -158,6 +208,11 @@ def _draw_english_header(
         },
         "body_shadow": False,
         "body_line_width": 900,
+        "layout_regions": {
+            "header": header_box,
+            "title": title_box,
+            "body": body_box,
+        },
     }
 
 
@@ -225,22 +280,35 @@ def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
     body_lines = _wrapped_lines(body, body_width, body_font)
     overflow = len(title_lines) > 2 or len(body_lines) > 3
     y = 62
+    title_bounds: list[tuple[int, int, int, int]] = []
+    body_bounds: list[tuple[int, int, int, int]] = []
     for line in title_lines[:2]:
         draw.text((margin, y), line, fill=INK, font=title_font)
+        title_bounds.append(_drawn_text_bounds(draw, (margin, y), line, title_font))
         y += title_size + 12
     first_title_width = draw.textbbox((0, 0), title_lines[0] if title_lines else title, font=title_font)[2]
     underline_width = min(150, max(88, first_title_width // 3))
-    draw.rectangle((margin, y, margin + underline_width, y + 7), fill=CYAN)
+    underline_box = (margin, y, margin + underline_width, y + 7)
+    draw.rectangle(underline_box, fill=CYAN)
     y += 38
     for line in body_lines[:3]:
         draw.text((margin, y), line, fill=INK, font=body_font)
+        body_bounds.append(_drawn_text_bounds(draw, (margin, y), line, body_font))
         y += body_size + 14
-    return y, overflow, (margin, 62, width - margin, y), {
+    title_box = _merge_bounds(*title_bounds)
+    body_box = _merge_bounds(*body_bounds)
+    header_box = _merge_bounds(title_box, body_box, underline_box)
+    return y, overflow, header_box or (margin, 62, width - margin, y), {
         "title_size": title_size,
         "body_size": body_size,
         "title_weight": "regular",
         "body_weight": "regular",
         "body_line_width": body_width,
+        "layout_regions": {
+            "header": header_box,
+            "title": title_box,
+            "body": body_box,
+        },
     }
 
 
@@ -286,22 +354,37 @@ def _draw_cover_header(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: i
     body_lines = _wrapped_lines(body, 720, body_font)
     overflow = len(title_lines) > 1 or len(body_lines) > 1
     focus_width = draw.textbbox((0, 0), focus, font=focus_font)[2]
-    draw.text(((width - focus_width) // 2, 35), focus, fill=INK, font=focus_font)
+    focus_position = ((width - focus_width) // 2, 35)
+    draw.text(focus_position, focus, fill=INK, font=focus_font)
+    title_bounds = [_drawn_text_bounds(draw, focus_position, focus, focus_font)]
+    body_bounds: list[tuple[int, int, int, int]] = []
     y = 145
     secondary = title_lines[0] if title_lines else title
     if secondary.upper().replace(" ", "") != focus.upper().replace(" ", ""):
         secondary_width = draw.textbbox((0, 0), secondary, font=title_font)[2]
-        draw.text(((width - secondary_width) // 2, y), secondary, fill="#2F6B9A", font=title_font)
+        secondary_position = ((width - secondary_width) // 2, y)
+        draw.text(secondary_position, secondary, fill="#2F6B9A", font=title_font)
+        title_bounds.append(_drawn_text_bounds(draw, secondary_position, secondary, title_font))
         y += 44
     if body_lines:
         subtitle = body_lines[0]
         subtitle_width = draw.textbbox((0, 0), subtitle, font=body_font)[2]
-        draw.text(((width - subtitle_width) // 2, y), subtitle, fill=MUTED, font=body_font)
+        subtitle_position = ((width - subtitle_width) // 2, y)
+        draw.text(subtitle_position, subtitle, fill=MUTED, font=body_font)
+        body_bounds.append(_drawn_text_bounds(draw, subtitle_position, subtitle, body_font))
         y += 38
-    return y, overflow, (80, 35, width - 80, y), {
+    title_box = _merge_bounds(*title_bounds)
+    body_box = _merge_bounds(*body_bounds)
+    header_box = _merge_bounds(title_box, body_box)
+    return y, overflow, header_box or (80, 35, width - 80, y), {
         "focus_size": 96, "title_size": 31, "body_size": 25,
         "title_weight": "regular", "body_weight": "regular",
         "body_line_width": 720,
+        "layout_regions": {
+            "header": header_box,
+            "title": title_box,
+            "body": body_box,
+        },
     }
 
 
@@ -433,62 +516,89 @@ def _draw_checklist_page(
     page: dict[str, Any],
     width: int,
     top: int,
+    max_bottom: int,
     language: str = "zh-CN",
-) -> int:
+) -> tuple[int, tuple[int, int, int, int] | None, bool]:
     items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
     if not items:
-        return 0
+        return 0, None, False
+    if len(items) > 4:
+        return 0, None, True
     y = max(top, 360)
     item_font = _english_font(27, 400) if language == "en" else _font(28)
+    item_boxes: list[tuple[int, int, int, int]] = []
     for index, item in enumerate(items[:4], start=1):
-        draw.rounded_rectangle((105, y, width - 105, y + 105), radius=20, fill=PANEL, outline="#DCE5EB", width=2)
+        item_box = (105, y, width - 105, y + 105)
+        draw.rounded_rectangle(item_box, radius=20, fill=PANEL, outline="#DCE5EB", width=2)
         draw.ellipse((135, y + 24, 191, y + 80), fill=CYAN)
         number = str(index)
         number_width = draw.textbbox((0, 0), number, font=_font(21, True))[2]
         draw.text((163 - number_width // 2, y + 38), number, fill="white", font=_font(21, True))
         lines = _wrapped_lines(item, width - 360, item_font)
+        if len(lines) > 2:
+            return 0, None, True
         line_y = y + (31 if len(lines) == 1 else 15)
-        for line in lines[:2]:
+        for line in lines:
             draw.text((225, line_y), line, fill=INK, font=item_font)
             line_y += 38
+        item_boxes.append(item_box)
         y += 125
-    return min(4, len(items))
+    return len(items), _merge_bounds(*item_boxes), y - 20 > max_bottom
 
 
-def _paste_chart(image: Image.Image, chart: dict[str, Any] | None, box: tuple[int, int, int, int]) -> bool:
+def _paste_chart(
+    image: Image.Image,
+    chart: dict[str, Any] | None,
+    box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
     if not chart:
-        return False
+        return None
     path = Path(str(chart.get("asset_path") or ""))
     if not path.is_file():
-        return False
+        return None
     chart_image = Image.open(path).convert("RGB")
     left, top, right, bottom = box
     chart_image.thumbnail((right - left, bottom - top))
-    image.paste(chart_image, (left + (right - left - chart_image.width) // 2, top + (bottom - top - chart_image.height) // 2))
-    return True
+    x = left + (right - left - chart_image.width) // 2
+    y = top + (bottom - top - chart_image.height) // 2
+    image.paste(chart_image, (x, y))
+    return (x, y, x + chart_image.width, y + chart_image.height)
 
 
 def _draw_summary(
     draw: ImageDraw.ImageDraw,
     page: dict[str, Any],
     width: int,
+    max_bottom: int,
     language: str = "zh-CN",
-) -> None:
+) -> tuple[tuple[int, int, int, int] | None, bool]:
     defaults = (
         ["Identify the indicator state", "Confirm with price", "Do not rely on one indicator"]
         if language == "en" else
         ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
     )
     source_items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
+    if len(source_items) > 3:
+        return None, True
     items = (source_items + defaults)[:3]
     y = 390
+    item_boxes: list[tuple[int, int, int, int]] = []
     for index, item in enumerate(items[:3], start=1):
-        draw.rounded_rectangle((100, y, width - 100, y + 120), radius=22, fill=PANEL, outline="#DCE5EB", width=2)
+        item_box = (100, y, width - 100, y + 120)
+        draw.rounded_rectangle(item_box, radius=22, fill=PANEL, outline="#DCE5EB", width=2)
         draw.ellipse((135, y + 27, 201, y + 93), fill=CYAN)
         draw.text((158, y + 43), str(index), fill="white", font=_font(24, True))
         item_font = _english_font(27, 600) if language == "en" else _font(29, True)
-        draw.text((235, y + 38), item[:42], fill=INK, font=item_font)
+        lines = _wrapped_lines(item, width - 360, item_font)
+        if len(lines) > 2:
+            return None, True
+        line_y = y + (38 if len(lines) == 1 else 20)
+        for line in lines:
+            draw.text((235, line_y), line, fill=INK, font=item_font)
+            line_y += 38
+        item_boxes.append(item_box)
         y += 145
+    return _merge_bounds(*item_boxes), y - 25 > max_bottom
 
 
 def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
@@ -497,7 +607,6 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
                 language: str = "zh-CN") -> dict[str, Any]:
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
-    draw.line((38, 72, 38, height - 72), fill="#E5F4F8", width=5)
     role = str(page.get("page_role") or "")
     visual_type = str(page.get("visual_type") or "")
     layout = "cover" if role == "cover" or visual_type == "cover_illustration" else "summary" if role == "summary" or visual_type == "summary_card" else "checklist" if role in {"checklist", "mistakes"} or visual_type == "checklist" else "example" if role == "example" or visual_type == "candlestick_demo" else "standard"
@@ -528,15 +637,21 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     typography_metrics: dict[str, Any] = {}
     character_box = None
     content_box = None
+    chart_box = None
+    checklist_box = None
+    summary_box = None
+    swipe_box = None
     disclaimer_count = 0
 
     if layout == "cover":
         if language == "en":
-            _, overflow, content_box, typography_metrics = _draw_english_header(
+            header_bottom, overflow, content_box, typography_metrics = _draw_english_header(
                 draw, page, width, cover=True
             )
         else:
-            _, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
+            header_bottom, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
+        if overflow:
+            raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
         (
             cover_visual_type,
             cover_candle_count,
@@ -553,7 +668,9 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         character_present = character_box is not None
         swipe_text = "SWIPE  →" if language == "en" else "滑动查看  →"
         swipe_font = _english_font(20, 600) if language == "en" else _font(20, True)
-        draw.text((width - 205, height - 65), swipe_text, fill=INK, font=swipe_font)
+        swipe_position = (width - 205, height - 65)
+        draw.text(swipe_position, swipe_text, fill=INK, font=swipe_font)
+        swipe_box = _drawn_text_bounds(draw, swipe_position, swipe_text, swipe_font)
     else:
         if language == "en":
             header_bottom, overflow, content_box, typography_metrics = _draw_english_header(
@@ -563,26 +680,53 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             header_bottom, overflow, content_box, typography_metrics = _draw_header(
                 draw, title, body, width, compact
             )
+        if overflow:
+            raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
         if layout == "summary":
-            _draw_summary(draw, page, width, language=language)
-        elif layout == "checklist":
-            checklist_item_count = _draw_checklist_page(
-                draw, page, width, header_bottom + 28, language=language
+            summary_box, summary_overflow = _draw_summary(
+                draw, page, width, height - 95, language=language
             )
+            if summary_overflow:
+                raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
+        elif layout == "checklist":
+            checklist_item_count, checklist_box, checklist_overflow = _draw_checklist_page(
+                draw, page, width, header_bottom + 28, height - 95, language=language
+            )
+            if checklist_overflow:
+                raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
             if checklist_item_count == 0:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
         else:
             top = max(390, header_bottom + 25)
-            chart_present = _paste_chart(image, chart, (72, top, width - 72, height - 105))
+            chart_box = _paste_chart(image, chart, (72, top, width - 72, height - 105))
+            chart_present = chart_box is not None
             if visual_type in CHART_REQUIRED_TYPES and not chart_present:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")
         # Characters are cover-only. Content pages reserve the canvas for teaching evidence.
 
     disclaimer = ENGLISH_DISCLAIMER if language == "en" else CHINESE_DISCLAIMER
     disclaimer_font = _english_font(19, 400) if language == "en" else _font(22)
-    draw.text((72, height - 55), disclaimer, fill=MUTED, font=disclaimer_font)
+    footer_position = (72, height - 55)
+    draw.text(footer_position, disclaimer, fill=MUTED, font=disclaimer_font)
     disclaimer_count += 1
-    footer_box = (0, height - 75, width, height)
+    footer_box = _merge_bounds(
+        _drawn_text_bounds(draw, footer_position, disclaimer, disclaimer_font),
+        swipe_box,
+    )
+    layout_regions = {
+        name: bounds
+        for name, bounds in (typography_metrics.get("layout_regions") or {}).items()
+        if bounds is not None
+    }
+    layout_regions["footer"] = footer_box
+    if checklist_box is not None:
+        layout_regions["checklist"] = checklist_box
+    if summary_box is not None:
+        layout_regions["summary"] = summary_box
+    if chart_box is not None:
+        layout_regions["chart"] = chart_box
+    if character_box is not None:
+        layout_regions["character"] = character_box
     character_content_overlap = _intersects(character_box, content_box)
     character_footer_overlap = _intersects(character_box, footer_box)
     character_in_bounds = character_box is None or (
@@ -590,7 +734,9 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         character_box[2] <= width and character_box[3] <= height
     )
     character_safe = character_in_bounds and not character_content_overlap and not character_footer_overlap
-    overlap = character_content_overlap or character_footer_overlap
+    overlap = _layout_overlap(layout_regions)
+    if overlap:
+        raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
     chinese_contract_valid = (
         language == "zh-CN"
         and _chinese_copy_valid(title, body)
@@ -635,6 +781,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "character_in_safe_area": character_safe, "layout_overlap": overlap,
         "character_box": character_box, "content_box": content_box,
         "character_box_intersects_content": character_content_overlap,
+        "layout_regions": layout_regions,
+        "decorative_left_bar": False,
         "disclaimer_count": disclaimer_count,
         "teaching_evidence": teaching_evidence,
     }

@@ -2,7 +2,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFont
 
 from .indicator_engine import resolve_teaching_scene
 
@@ -14,6 +14,156 @@ MONTSERRAT_PATH = (
     / "assets" / "photo" / "fonts" / "montserrat"
     / "Montserrat-VariableFont_wght.ttf"
 )
+LINE_RENDERER = "supersampled_catmull_rom"
+LINE_SUPERSAMPLE = 4
+PLOT_LEFT = 44
+PLOT_RIGHT_SAFETY = 12
+ANNOTATION_ALPHA = 150
+
+SEMANTIC_LABELS: dict[str, dict[str, str]] = {
+    "zh-CN": {
+        "rsi_range_overview": "RSI区间总览",
+        "rsi_overbought_reversal": "RSI超买转弱示例",
+        "rsi_oversold_recovery": "RSI超卖回升示例",
+        "rsi_worked_example": "完整示例：指标信号到价格确认",
+        "indicator_condition": "指标条件出现",
+        "rsi_trigger": "RSI触发",
+        "price_confirmation": "价格确认",
+        "rsi_caption": "RSI（14）— 与价格K线使用同一时间轴",
+        "overbought_zone": "超买区",
+        "oversold_zone": "超卖区",
+        "indicator_overview": "指标总览",
+        "state_a": "状态一",
+        "state_b": "状态二",
+        "components": "组成部分",
+        "setup": "使用条件",
+        "worked_example": "完整示例",
+        "bullish_cross": "向上交叉",
+        "bearish_cross": "向下交叉",
+        "bullish_alignment": "多头排列",
+        "bearish_alignment": "空头排列",
+        "volatility_measure": "波动率总览",
+        "volatility_expansion": "波动扩大",
+        "volatility_contraction": "波动收缩",
+        "three_bands": "三条轨道",
+        "band_expansion": "轨道扩张",
+        "band_contraction": "轨道收缩",
+        "cumulative_volume": "累计成交量",
+        "bullish_confirmation": "上涨确认",
+        "bearish_confirmation": "下跌确认",
+        "range_overview": "区间总览",
+        "three_lines": "三线组成",
+        "cross_with_price_confirmation": "交叉与价格确认",
+        "true_range_and_average": "真实波幅与平均值",
+        "risk_distance_context": "风险距离参考",
+        "upper_middle_lower": "上中下轨组成",
+        "touch_and_confirmation": "触轨与价格确认",
+        "line_and_price": "均线与价格",
+        "fast_and_slow_lines": "快慢均线",
+        "cross_and_retest": "交叉与回测",
+        "price_and_obv": "价格与OBV",
+        "divergence_check": "背离检查",
+        "indicator_line": "指标线",
+        "fast_line": "快线",
+        "slow_line": "慢线",
+        "signal_line": "信号线",
+        "histogram": "柱状差值",
+        "middle_band": "中轨",
+        "upper_band": "上轨",
+        "lower_band": "下轨",
+        "k_stochastic": "K随机线",
+        "d_stochastic": "D随机线",
+        "j_stochastic": "J随机线",
+        "atr": "ATR波动",
+        "obv": "OBV能量潮",
+        "ict_title": "ICT结构｜根据演示K线计算",
+        "bearish_order_block": "看跌订单块",
+        "bullish_order_block": "看涨订单块",
+        "fair_value_gap": "公允价值缺口",
+        "break_of_structure": "结构突破",
+        "liquidity_sweep": "流动性扫损",
+        "retest": "回测",
+        "indicator_rsi": "RSI",
+        "indicator_kdj": "KDJ",
+        "indicator_macd": "MACD",
+        "indicator_bollinger": "布林带",
+        "indicator_moving_average": "移动平均线",
+        "indicator_atr": "ATR",
+        "indicator_obv": "OBV",
+        "indicator_ict": "ICT结构",
+    },
+    "en": {
+        "rsi_range_overview": "RSI range overview",
+        "rsi_overbought_reversal": "RSI overbought reversal",
+        "rsi_oversold_recovery": "RSI oversold recovery",
+        "rsi_worked_example": "Worked example: signal to price confirmation",
+        "indicator_condition": "Indicator condition",
+        "rsi_trigger": "RSI trigger",
+        "price_confirmation": "Price confirmation",
+        "rsi_caption": "RSI (14) — shares the price time axis",
+        "overbought_zone": "Overbought zone",
+        "oversold_zone": "Oversold zone",
+        "indicator_overview": "Indicator overview",
+        "state_a": "State A",
+        "state_b": "State B",
+        "components": "Components",
+        "setup": "Setup",
+        "worked_example": "Worked example",
+        "bullish_cross": "Bullish crossover",
+        "bearish_cross": "Bearish crossover",
+        "bullish_alignment": "Bullish alignment",
+        "bearish_alignment": "Bearish alignment",
+        "volatility_measure": "Volatility overview",
+        "volatility_expansion": "Volatility expansion",
+        "volatility_contraction": "Volatility contraction",
+        "three_bands": "Three bands",
+        "band_expansion": "Band expansion",
+        "band_contraction": "Band contraction",
+        "cumulative_volume": "Cumulative volume",
+        "bullish_confirmation": "Bullish confirmation",
+        "bearish_confirmation": "Bearish confirmation",
+        "range_overview": "Range overview",
+        "three_lines": "Three-line structure",
+        "cross_with_price_confirmation": "Crossover with price confirmation",
+        "true_range_and_average": "True range and its average",
+        "risk_distance_context": "Risk-distance context",
+        "upper_middle_lower": "Upper, middle, and lower bands",
+        "touch_and_confirmation": "Band touch and price confirmation",
+        "line_and_price": "Average line and price",
+        "fast_and_slow_lines": "Fast and slow averages",
+        "cross_and_retest": "Crossover and retest",
+        "price_and_obv": "Price and on-balance volume",
+        "divergence_check": "Divergence check",
+        "indicator_line": "Indicator line",
+        "fast_line": "Fast line",
+        "slow_line": "Slow line",
+        "signal_line": "Signal line",
+        "histogram": "Histogram",
+        "middle_band": "Middle band",
+        "upper_band": "Upper band",
+        "lower_band": "Lower band",
+        "k_stochastic": "K stochastic",
+        "d_stochastic": "D stochastic",
+        "j_stochastic": "J stochastic",
+        "atr": "ATR volatility",
+        "obv": "On-balance volume",
+        "ict_title": "ICT structure from demonstration price candles",
+        "bearish_order_block": "Bearish order block",
+        "bullish_order_block": "Bullish order block",
+        "fair_value_gap": "Fair value gap",
+        "break_of_structure": "Break of structure",
+        "liquidity_sweep": "Liquidity sweep",
+        "retest": "Retest",
+        "indicator_rsi": "RSI",
+        "indicator_kdj": "KDJ",
+        "indicator_macd": "MACD",
+        "indicator_bollinger": "Bollinger Bands",
+        "indicator_moving_average": "Moving Average",
+        "indicator_atr": "ATR",
+        "indicator_obv": "OBV",
+        "indicator_ict": "ICT Structure",
+    },
+}
 
 
 def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
@@ -41,6 +191,251 @@ def _english_font(size: int, weight: int = 400) -> ImageFont.ImageFont:
         return font
     except (OSError, ValueError):
         return _font(size, bold=weight >= 600)
+
+
+def _is_english(language: str) -> bool:
+    return str(language or "").lower().startswith("en")
+
+
+def _label(key: str, language: str) -> str:
+    catalog = SEMANTIC_LABELS["en" if _is_english(language) else "zh-CN"]
+    return catalog.get(key, key.replace("_", " "))
+
+
+def _indicator_name(indicator_id: str, language: str) -> str:
+    return _label(f"indicator_{str(indicator_id).lower()}", language)
+
+
+def _plot_box(width: int, top: int, bottom: int) -> tuple[int, int, int, int]:
+    return (PLOT_LEFT, top, width - PLOT_RIGHT_SAFETY, bottom)
+
+
+def _language_font(language: str, size: int, bold: bool = False) -> ImageFont.ImageFont:
+    return _english_font(size, 650 if bold else 450) if _is_english(language) else _font(size, bold)
+
+
+def _boxes_overlap(left: tuple[int, int, int, int], right: tuple[int, int, int, int]) -> bool:
+    return not (
+        left[2] <= right[0] or right[2] <= left[0]
+        or left[3] <= right[1] or right[3] <= left[1]
+    )
+
+
+class _ChartLayout:
+    def __init__(self, width: int, candle_count: int) -> None:
+        self.width = width
+        self.plot_left = PLOT_LEFT
+        self.plot_right = width - PLOT_RIGHT_SAFETY
+        self.candle_pitch = (
+            (self.plot_right - self.plot_left) / candle_count if candle_count else 0.0
+        )
+        self.bounds: dict[str, list[dict[str, Any]]] = {
+            "title": [], "legend": [], "y_axis": [], "annotation": [], "caption": [],
+        }
+        self.rendered_labels: list[str] = []
+
+    def add_label(
+        self,
+        kind: str,
+        text: str,
+        box: tuple[int, int, int, int],
+        **metadata: Any,
+    ) -> dict[str, Any]:
+        item = {"text": text, "bounds": list(box), **metadata}
+        self.bounds[kind].append(item)
+        self.rendered_labels.append(text)
+        return item
+
+    def occupied(self) -> list[tuple[int, int, int, int]]:
+        return [
+            tuple(item["bounds"])
+            for items in self.bounds.values()
+            for item in items
+        ]
+
+    def overlap_pairs(self) -> list[dict[str, Any]]:
+        flattened = [
+            (kind, item)
+            for kind, items in self.bounds.items()
+            for item in items
+        ]
+        collisions = []
+        for index, (kind, item) in enumerate(flattened):
+            for other_kind, other in flattened[index + 1:]:
+                if _boxes_overlap(tuple(item["bounds"]), tuple(other["bounds"])):
+                    collisions.append({
+                        "first": kind, "first_text": item["text"],
+                        "second": other_kind, "second_text": other["text"],
+                    })
+        return collisions
+
+    def metadata(self, price_edges: tuple[int, int], indicator_edges: tuple[int, int]) -> dict[str, Any]:
+        collisions = self.overlap_pairs()
+        return {
+            "plot_left": self.plot_left,
+            "plot_right": self.plot_right,
+            "plot_edges": [self.plot_left, self.plot_right],
+            "candle_pitch": self.candle_pitch,
+            "left_plot_border": False,
+            "right_plot_border": False,
+            "price_plot_edges": list(price_edges),
+            "indicator_plot_edges": list(indicator_edges),
+            "title_bounds": self.bounds["title"],
+            "legend_bounds": self.bounds["legend"],
+            "y_axis_label_bounds": self.bounds["y_axis"],
+            "annotation_bounds": self.bounds["annotation"],
+            "caption_bounds": self.bounds["caption"],
+            "collisions": collisions,
+            "label_overlap": bool(collisions),
+        }
+
+
+def _text_box(draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str,
+              font: ImageFont.ImageFont) -> tuple[int, int, int, int]:
+    box = draw.textbbox(xy, text, font=font)
+    return tuple(int(round(value)) for value in box)
+
+
+def _draw_tracked_text(
+    draw: ImageDraw.ImageDraw,
+    layout: _ChartLayout,
+    kind: str,
+    xy: tuple[float, float],
+    text: str,
+    font: ImageFont.ImageFont,
+    fill: str = INK,
+) -> None:
+    box = _text_box(draw, xy, text, font)
+    draw.text(xy, text, fill=fill, font=font)
+    layout.add_label(kind, text, box)
+
+
+def _catmull_rom_points(points: list[tuple[float, float]], samples: int = 8) -> list[tuple[float, float]]:
+    if len(points) < 3:
+        return points
+    padded = [points[0], *points, points[-1]]
+    result: list[tuple[float, float]] = []
+    for index in range(1, len(padded) - 2):
+        p0, p1, p2, p3 = padded[index - 1:index + 3]
+        for sample in range(samples):
+            t = sample / samples
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t
+                       + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                       + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t
+                       + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                       + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            result.append((x, y))
+    result.append(points[-1])
+    return result
+
+
+def _draw_smooth_line(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    fill: str,
+    width: int,
+) -> None:
+    if len(points) < 2:
+        return
+    scale = LINE_SUPERSAMPLE
+    base_image = draw._image
+    smooth = _catmull_rom_points(points)
+    layer = Image.new("RGBA", (base_image.width * scale, base_image.height * scale), (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    layer_draw.line(
+        [(x * scale, y * scale) for x, y in smooth],
+        fill=fill,
+        width=max(1, width * scale),
+        joint="curve",
+    )
+    layer = layer.resize(base_image.size, Image.Resampling.LANCZOS)
+    base_image.paste(layer, (0, 0), layer)
+
+
+def _draw_annotation(
+    draw: ImageDraw.ImageDraw,
+    layout: _ChartLayout,
+    anchor_x: float,
+    preferred_y: int,
+    text: str,
+    color: str,
+    language: str,
+) -> dict[str, Any]:
+    occupied = layout.occupied()
+    chosen: tuple[int, int, int, int] | None = None
+    chosen_font: ImageFont.ImageFont | None = None
+    chosen_font_size = 12
+    chosen_text_bbox: tuple[int, int, int, int] | None = None
+    chosen_box_size = (0, 0)
+    candidate_y = [
+        preferred_y, preferred_y + 28, preferred_y - 28,
+        preferred_y + 56, preferred_y - 56,
+        preferred_y + 84, preferred_y - 84,
+    ]
+    for font_size in (12, 10):
+        font = _language_font(language, font_size, True)
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_width = text_bbox[2] - text_bbox[0]
+        text_height = text_bbox[3] - text_bbox[1]
+        box_width = text_width + 20
+        box_height = text_height + 12
+        horizontal_offsets = [
+            0, -(box_width + 10), box_width + 10,
+            -int(round(box_width * .55)), int(round(box_width * .55)),
+        ]
+        for top in candidate_y:
+            for offset in horizontal_offsets:
+                left = int(round(anchor_x + offset - box_width / 2))
+                left = min(
+                    layout.width - PLOT_RIGHT_SAFETY - box_width,
+                    max(PLOT_LEFT, left),
+                )
+                box = (left, top, left + box_width, top + box_height)
+                if top >= 0 and box[3] <= draw._image.height - 8 and not any(
+                    _boxes_overlap(box, item) for item in occupied
+                ):
+                    chosen = box
+                    chosen_font = font
+                    chosen_font_size = font_size
+                    chosen_text_bbox = text_bbox
+                    chosen_box_size = (box_width, box_height)
+                    break
+            if chosen is not None:
+                break
+        if chosen is not None:
+            break
+    if chosen is None:
+        raise ValueError("CHART_LABEL_LAYOUT_OVERLAP")
+    assert chosen_font is not None and chosen_text_bbox is not None
+    font = chosen_font
+    text_bbox = chosen_text_bbox
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    box_width, box_height = chosen_box_size
+    overlay = Image.new("RGBA", draw._image.size, (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay)
+    rgba = ImageColor.getrgb(color) + (ANNOTATION_ALPHA,)
+    overlay_draw.rounded_rectangle(chosen, radius=8, fill=rgba)
+    draw._image.paste(overlay, (0, 0), overlay)
+    text_x = chosen[0] + (box_width - text_width) / 2 - text_bbox[0]
+    text_y = chosen[1] + (box_height - text_height) / 2 - text_bbox[1]
+    draw.text((text_x, text_y), text, fill=INK, font=font)
+    actual_text_box = _text_box(draw, (text_x, text_y), text, font)
+    box_center = ((chosen[0] + chosen[2]) / 2, (chosen[1] + chosen[3]) / 2)
+    text_center = (
+        (actual_text_box[0] + actual_text_box[2]) / 2,
+        (actual_text_box[1] + actual_text_box[3]) / 2,
+    )
+    return layout.add_label(
+        "annotation", text, chosen,
+        text_bounds=list(actual_text_box),
+        text_centered=(abs(box_center[0] - text_center[0]) <= 1 and abs(box_center[1] - text_center[1]) <= 1),
+        background_alpha=ANNOTATION_ALPHA,
+        font_size=chosen_font_size,
+        horizontal_offset=round(box_center[0] - anchor_x, 2),
+    )
 
 
 def _rsi_points(left: int, top: int, right: int, bottom: int, mode: str) -> list[tuple[float, float]]:
@@ -71,7 +466,7 @@ def _draw_rsi_panel(draw: ImageDraw.ImageDraw, width: int, height: int, mode: st
     label = {"overbought": "超买区域", "oversold": "超卖区域"}.get(mode, "RSI区间（0—100）")
     draw.text((left, 15), label, fill=INK, font=_font(28, True))
     points = _rsi_points(left, top, right, bottom, mode)
-    draw.line(points, fill=CYAN, width=6, joint="curve")
+    _draw_smooth_line(draw, points, fill=CYAN, width=6)
     if mode == "overbought":
         target = min(points, key=lambda item: item[1])
         draw.ellipse((target[0] - 8, target[1] - 8, target[0] + 8, target[1] + 8), fill=RED)
@@ -80,7 +475,6 @@ def _draw_rsi_panel(draw: ImageDraw.ImageDraw, width: int, height: int, mode: st
         target = max(points, key=lambda item: item[1])
         draw.ellipse((target[0] - 8, target[1] - 8, target[0] + 8, target[1] + 8), fill=CYAN)
         draw.text((target[0] - 75, min(bottom - 28, target[1] + 12)), "低于30", fill=INK, font=_font(20, True))
-    draw.rectangle((left, top, right, bottom), outline="#BFCAD4", width=2)
 
 
 def _draw_candles(draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int]) -> None:
@@ -129,13 +523,23 @@ def _draw_realistic_candles(draw: ImageDraw.ImageDraw, candles: list[dict[str, f
     return x_for, y_for
 
 
-def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
-                             scene: dict[str, Any]) -> None:
+def _draw_rsi_teaching_scene(
+    draw: ImageDraw.ImageDraw,
+    width: int,
+    height: int,
+    scene: dict[str, Any],
+    language: str,
+    layout: _ChartLayout,
+) -> tuple[tuple[int, int], tuple[int, int]]:
     candles = scene["ohlc"]
     signal = scene["signals"][0]
     if scene["scenario_id"] == "range_overview":
-        panel_box = (72, 58, width - 34, height - 38)
-        draw.text((72, 12), "RSI区间总览", fill=INK, font=_font(25, True))
+        panel_box = _plot_box(width, 58, height - 38)
+        _draw_tracked_text(
+            draw, layout, "title", (layout.plot_left, 12),
+            _label("rsi_range_overview", language),
+            _language_font(language, 25, True),
+        )
         for upper, lower, fill in (
             (100, 70, RED_FILL),
             (70, 30, "#F7FAFC"),
@@ -147,80 +551,110 @@ def _draw_rsi_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
         for value, color in ((100, GRID), (70, RED), (50, GRID), (30, CYAN), (0, GRID)):
             y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
             draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
-            draw.text((22, y - 10), str(value), fill=INK, font=_font(15, True))
+            _draw_tracked_text(
+                draw, layout, "y_axis", (8, y - 9), str(value),
+                _language_font(language, 14, True),
+            )
         points = []
         for index, value in enumerate(scene["indicator_values"]):
             if value is not None:
-                x = panel_box[0] + (index + .5) * (panel_box[2] - panel_box[0]) / len(scene["indicator_values"])
+                x = panel_box[0] + (index + .5) * layout.candle_pitch
                 y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
                 points.append((x, y))
-        draw.line(points, fill="#138EB9", width=5, joint="curve")
-        draw.text((width - 150, panel_box[1] + 8), "超买区", fill=INK, font=_font(14, True))
-        draw.text((width - 150, panel_box[3] - 24), "超卖区", fill=INK, font=_font(14, True))
-        draw.rectangle(panel_box, outline="#C8D2DB", width=1)
-        return
-    price_box = (58, 42, width - 28, 306)
-    panel_box = (58, 350, width - 28, height - 32)
-    heading = {
-        "range_overview": "RSI与价格的关系",
-        "overbought_reversal": "RSI超买转弱示例",
-        "worked_example": "完整示例：指标信号到价格确认",
-    }.get(scene["scenario_id"], "RSI超卖回升示例")
-    draw.text((58, 5), heading, fill=INK, font=_font(23, True))
+        _draw_smooth_line(draw, points, fill="#138EB9", width=5)
+        zone_font = _language_font(language, 14, True)
+        _draw_tracked_text(
+            draw, layout, "legend", (width - 175, panel_box[1] + 8),
+            _label("overbought_zone", language), zone_font,
+        )
+        _draw_tracked_text(
+            draw, layout, "legend", (width - 175, panel_box[3] - 24),
+            _label("oversold_zone", language), zone_font,
+        )
+        return (panel_box[0], panel_box[2]), (panel_box[0], panel_box[2])
+    price_box = _plot_box(width, 42, 306)
+    panel_box = _plot_box(width, 350, height - 32)
+    heading_key = {
+        "range_overview": "rsi_range_overview",
+        "overbought_reversal": "rsi_overbought_reversal",
+        "worked_example": "rsi_worked_example",
+    }.get(scene["scenario_id"], "rsi_oversold_recovery")
+    _draw_tracked_text(
+        draw, layout, "title", (layout.plot_left, 5),
+        _label(heading_key, language), _language_font(language, 23, True),
+    )
     x_for, price_y = _draw_realistic_candles(draw, candles, price_box)
-    for value, color in ((70, RED), (50, GRID), (30, CYAN)):
-        y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
-        draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
-        draw.text((18, y - 10), str(value), fill=INK, font=_font(15, True))
     if signal["threshold"] == 30:
         y30 = panel_box[3] - .30 * (panel_box[3] - panel_box[1])
         draw.rectangle((panel_box[0], y30, panel_box[2], panel_box[3]), fill=BLUE_FILL)
     else:
         y70 = panel_box[3] - .70 * (panel_box[3] - panel_box[1])
         draw.rectangle((panel_box[0], panel_box[1], panel_box[2], y70), fill=RED_FILL)
+    for value, color in ((70, RED), (50, GRID), (30, CYAN)):
+        y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+        draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
+        _draw_tracked_text(
+            draw, layout, "y_axis", (9, y - 9), str(value),
+            _language_font(language, 14, True),
+        )
     points = []
     for index, value in enumerate(scene["indicator_values"]):
         if value is not None:
             y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
             points.append((x_for(index), y))
-    draw.line(points, fill="#138EB9", width=4, joint="curve")
+    _draw_smooth_line(draw, points, fill="#138EB9", width=4)
     labels = [] if scene["scenario_id"] == "range_overview" else [
-        (signal["indicator_candle_index"], "指标条件出现", "#E99AA5"),
-        (signal["cross_candle_index"], "RSI触发", CYAN),
-        (signal["confirmation_candle_index"], "价格确认", "#D9A62E"),
+        (signal["indicator_candle_index"], "indicator_condition", "#E99AA5"),
+        (signal["cross_candle_index"], "rsi_trigger", CYAN),
+        (signal["confirmation_candle_index"], "price_confirmation", "#D9A62E"),
     ]
-    for position, (index, label, color) in enumerate(labels):
+    for index, label_key, color in labels:
         x = x_for(index)
         draw.line((x, price_box[1], x, panel_box[3]), fill=color, width=2)
         candle = candles[index]
         py = price_y(candle["high"])
         draw.ellipse((x - 5, py - 5, x + 5, py + 5), fill=color)
-        label_y = 52 + position * 25
-        label_x = min(width - 220, max(65, x - 90))
-        draw.rounded_rectangle((label_x, label_y, label_x + 185, label_y + 22), radius=8, fill=color)
-        draw.text((label_x + 7, label_y + 3), label, fill=INK, font=_font(12, True))
-    draw.text((58, 320), "RSI（14）— 与K线使用同一时间轴", fill=INK, font=_font(20, True))
-    if scene["scenario_id"] == "range_overview":
-        draw.text((width - 150, panel_box[1] + 8), "超买区", fill=INK, font=_font(14, True))
-        draw.text((width - 150, panel_box[3] - 24), "超卖区", fill=INK, font=_font(14, True))
-    draw.rectangle(price_box, outline="#C8D2DB", width=1)
-    draw.rectangle(panel_box, outline="#C8D2DB", width=1)
+        _draw_annotation(
+            draw, layout, x, 52, _label(label_key, language), color, language,
+        )
+    _draw_tracked_text(
+        draw, layout, "caption", (layout.plot_left, 320),
+        _label("rsi_caption", language), _language_font(language, 19, True),
+    )
+    return (price_box[0], price_box[2]), (panel_box[0], panel_box[2])
 
 
-def _numeric_lines(indicator_values: Any) -> list[tuple[str, list[float | None]]]:
-    labels = {
-        "value": "指标线", "fast": "快线", "slow": "慢线", "signal": "信号线",
-        "histogram": "柱状差值", "middle": "中轨", "upper": "上轨", "lower": "下轨",
-        "k": "K线", "d": "D线", "j": "J线", "atr": "ATR波动", "obv": "OBV能量潮",
+def _numeric_lines(
+    indicator_values: Any,
+    language: str,
+    indicator_id: str = "",
+) -> list[tuple[str, list[float | None]]]:
+    label_keys = {
+        "value": "indicator_line", "main": "fast_line", "fast": "fast_line",
+        "slow": "slow_line", "signal": "signal_line", "histogram": "histogram",
+        "middle": "middle_band", "upper": "upper_band", "lower": "lower_band",
+        "k": "k_stochastic", "d": "d_stochastic", "j": "j_stochastic",
+        "atr": "atr", "obv": "obv",
     }
     if isinstance(indicator_values, list):
-        return [("指标线", indicator_values)]
+        list_label_key = indicator_id if indicator_id in {"atr", "obv"} else "indicator_line"
+        return [(_label(list_label_key, language), indicator_values)]
     if isinstance(indicator_values, dict):
-        return [
-            (labels.get(str(name).lower(), str(name).upper()), values)
-            for name, values in indicator_values.items()
-            if isinstance(values, list)
-        ]
+        lines = []
+        for name, values in indicator_values.items():
+            if not isinstance(values, list):
+                continue
+            normalized = str(name).lower()
+            if normalized.startswith("line_") and normalized[5:].isdigit():
+                period = normalized[5:]
+                display = (
+                    f"{period}-period average" if _is_english(language)
+                    else f"{period}周期均线"
+                )
+            else:
+                display = _label(label_keys.get(normalized, normalized), language)
+            lines.append((display, values))
+        return lines
     return []
 
 
@@ -229,46 +663,58 @@ def _draw_generic_indicator_scene(
     width: int,
     height: int,
     scene: dict[str, Any],
-) -> None:
+    language: str,
+    layout: _ChartLayout,
+) -> tuple[tuple[int, int], tuple[int, int]]:
     candles = scene["ohlc"]
     family = scene.get("indicator_family")
-    scenario_names = {
-        "overview": "指标总览", "state_a": "状态一", "state_b": "状态二",
-        "components": "组成部分", "setup": "使用条件", "worked_example": "完整示例",
-        "bullish_cross": "向上交叉", "bearish_cross": "向下交叉",
-        "bullish_alignment": "多头排列", "bearish_alignment": "空头排列",
-        "volatility_measure": "波动率总览", "volatility_expansion": "波动扩大",
-        "volatility_contraction": "波动收缩", "three_bands": "三条轨道",
-        "band_expansion": "轨道扩张", "band_contraction": "轨道收缩",
-        "cumulative_volume": "累计成交量", "bullish_confirmation": "上涨确认",
-        "bearish_confirmation": "下跌确认",
-    }
-    scenario_name = scenario_names.get(str(scene["scenario_id"]), str(scene["scenario_id"]).replace("_", " "))
-    title = f"{str(scene['indicator_id']).replace('_', ' ').upper()}｜{scenario_name}"
-    draw.text((52, 10), title[:58], fill=INK, font=_font(22, True))
+    scenario_key = "indicator_overview" if scene["scenario_id"] == "overview" else str(scene["scenario_id"])
+    scenario_name = _label(scenario_key, language)
+    separator = " — " if _is_english(language) else "｜"
+    title = f"{_indicator_name(scene['indicator_id'], language)}{separator}{scenario_name}"
+    _draw_tracked_text(
+        draw, layout, "title", (layout.plot_left, 10), title[:58],
+        _language_font(language, 22, True),
+    )
     colors = ["#138EB9", "#D96B78", "#D9A62E", "#7256B8"]
     if family == "overlay":
-        price_box = (52, 52, width - 28, height - 34)
+        price_box = _plot_box(width, 52, height - 34)
         x_for, y_for = _draw_realistic_candles(draw, candles, price_box)
-        for line_index, (name, values) in enumerate(_numeric_lines(scene.get("indicator_values"))):
+        legend_x = layout.plot_left
+        for line_index, (name, values) in enumerate(_numeric_lines(
+            scene.get("indicator_values"), language, str(scene["indicator_id"]),
+        )):
             points = [
                 (x_for(index), y_for(float(value)))
                 for index, value in enumerate(values)
                 if value is not None
             ]
             if len(points) > 1:
-                draw.line(points, fill=colors[line_index % len(colors)], width=3, joint="curve")
-            draw.text((58 + line_index * 150, height - 27), name[:16], fill=colors[line_index % len(colors)], font=_font(13, True))
-        draw.rectangle(price_box, outline="#C8D2DB", width=1)
-        return
-    price_box = (52, 48, width - 28, 275)
-    panel_box = (52, 320, width - 28, height - 34)
+                _draw_smooth_line(draw, points, fill=colors[line_index % len(colors)], width=3)
+            font = _language_font(language, 13, True)
+            _draw_tracked_text(
+                draw, layout, "legend", (legend_x, height - 27), name[:20], font,
+                colors[line_index % len(colors)],
+            )
+            legend_x += max(115, _text_box(draw, (0, 0), name[:20], font)[2] + 24)
+        price_values = [float(item[key]) for item in candles for key in ("high", "low")]
+        for value, y in ((max(price_values), price_box[1]), (min(price_values), price_box[3] - 16)):
+            _draw_tracked_text(
+                draw, layout, "y_axis", (3, y), f"{value:.1f}",
+                _language_font(language, 11, True),
+            )
+        return (price_box[0], price_box[2]), (price_box[0], price_box[2])
+    price_box = _plot_box(width, 48, 275)
+    panel_box = _plot_box(width, 320, height - 34)
     x_for, _ = _draw_realistic_candles(draw, candles, price_box)
-    lines = _numeric_lines(scene.get("indicator_values"))
+    lines = _numeric_lines(
+        scene.get("indicator_values"), language, str(scene["indicator_id"]),
+    )
     numeric = [float(value) for _, values in lines for value in values if value is not None]
     low, high = (min(numeric), max(numeric)) if numeric else (0.0, 1.0)
     padding = max((high - low) * .08, .1)
     low, high = low - padding, high + padding
+    legend_x = layout.plot_left
     for line_index, (name, values) in enumerate(lines):
         points = [
             (
@@ -279,16 +725,31 @@ def _draw_generic_indicator_scene(
             if value is not None
         ]
         if len(points) > 1:
-            draw.line(points, fill=colors[line_index % len(colors)], width=3, joint="curve")
-        draw.text((58 + line_index * 150, 292), name[:16], fill=colors[line_index % len(colors)], font=_font(13, True))
-    draw.rectangle(price_box, outline="#C8D2DB", width=1)
-    draw.rectangle(panel_box, outline="#C8D2DB", width=1)
+            _draw_smooth_line(draw, points, fill=colors[line_index % len(colors)], width=3)
+        font = _language_font(language, 13, True)
+        _draw_tracked_text(
+            draw, layout, "legend", (legend_x, 292), name[:20], font,
+            colors[line_index % len(colors)],
+        )
+        legend_x += max(115, _text_box(draw, (0, 0), name[:20], font)[2] + 24)
+    for value, y in ((high, panel_box[1]), (low, panel_box[3] - 14)):
+        _draw_tracked_text(
+            draw, layout, "y_axis", (2, y), f"{value:.1f}",
+            _language_font(language, 10, True),
+        )
+    return (price_box[0], price_box[2]), (panel_box[0], panel_box[2])
 
 
-def _draw_ict_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
-                             scene: dict[str, Any]) -> None:
+def _draw_ict_teaching_scene(
+    draw: ImageDraw.ImageDraw,
+    width: int,
+    height: int,
+    scene: dict[str, Any],
+    language: str,
+    layout: _ChartLayout,
+) -> tuple[tuple[int, int], tuple[int, int]]:
     candles = scene["ohlc"]
-    box = (50, 52, width - 30, height - 36)
+    box = _plot_box(width, 52, height - 36)
     x_for, y_for = _draw_realistic_candles(draw, candles, box)
     signals = {item["signal_type"]: item for item in scene["signals"]}
     bearish = "bearish_order_block" in signals
@@ -297,35 +758,61 @@ def _draw_ict_teaching_scene(draw: ImageDraw.ImageDraw, width: int, height: int,
     bos = signals["break_of_structure"]
     sweep = signals["liquidity_sweep"]
 
-    def zone(item: dict[str, Any], fill: str, label: str) -> None:
+    def zone(item: dict[str, Any], fill: str, label_key: str) -> tuple[float, float]:
         left = x_for(item["zone_start_index"]) - 5
         right = x_for(item["zone_end_index"]) + 8
         top, bottom = sorted((y_for(item["price_high"]), y_for(item["price_low"])))
         draw.rectangle((left, top, right, bottom), fill=fill, outline=INK, width=1)
-        draw.text((left + 5, top + 4), label, fill=INK, font=_font(14, True))
+        _draw_annotation(
+            draw, layout, (left + right) / 2, max(55, int(top) + 4),
+            _label(label_key, language), fill, language,
+        )
+        return ((left + right) / 2, (top + bottom) / 2)
 
-    zone(order_block, "#FBE3E6" if bearish else "#D9F3FA", "看跌订单块" if bearish else "看涨订单块")
-    zone(fvg, "#FCE6B8", "公允价值缺口")
+    order_center = zone(
+        order_block, "#FBE3E6" if bearish else "#D9F3FA",
+        "bearish_order_block" if bearish else "bullish_order_block",
+    )
+    zone(fvg, "#FCE6B8", "fair_value_gap")
     bos_y = y_for(bos["price"])
     draw.line((x_for(bos["reference_index"]), bos_y, x_for(bos["event_index"]) + 42, bos_y), fill="#D9A62E", width=3)
-    draw.text((x_for(bos["event_index"]) + 10, bos_y - 24), "结构突破", fill=INK, font=_font(17, True))
+    _draw_annotation(
+        draw, layout, x_for(bos["event_index"]), max(55, int(bos_y) - 30),
+        _label("break_of_structure", language), "#D9A62E", language,
+    )
     sweep_x = x_for(sweep["event_index"])
     sweep_y = y_for(candles[sweep["event_index"]]["high"] if bearish else candles[sweep["event_index"]]["low"])
     draw.ellipse((sweep_x - 7, sweep_y - 7, sweep_x + 7, sweep_y + 7), fill=RED)
-    draw.text((max(55, sweep_x - 115), sweep_y + 12), "流动性扫损", fill=INK, font=_font(15, True))
+    _draw_annotation(
+        draw, layout, sweep_x, min(height - 60, int(sweep_y) + 12),
+        _label("liquidity_sweep", language), RED, language,
+    )
     retest_x = x_for(order_block["retest_index"])
     retest_y = y_for(candles[order_block["retest_index"]]["low"])
     if bearish:
         retest_y = y_for(candles[order_block["retest_index"]]["high"])
         draw.line((retest_x, retest_y + 5, retest_x, retest_y + 55), fill=RED, width=4)
         draw.polygon([(retest_x - 7, retest_y + 10), (retest_x + 7, retest_y + 10), (retest_x, retest_y)], fill=RED)
-        draw.text((retest_x - 45, retest_y + 60), "回测", fill=INK, font=_font(16, True))
+        label_y = min(height - 48, int(retest_y) + 60)
     else:
         draw.line((retest_x, retest_y - 55, retest_x, retest_y - 5), fill=CYAN, width=4)
         draw.polygon([(retest_x - 7, retest_y - 10), (retest_x + 7, retest_y - 10), (retest_x, retest_y)], fill=CYAN)
-        draw.text((retest_x - 45, retest_y - 80), "回测", fill=INK, font=_font(16, True))
-    draw.text((50, 10), "ICT结构｜根据演示K线计算", fill=INK, font=_font(23, True))
-    draw.rectangle(box, outline="#C8D2DB", width=1)
+        label_y = max(55, int(retest_y) - 80)
+    _draw_smooth_line(
+        draw,
+        [(sweep_x, sweep_y), order_center, (retest_x, retest_y)],
+        fill="#8D98A4",
+        width=2,
+    )
+    _draw_annotation(
+        draw, layout, retest_x, label_y, _label("retest", language),
+        RED if bearish else CYAN, language,
+    )
+    _draw_tracked_text(
+        draw, layout, "title", (layout.plot_left, 10),
+        _label("ict_title", language), _language_font(language, 23, True),
+    )
+    return (box[0], box[2]), (box[0], box[2])
 
 
 def _draw_price_rsi_example(draw: ImageDraw.ImageDraw, width: int, height: int) -> None:
@@ -336,7 +823,7 @@ def _draw_price_rsi_example(draw: ImageDraw.ImageDraw, width: int, height: int) 
     draw.rectangle((left, y30, right, bottom), fill=BLUE_FILL)
     draw.line((left, y30, right, y30), fill=CYAN, width=3)
     points = _rsi_points(left, top, right, bottom, "oversold")
-    draw.line(points, fill="#248DB2", width=5, joint="curve")
+    _draw_smooth_line(draw, points, fill="#248DB2", width=5)
     low = max(points, key=lambda item: item[1])
     draw.ellipse((low[0] - 7, low[1] - 7, low[0] + 7, low[1] + 7), fill=CYAN)
     draw.text((20, y30 - 12), "30", fill=INK, font=_font(20, True))
@@ -387,36 +874,52 @@ def _template_key(page: dict[str, Any]) -> str:
     return "rsi_panel"
 
 
-def render_chart(page: dict[str, Any], output_path: Path,
-                 route_payload: dict[str, Any] | None = None) -> dict[str, Any]:
+def render_chart(
+    page: dict[str, Any],
+    output_path: Path,
+    route_payload: dict[str, Any] | None = None,
+    language: str = "zh-CN",
+) -> dict[str, Any]:
     width, height = 900, 560
     image = Image.new("RGB", (width, height), "white")
     draw = ImageDraw.Draw(image)
     template = _template_key(page)
     scene = resolve_teaching_scene(page, route_payload)
+    layout = _ChartLayout(width, len(scene["ohlc"]))
+    price_edges = (layout.plot_left, layout.plot_right)
+    indicator_edges = price_edges
     use_teaching_scene = str(page.get("visual_type") or "") in {
         "indicator_panel", "zone_diagram", "candlestick_demo", "market_chart",
     }
     if use_teaching_scene and scene["indicator_id"] == "ict":
         template = "ict_structure"
-        _draw_ict_teaching_scene(draw, width, height, scene)
+        price_edges, indicator_edges = _draw_ict_teaching_scene(
+            draw, width, height, scene, language, layout,
+        )
     elif use_teaching_scene and scene["indicator_id"] in {"rsi", "generic"}:
         template = f"rsi_{scene['scenario_id']}"
-        _draw_rsi_teaching_scene(draw, width, height, scene)
+        price_edges, indicator_edges = _draw_rsi_teaching_scene(
+            draw, width, height, scene, language, layout,
+        )
     elif use_teaching_scene:
         template = f"{scene['indicator_id']}_{scene['scenario_id']}"
-        _draw_generic_indicator_scene(draw, width, height, scene)
+        price_edges, indicator_edges = _draw_generic_indicator_scene(
+            draw, width, height, scene, language, layout,
+        )
     elif template == "checklist":
         _draw_checklist(draw, width, height, list(page.get("required_elements") or []))
     else:
         _draw_steps(draw, width, height, list(page.get("required_elements") or []))
+    layout_metadata = layout.metadata(price_edges, indicator_edges)
+    if layout_metadata["label_overlap"]:
+        raise ValueError("CHART_LABEL_LAYOUT_OVERLAP")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="PNG")
     return {
         "page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}",
         "asset_type": str(page.get("visual_type") or ""), "asset_path": str(output_path),
         "is_teaching_demo": True, "included_elements": list(page.get("required_elements") or []),
-        "template_key": template, "render_language": "zh-CN", "disclaimer_drawn": False,
+        "template_key": template, "render_language": language, "disclaimer_drawn": False,
         "teaching_engine_version": scene["engine_version"],
         "indicator_id": scene["indicator_id"], "engine_id": scene["engine_id"],
         "indicator_family": scene["indicator_family"],
@@ -424,4 +927,19 @@ def render_chart(page: dict[str, Any], output_path: Path,
         "signal_anchors": scene["signals"], "visual_layers": scene["layers"],
         "signal_contract_valid": scene["signal_contract_valid"],
         "data_fingerprint": scene["data_fingerprint"],
+        "line_renderer": LINE_RENDERER,
+        "line_supersample": LINE_SUPERSAMPLE,
+        "left_plot_border": False,
+        "right_plot_border": False,
+        "label_overlap": layout_metadata["label_overlap"],
+        "annotation_bounds": layout_metadata["annotation_bounds"],
+        "collision_metadata": {
+            key: layout_metadata[key]
+            for key in (
+                "title_bounds", "legend_bounds", "y_axis_label_bounds",
+                "annotation_bounds", "caption_bounds", "collisions",
+            )
+        },
+        "rendered_labels": layout.rendered_labels,
+        "chart_layout": layout_metadata,
     }

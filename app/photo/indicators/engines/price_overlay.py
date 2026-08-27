@@ -1,7 +1,7 @@
 import math
 from typing import Any
 
-from ..contracts import closes, demo_ohlcv, ema, event_anchor_valid, series_equal, sma
+from ..contracts import TEACHING_CANDLE_COUNT, closes, demo_ohlcv, ema, event_anchor_valid, ohlc_series_valid, series_equal, sma
 
 
 def _bollinger(values: list[float], period: int, deviation: float) -> dict[str, list[float | None]]:
@@ -18,7 +18,7 @@ def _bollinger(values: list[float], period: int, deviation: float) -> dict[str, 
 
 
 def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payload: dict) -> dict[str, Any]:
-    candles = demo_ohlcv(seed=41 + len(scenario_id), count=84)
+    candles = demo_ohlcv(seed=41 + len(scenario_id), count=TEACHING_CANDLE_COUNT)
     values = closes(candles)
     parameters = config.get("parameters", {})
     if config["indicator_id"] == "bollinger":
@@ -42,7 +42,9 @@ def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payl
 def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     candles = scene.get("ohlc") or []
     values = scene.get("indicator_values") or {}
-    if len(candles) < 40 or not values or not event_anchor_valid(scene):
+    if not ohlc_series_valid(candles):
+        return False
+    if not values or not event_anchor_valid(scene):
         return False
     price_values = closes(candles)
     parameters = config.get("parameters", {})

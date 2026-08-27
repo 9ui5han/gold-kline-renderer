@@ -22,6 +22,44 @@ def _non_white_ratio(path: Path) -> float:
 
 
 class PhotoTemplateRendererTests(unittest.TestCase):
+    def test_page_layout_reports_content_regions_without_decorative_left_bar(self):
+        """Removing the page ornament must not remove the measurable content contract."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "page.png"
+            result = render_page({
+                "page_no": 1, "page_role": "definition",
+                "title": "什么是RSI？",
+                "body": "RSI用于观察近期价格上涨和下跌力量的相对强弱。",
+                "key_message": "", "visual_type": "none",
+                "required_elements": [],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }, None, [], output, 1080, 1080)
+
+            self.assertFalse(result["decorative_left_bar"])
+            self.assertFalse(result["layout_overlap"])
+            self.assertEqual(
+                set(result["layout_regions"]),
+                {"header", "title", "body", "footer"},
+            )
+            for bounds in result["layout_regions"].values():
+                self.assertEqual(len(bounds), 4)
+                self.assertLess(bounds[0], bounds[2])
+                self.assertLess(bounds[1], bounds[3])
+
+    def test_overlong_english_cover_raises_page_layout_overflow(self):
+        """Text beyond the approved wrapping and size limits must not be clipped."""
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "overflow.png"
+            with self.assertRaisesRegex(ValueError, "PAGE_1_LAYOUT_OVERFLOW"):
+                render_page({
+                    "page_no": 1, "page_role": "cover",
+                    "title": "A practical introduction to RSI for new traders learning how momentum signals interact with price structure",
+                    "body": "This deliberately long explanation keeps adding words so that it exceeds the approved cover copy area after the renderer has wrapped the text and applied its approved English font sizing limits safely.",
+                    "key_message": "", "visual_type": "cover_illustration",
+                    "required_elements": [],
+                    "risk_note": "Educational illustration | Not real-time market data",
+                }, None, [], output, 1080, 1080, language="en")
+
     def test_english_release_typography_uses_montserrat_centered_highlight_and_shadow(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "english.png"
@@ -144,6 +182,26 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             qa = validate_post(plan, rendered)
             self.assertFalse(qa["passed"])
             self.assertIn("NON_CHINESE_RENDER", {item["code"] for item in qa["errors"]})
+
+    def test_qa_rejects_layout_overflow_and_missing_mandatory_regions(self):
+        """QA must reject renderer layout failures even when copy validation succeeds."""
+        with tempfile.TemporaryDirectory() as directory:
+            image_path = Path(directory) / "page.png"
+            Image.new("RGB", (1080, 1080), "white").save(image_path)
+            plan = {"content_type": "knowledge", "pages": [{
+                "page_no": 1, "page_role": "definition", "visual_type": "none",
+            }]}
+            rendered = {"photo_job_id": "photo-test", "images": [{
+                "page_no": 1, "path": str(image_path), "width": 1080, "height": 1080,
+                "layout_overflow": True, "risk_note_present": True,
+                "render_language": "zh-CN", "layout_overlap": False,
+                "chinese_contract_valid": True, "copy_contract_valid": True,
+                "disclaimer_count": 1, "layout_regions": {"header": [1, 1, 2, 2]},
+            }]}
+            qa = validate_post(plan, rendered)
+            codes = {item["code"] for item in qa["errors"]}
+            self.assertIn("LAYOUT_OVERFLOW", codes)
+            self.assertIn("LAYOUT_REGIONS_MISSING", codes)
 
     def test_qa_rejects_empty_checklist_and_empty_cover_topic_visual(self):
         with tempfile.TemporaryDirectory() as directory:

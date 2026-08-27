@@ -1,11 +1,14 @@
 import math
 from typing import Any
 
-from ..contracts import candles_from_closes
+from ..contracts import TEACHING_CANDLE_COUNT, candles_from_closes, ohlc_series_valid
 
 
 def build_scene(config: dict[str, Any], scenario_id: str, page: dict, route_payload: dict) -> dict[str, Any]:
-    price_values = [100 + index * 0.11 + math.sin(index / 2.8) * 1.4 for index in range(60)]
+    price_values = [
+        100 + index * 0.11 + math.sin(index / 2.8) * 1.4
+        for index in range(TEACHING_CANDLE_COUNT)
+    ]
     candles = candles_from_closes(price_values)
     prior_low_index = min(range(10, 20), key=lambda index: candles[index]["low"])
     prior_high_index = max(range(10, 23), key=lambda index: candles[index]["high"])
@@ -56,7 +59,9 @@ def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     bearish = "bearish_order_block" in by_type
     order = by_type.get("bearish_order_block" if bearish else "bullish_order_block")
     sweep, bos, fvg = by_type.get("liquidity_sweep"), by_type.get("break_of_structure"), by_type.get("fair_value_gap")
-    if len(candles) < 40 or not all(isinstance(item, dict) for item in (order, sweep, bos, fvg)):
+    if not ohlc_series_valid(candles):
+        return False
+    if not all(isinstance(item, dict) for item in (order, sweep, bos, fvg)):
         return False
     try:
         sweep_event, sweep_ref = candles[sweep["event_index"]], candles[sweep["reference_index"]]

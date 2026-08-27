@@ -1,14 +1,16 @@
 import hashlib
 import json
 import math
+from numbers import Real
 from typing import Any
 
 
 ENGINE_VERSION = "indicator-teaching-v1"
-CANDLE_BODY_SCALE = 1.55
+CANDLE_BODY_SCALE = 1.85
+TEACHING_CANDLE_COUNT = 96
 
 
-def demo_ohlcv(seed: int = 0, count: int = 72) -> list[dict[str, float]]:
+def demo_ohlcv(seed: int = 0, count: int = TEACHING_CANDLE_COUNT) -> list[dict[str, float]]:
     closes = []
     price = 100.0 + seed * 0.07
     for index in range(count):
@@ -43,6 +45,24 @@ def candles_from_closes(closes: list[float]) -> list[dict[str, float]]:
 
 def closes(candles: list[dict[str, float]]) -> list[float]:
     return [float(item["close"]) for item in candles]
+
+
+def ohlc_series_valid(
+    candles: list[dict[str, float]],
+    minimum_count: int = TEACHING_CANDLE_COUNT,
+) -> bool:
+    if not isinstance(candles, list) or len(candles) < minimum_count:
+        return False
+    for candle in candles:
+        if not isinstance(candle, dict):
+            return False
+        values = [candle.get(key) for key in ("open", "high", "low", "close")]
+        if any(not isinstance(value, Real) or isinstance(value, bool) or not math.isfinite(float(value)) for value in values):
+            return False
+        open_price, high, low, close = (float(value) for value in values)
+        if low > open_price or low > close or open_price > high or close > high:
+            return False
+    return True
 
 
 def sma(values: list[float], period: int) -> list[float | None]:
