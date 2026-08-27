@@ -615,6 +615,9 @@ def _draw_rsi_teaching_scene(
                 x = panel_box[0] + (index + .5) * layout.candle_pitch
                 y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
                 points.append((x, y))
+        if points:
+            points[0] = (panel_box[0], points[0][1])
+            points[-1] = (panel_box[2] - 1, points[-1][1])
         _draw_smooth_line(draw, points, fill="#138EB9", width=5)
         zone_font = _language_font(language, 14, True)
         _draw_tracked_text(
@@ -656,6 +659,9 @@ def _draw_rsi_teaching_scene(
         if value is not None:
             y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
             points.append((x_for(index), y))
+    if points:
+        points[0] = (panel_box[0], points[0][1])
+        points[-1] = (panel_box[2] - 1, points[-1][1])
     _draw_smooth_line(draw, points, fill="#138EB9", width=4)
     labels = [] if scene["scenario_id"] == "range_overview" else [
         (signal["indicator_candle_index"], "indicator_condition", "#E99AA5"),

@@ -23,7 +23,16 @@ def _rsi_closes(scenario_id: str) -> list[float]:
             phase = 2.1
         else:
             raise ValueError(f"LESSON_GOAL_NOT_SUPPORTED:rsi:{scenario_id}")
-        delta = base + math.sin(index * 1.73 + phase) * 0.46 + math.cos(index * 0.61 + phase) * 0.17
+        # Alternate expansion and pullback candles around the main teaching
+        # trend. The pair cancels out over two candles, so the RSI scenario
+        # keeps its intended direction while open/close bodies remain readable.
+        candle_rhythm = 0.0 if scenario_id == "range_overview" else (1.2 if index % 2 == 0 else -1.2)
+        delta = (
+            base
+            + math.sin(index * 1.73 + phase) * 0.46
+            + math.cos(index * 0.61 + phase) * 0.17
+            + candle_rhythm
+        )
         price += delta
         result.append(round(price, 4))
     return result
@@ -67,8 +76,18 @@ def _crossing_signal(
 
 def _build_rsi(config: dict[str, Any], scenario_id: str) -> dict[str, Any]:
     price_values = _rsi_closes(scenario_id)
-    candles = candles_from_closes(price_values)
-    values = rsi(price_values, int(config.get("parameters", {}).get("period", 14)))
+    period = int(config.get("parameters", {}).get("period", 14))
+    first_price = price_values[0]
+    warmup_values = [
+        round(
+            first_price - (period - index) * .025 + math.sin(index * 1.11) * .16,
+            4,
+        )
+        for index in range(period)
+    ]
+    combined_values = warmup_values + price_values
+    candles = candles_from_closes(combined_values)[period:]
+    values = rsi(combined_values, period)[period:]
     if scenario_id == "range_overview":
         signals = [{
             "signal_type": "rsi_range_overview",
@@ -98,6 +117,7 @@ def _build_rsi(config: dict[str, Any], scenario_id: str) -> dict[str, Any]:
         "indicator_family": "panel",
         "scenario_id": scenario_id,
         "ohlc": candles,
+        "_rsi_warmup_closes": warmup_values,
         "indicator_values": values,
         "signals": signals,
         "layers": layers,
@@ -158,7 +178,14 @@ def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
             all(series_equal(values[key], expected[key]) for key in expected)
         )
     supplied = scene.get("indicator_values") or []
-    recalculated = rsi(closes(candles), int(config.get("parameters", {}).get("period", 14)))
+    period = int(config.get("parameters", {}).get("period", 14))
+    warmup_values = scene.get("_rsi_warmup_closes") or []
+    if len(warmup_values) != period:
+        return False
+    recalculated = rsi(
+        [float(value) for value in warmup_values] + closes(candles),
+        period,
+    )[period:]
     if len(supplied) != len(recalculated):
         return False
     for actual, expected in zip(supplied, recalculated):

@@ -124,6 +124,61 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         )
         self.assertIn("lesson_steps", scenarios["worked_example"]["layers"])
 
+    def test_rsi_teaching_candles_remain_readable_without_breaking_signal_shapes(self):
+        for scenario_id in ("overbought_reversal", "oversold_recovery", "worked_example"):
+            with self.subTest(scenario_id=scenario_id):
+                scene = build_teaching_scene("rsi", scenario_id)
+                candles = chart_renderer._display_candles(scene["ohlc"])
+                _, y_for = chart_renderer._chart_transform(candles, (0, 48, 900, 275))
+                body_heights = sorted(
+                    abs(
+                        chart_renderer._candle_geometry(candle, y_for)["body_bottom"]
+                        - chart_renderer._candle_geometry(candle, y_for)["body_top"]
+                    )
+                    for candle in candles
+                )
+
+                self.assertGreaterEqual(body_heights[len(body_heights) // 2], 10.0)
+                self.assertTrue(scene["signal_contract_valid"])
+
+    def test_rsi_uses_hidden_warmup_and_curve_reaches_both_plot_edges(self):
+        for scenario_id in (
+            "range_overview", "overbought_reversal", "oversold_recovery", "worked_example",
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                scene = build_teaching_scene("rsi", scenario_id)
+                self.assertEqual(len(scene["indicator_values"]), TEACHING_CANDLE_COUNT)
+                self.assertTrue(all(value is not None for value in scene["indicator_values"]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "rsi-edge-to-edge.png"
+            render_chart({
+                "page_no": 18,
+                "visual_type": "indicator_panel",
+                "visual_focus": "RSI range overview",
+                "required_elements": ["RSI", "30", "70"],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "overview",
+                },
+            }, output)
+            image = Image.open(output).convert("RGB")
+            rsi_color = (19, 142, 185)
+            is_rsi_pixel = lambda pixel: sum(
+                abs(channel - expected) for channel, expected in zip(pixel, rsi_color)
+            ) <= 4
+            left_pixels = sum(
+                is_rsi_pixel(image.getpixel((0, y)))
+                for y in range(50, 525)
+            )
+            right_pixels = sum(
+                is_rsi_pixel(image.getpixel((899, y)))
+                for y in range(50, 525)
+            )
+            self.assertGreater(left_pixels, 0)
+            self.assertGreater(right_pixels, 0)
+
     def test_rsi_generic_lesson_goals_map_to_existing_scenarios(self):
         expected = {
             "overview": "range_overview",
