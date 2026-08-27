@@ -231,6 +231,12 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["cover_visual_type"], "indicator_rsi")
             self.assertEqual(result["cover_focus_label"], "RSI")
             self.assertGreaterEqual(result["typography_metrics"]["focus_size"], 80)
+            self.assertEqual(result["typography_metrics"]["title_weight"], "regular")
+            self.assertGreaterEqual(result["cover_candle_count"], 42)
+            self.assertLessEqual(result["cover_candle_body_width"], 20)
+            self.assertLessEqual(result["cover_candle_gap_ratio"], 0.12)
+            self.assertGreaterEqual(result["cover_indicator_point_count"], 450)
+            self.assertEqual(result["cover_indicator_supersample"], 8)
             self.assertTrue(result["topic_visual_present"])
             self.assertFalse(result["character_present"])
             self.assertGreater(_non_white_ratio(output), 0.055)
@@ -255,6 +261,7 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             }], output, 1080, 1080)
             self.assertTrue(result["cover_asset_present"])
             self.assertEqual(result["cover_asset_key"], "undraw_predictive_analytics")
+            self.assertEqual(result["cover_asset_opacity"], 1.0)
 
     def test_checklist_renders_from_page_elements_without_chart_asset(self):
         with tempfile.TemporaryDirectory() as directory:

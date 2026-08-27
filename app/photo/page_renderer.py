@@ -2,7 +2,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from .chart_renderer import CYAN, INK, RED, _font
 
@@ -81,39 +81,41 @@ def _paste_cover_illustration(
     image: Image.Image,
     visual_assets: list[dict[str, Any]],
     box: tuple[int, int, int, int],
-) -> tuple[tuple[int, int, int, int] | None, str]:
+) -> tuple[tuple[int, int, int, int] | None, str, float]:
     item = next((
         asset for asset in visual_assets
         if asset.get("source") == "undraw" and asset.get("asset_type") == "background"
     ), None)
     path = Path(str((item or {}).get("asset_path") or ""))
     if not path.is_file() or path.suffix.lower() != ".svg":
-        return None, ""
+        return None, "", 0.0
     try:
         import cairosvg
 
         png = cairosvg.svg2png(url=str(path), output_width=520)
         illustration = Image.open(BytesIO(png)).convert("RGBA")
     except (ImportError, OSError, ValueError):
-        return None, ""
+        return None, "", 0.0
     alpha_box = illustration.getchannel("A").getbbox()
     if alpha_box:
         illustration = illustration.crop(alpha_box)
     left, top, right, bottom = box
     illustration.thumbnail((right - left, bottom - top), Image.Resampling.LANCZOS)
-    alpha = illustration.getchannel("A").point(lambda value: int(value * .88))
-    illustration.putalpha(alpha)
     x = left + (right - left - illustration.width) // 2
     y = top + (bottom - top - illustration.height) // 2
     image.paste(illustration, (x, y), illustration)
-    return (x, y, x + illustration.width, y + illustration.height), str(item.get("asset_key") or "")
+    return (
+        (x, y, x + illustration.width, y + illustration.height),
+        str(item.get("asset_key") or ""),
+        1.0,
+    )
 
 
 def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
-                 compact: bool) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
+                 compact: bool) -> tuple[int, bool, tuple[int, int, int, int], dict[str, Any]]:
     margin = 72
-    title_size, body_size = (44, 27) if compact else (48, 29)
-    title_font = _font(title_size, True)
+    title_size, body_size = (41, 26) if compact else (44, 27)
+    title_font = _font(title_size)
     body_font = _font(body_size)
     title_width = width - margin * 2
     body_width = min(820, title_width)
@@ -134,6 +136,8 @@ def _draw_header(draw: ImageDraw.ImageDraw, title: str, body: str, width: int,
     return y, overflow, (margin, 62, width - margin, y), {
         "title_size": title_size,
         "body_size": body_size,
+        "title_weight": "regular",
+        "body_weight": "regular",
         "body_line_width": body_width,
     }
 
@@ -169,12 +173,12 @@ def _cover_focus_label(page: dict[str, Any]) -> str:
     }.get(topic, "市场分析")
 
 
-def _draw_cover_header(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -> tuple[int, bool, tuple[int, int, int, int], dict[str, int]]:
+def _draw_cover_header(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int) -> tuple[int, bool, tuple[int, int, int, int], dict[str, Any]]:
     title = str(page.get("title") or "").strip()
     body = str(page.get("body") or "").strip()
     focus = _cover_focus_label(page)
     focus_font = _font(96, True)
-    title_font = _font(31, True)
+    title_font = _font(31)
     body_font = _font(25)
     title_lines = _wrapped_lines(title, 760, title_font)
     body_lines = _wrapped_lines(body, 720, body_font)
@@ -194,6 +198,7 @@ def _draw_cover_header(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: i
         y += 38
     return y, overflow, (80, 35, width - 80, y), {
         "focus_size": 96, "title_size": 31, "body_size": 25,
+        "title_weight": "regular", "body_weight": "regular",
         "body_line_width": 720,
     }
 
@@ -204,25 +209,85 @@ def _draw_magnifier(draw: ImageDraw.ImageDraw, center: tuple[int, int], radius: 
     draw.line((x + radius - 5, y + radius - 5, x + radius + 62, y + radius + 62), fill=INK, width=13)
 
 
-def _draw_cover_topic_visual(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int, height: int) -> str:
+def _smooth_curve(points: list[tuple[float, float]], samples_per_segment: int = 8) -> list[tuple[float, float]]:
+    """Return a Catmull-Rom interpolation that passes through the source points."""
+    if len(points) < 3:
+        return points
+    padded = [points[0], *points, points[-1]]
+    result: list[tuple[float, float]] = []
+    for index in range(1, len(padded) - 2):
+        p0, p1, p2, p3 = padded[index - 1:index + 3]
+        for sample in range(samples_per_segment):
+            t = sample / samples_per_segment
+            t2, t3 = t * t, t * t * t
+            x = .5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * t +
+                      (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 +
+                      (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3)
+            y = .5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * t +
+                      (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 +
+                      (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3)
+            result.append((x, y))
+    result.append(points[-1])
+    return result
+
+
+def _draw_antialiased_line(
+    image: Image.Image,
+    points: list[tuple[float, float]],
+    fill: str,
+    width: int,
+    scale: int = 4,
+) -> None:
+    """Draw a high-resolution line and shrink it for smooth mobile output."""
+    if len(points) < 2:
+        return
+    min_x = max(0, int(min(point[0] for point in points)) - width * 2)
+    min_y = max(0, int(min(point[1] for point in points)) - width * 2)
+    max_x = min(image.width, int(max(point[0] for point in points)) + width * 2 + 1)
+    max_y = min(image.height, int(max(point[1] for point in points)) + width * 2 + 1)
+    hi_size = ((max_x - min_x) * scale, (max_y - min_y) * scale)
+    layer = Image.new("RGBA", hi_size, (255, 255, 255, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    hi_points = [((x - min_x) * scale, (y - min_y) * scale) for x, y in points]
+    layer_draw.line(hi_points, fill=fill, width=width * scale, joint="curve")
+    layer = layer.filter(ImageFilter.GaussianBlur(radius=1.0))
+    layer = layer.resize((max_x - min_x, max_y - min_y), Image.Resampling.LANCZOS)
+    image.paste(layer, (min_x, min_y), layer)
+
+
+def _draw_cover_topic_visual(
+    draw: ImageDraw.ImageDraw,
+    page: dict[str, Any],
+    width: int,
+    height: int,
+) -> tuple[str, int, int, float, int, float]:
     topic = _topic_key(page)
     left, right = 70, width - 70
     chart_top, chart_bottom = 350, 735
-    candles = [
-        (0.08, .72, .56, True), (0.16, .64, .47, True), (0.24, .52, .62, False),
-        (0.32, .61, .39, True), (0.40, .42, .30, True), (0.48, .32, .46, False),
-        (0.56, .44, .55, False), (0.64, .57, .42, True), (0.72, .45, .26, True),
-        (0.80, .28, .38, False), (0.88, .39, .22, True),
+    close_levels = [
+        .82, .78, .74, .77, .71, .68, .70, .64, .59, .62,
+        .56, .52, .49, .53, .47, .43, .46, .41, .38, .42,
+        .45, .40, .44, .48, .43, .39, .35, .38, .33, .29,
+        .32, .27, .24, .28, .23, .20, .24, .19, .16, .20,
+        .17, .13, .16,
     ]
-    for ratio, open_ratio, close_ratio, up in candles:
-        x = int(left + ratio * (right - left))
+    step = (right - left) / len(close_levels)
+    body_half = step * .45
+    candle_gap_ratio = 1 - body_half * 2 / step
+    for index, close_ratio in enumerate(close_levels):
+        open_ratio = close_levels[index - 1] if index else .82
+        up = close_ratio <= open_ratio
+        x = left + (index + .5) * step
         open_y = int(chart_top + open_ratio * (chart_bottom - chart_top))
         close_y = int(chart_top + close_ratio * (chart_bottom - chart_top))
-        high = min(open_y, close_y) - 34
-        low = max(open_y, close_y) + 34
-        draw.line((x, high, x, low), fill=INK, width=3)
+        high = min(open_y, close_y) - 25
+        low = max(open_y, close_y) + 25
+        draw.line((x, high, x, low), fill=INK, width=2)
         color = CYAN if up else "#6C7782"
-        draw.rectangle((x - 13, min(open_y, close_y), x + 13, max(open_y, close_y)), fill=color, outline=INK, width=2)
+        draw.rectangle(
+            (x - body_half, min(open_y, close_y), x + body_half, max(min(open_y, close_y) + 4, max(open_y, close_y))),
+            fill=color, outline=INK, width=1,
+        )
 
     if topic == "rsi":
         panel_top, panel_bottom = 760, 940
@@ -237,11 +302,15 @@ def _draw_cover_topic_visual(draw: ImageDraw.ImageDraw, page: dict[str, Any], wi
             x = left + index * (right - left) / (len(values) - 1)
             y = panel_bottom - value / 100 * (panel_bottom - panel_top)
             points.append((x, y))
-        draw.line(points, fill="#1597C3", width=6, joint="curve")
+        smooth_points = _smooth_curve(points, samples_per_segment=40)
+        _draw_antialiased_line(draw._image, smooth_points, fill="#1597C3", width=6, scale=8)
         draw.line((left, panel_top + .3 * (panel_bottom - panel_top), right, panel_top + .3 * (panel_bottom - panel_top)), fill=RED, width=2)
         draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
         draw.text((left, panel_top - 35), "RSI（14）", fill=INK, font=_font(24, True))
-        return "indicator_rsi"
+        return (
+            "indicator_rsi", len(close_levels), len(smooth_points),
+            candle_gap_ratio, 8, body_half * 2,
+        )
 
     label = {
         "macd": "MACD", "kdj": "KDJ", "atr": "ATR", "obv": "OBV",
@@ -250,7 +319,8 @@ def _draw_cover_topic_visual(draw: ImageDraw.ImageDraw, page: dict[str, Any], wi
     draw.rounded_rectangle((350, 780, 730, 875), radius=26, fill=PANEL, outline="#D9E2E8", width=2)
     label_width = draw.textbbox((0, 0), label, font=_font(40, True))[2]
     draw.text(((width - label_width) // 2, 805), label, fill=INK, font=_font(40, True))
-    return f"indicator_{topic}" if topic != "generic_finance" else "topic_magnifier"
+    visual_type = f"indicator_{topic}" if topic != "generic_finance" else "topic_magnifier"
+    return visual_type, len(close_levels), 0, candle_gap_ratio, 0, body_half * 2
 
 
 def _draw_checklist_page(draw: ImageDraw.ImageDraw, page: dict[str, Any], width: int, top: int) -> int:
@@ -322,16 +392,29 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     topic_visual_present = False
     cover_asset_box = None
     cover_asset_key = ""
-    typography_metrics: dict[str, int] = {}
+    cover_asset_opacity = 0.0
+    cover_candle_count = 0
+    cover_indicator_point_count = 0
+    cover_candle_gap_ratio = 1.0
+    cover_indicator_supersample = 0
+    cover_candle_body_width = 0.0
+    typography_metrics: dict[str, Any] = {}
     character_box = None
     content_box = None
     disclaimer_count = 0
 
     if layout == "cover":
         _, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
-        cover_visual_type = _draw_cover_topic_visual(draw, page, width, height)
+        (
+            cover_visual_type,
+            cover_candle_count,
+            cover_indicator_point_count,
+            cover_candle_gap_ratio,
+            cover_indicator_supersample,
+            cover_candle_body_width,
+        ) = _draw_cover_topic_visual(draw, page, width, height)
         topic_visual_present = True
-        cover_asset_box, cover_asset_key = _paste_cover_illustration(
+        cover_asset_box, cover_asset_key, cover_asset_opacity = _paste_cover_illustration(
             image, visual_assets, (600, 285, width - 55, 700)
         )
         character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
@@ -390,6 +473,12 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "cover_asset_present": cover_asset_box is not None,
         "cover_asset_key": cover_asset_key,
         "cover_asset_box": cover_asset_box,
+        "cover_asset_opacity": cover_asset_opacity,
+        "cover_candle_count": cover_candle_count,
+        "cover_indicator_point_count": cover_indicator_point_count,
+        "cover_candle_gap_ratio": cover_candle_gap_ratio,
+        "cover_indicator_supersample": cover_indicator_supersample,
+        "cover_candle_body_width": cover_candle_body_width,
         "checklist_present": checklist_item_count > 0,
         "checklist_item_count": checklist_item_count,
         "chinese_contract_valid": chinese_contract_valid,
