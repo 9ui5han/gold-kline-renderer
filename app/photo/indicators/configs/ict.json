@@ -4,7 +4,7 @@
   "engine_id": "price_structure",
   "indicator_kind": "price_structure",
   "goal_map": {
-    "overview": "bullish_order_block",
+    "overview": "structure_overview",
     "state_a": "bullish_order_block",
     "state_b": "bearish_order_block",
     "components": "bullish_fvg",

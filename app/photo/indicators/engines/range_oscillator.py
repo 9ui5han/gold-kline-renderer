@@ -15,18 +15,18 @@ def _rsi_closes(scenario_id: str) -> list[float]:
         elif scenario_id == "oversold_recovery":
             base = -0.10 if index < 18 else -0.64 if index < 42 else 0.70 if index < 61 else 0.08
             phase = 0.7
-        elif scenario_id == "worked_example":
+        elif scenario_id in {"worked_example", "setup_example"}:
             base = 0.16 if index < 17 else -0.72 if index < 44 else 0.82 if index < 65 else 0.14
-            phase = 1.4
-        elif scenario_id == "range_overview":
+            phase = 1.4 if scenario_id == "worked_example" else 1.8
+        elif scenario_id in {"range_overview", "range_components"}:
             base = math.sin(index / 8.0) * 0.22
-            phase = 2.1
+            phase = 2.1 if scenario_id == "range_overview" else 2.8
         else:
             raise ValueError(f"LESSON_GOAL_NOT_SUPPORTED:rsi:{scenario_id}")
         # Alternate expansion and pullback candles around the main teaching
         # trend. The pair cancels out over two candles, so the RSI scenario
         # keeps its intended direction while open/close bodies remain readable.
-        candle_rhythm = 0.0 if scenario_id == "range_overview" else (1.2 if index % 2 == 0 else -1.2)
+        candle_rhythm = 0.0 if scenario_id in {"range_overview", "range_components"} else (1.2 if index % 2 == 0 else -1.2)
         delta = (
             base
             + math.sin(index * 1.73 + phase) * 0.46
@@ -88,7 +88,7 @@ def _build_rsi(config: dict[str, Any], scenario_id: str) -> dict[str, Any]:
     combined_values = warmup_values + price_values
     candles = candles_from_closes(combined_values)[period:]
     values = rsi(combined_values, period)[period:]
-    if scenario_id == "range_overview":
+    if scenario_id in {"range_overview", "range_components"}:
         signals = [{
             "signal_type": "rsi_range_overview",
             "levels": [30, 50, 70],
@@ -96,11 +96,13 @@ def _build_rsi(config: dict[str, Any], scenario_id: str) -> dict[str, Any]:
             "range_max": 100,
         }]
         layers = ["rsi_panel", "threshold_zones", "midline", "range_labels"]
-    elif scenario_id == "worked_example":
+        if scenario_id == "range_components":
+            layers.extend(["component_labels", "reading_order"])
+    elif scenario_id in {"worked_example", "setup_example"}:
         signal = _crossing_signal("oversold_recovery", candles, values)
         signals = [{
             **signal,
-            "signal_type": "rsi_worked_example",
+            "signal_type": "rsi_worked_example" if scenario_id == "worked_example" else "rsi_setup_example",
             "setup_candle_index": max(0, signal["indicator_candle_index"] - 3),
             "lesson_steps": [
                 "Observe the RSI extreme",
@@ -198,7 +200,7 @@ def validate_scene(scene: dict[str, Any], config: dict[str, Any]) -> bool:
     signal_type = signal.get("signal_type")
     if signal_type == "rsi_range_overview":
         return signal.get("levels") == [30, 50, 70] and "price_confirmation" not in scene.get("layers", [])
-    if signal_type == "rsi_worked_example" and len(signal.get("lesson_steps") or []) != 3:
+    if signal_type in {"rsi_worked_example", "rsi_setup_example"} and len(signal.get("lesson_steps") or []) != 3:
         return False
     extreme = signal.get("indicator_candle_index", -1)
     cross = signal.get("cross_candle_index", -1)

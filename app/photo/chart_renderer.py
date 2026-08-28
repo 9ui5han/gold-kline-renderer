@@ -587,7 +587,7 @@ def _draw_rsi_teaching_scene(
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     candles = scene["ohlc"]
     signal = scene["signals"][0]
-    if scene["scenario_id"] == "range_overview":
+    if scene["scenario_id"] in {"range_overview", "range_components"}:
         panel_box = _plot_box(width, 58, height - 38)
         _draw_tracked_text(
             draw, layout, "title", (layout.label_left, 12),
@@ -633,7 +633,9 @@ def _draw_rsi_teaching_scene(
     panel_box = _plot_box(width, 350, height - 32)
     heading_key = {
         "range_overview": "rsi_range_overview",
+        "range_components": "rsi_range_overview",
         "overbought_reversal": "rsi_overbought_reversal",
+        "setup_example": "rsi_worked_example",
         "worked_example": "rsi_worked_example",
     }.get(scene["scenario_id"], "rsi_oversold_recovery")
     _draw_tracked_text(

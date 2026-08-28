@@ -184,8 +184,8 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             "overview": "range_overview",
             "state_a": "overbought_reversal",
             "state_b": "oversold_recovery",
-            "components": "range_overview",
-            "setup": "worked_example",
+            "components": "range_components",
+            "setup": "setup_example",
             "worked_example": "worked_example",
         }
 
@@ -221,7 +221,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
 
     def test_ict_generic_lesson_goals_map_to_existing_scenarios(self):
         expected = {
-            "overview": "bullish_order_block",
+            "overview": "structure_overview",
             "state_a": "bullish_order_block",
             "state_b": "bearish_order_block",
             "components": "bullish_fvg",
