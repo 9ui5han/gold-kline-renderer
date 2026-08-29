@@ -6,7 +6,9 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 from app.photo.chart_renderer import render_chart
-from app.photo.page_renderer import _draw_header, _wrapped_lines, render_page
+from app.photo.page_renderer import (
+    _draw_english_header, _draw_header, _draw_summary, _wrapped_lines, render_page,
+)
 from app.photo.validator import validate_post
 
 
@@ -339,6 +341,112 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertTrue(result["topic_visual_present"])
             self.assertFalse(result["character_present"])
             self.assertGreater(_non_white_ratio(output), 0.055)
+
+    def test_english_cover_fits_valid_long_copy_without_layout_overflow(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "english-cover.png"
+            result = render_page({
+                "page_no": 1,
+                "page_role": "cover",
+                "title": "RSI Basics Illustrated",
+                "body": (
+                    "This set of slides only covers the basic way to read RSI. "
+                    "It is a common technical indicator used to observe the pace "
+                    "of price changes, but it cannot replace a complete judgment "
+                    "on its own."
+                ),
+                "key_message": "Learn RSI first, then learn how to read its range states",
+                "visual_type": "cover_illustration",
+                "visual_focus": "Teaching cover with a mobile chart interface and RSI text",
+                "required_elements": ["RSI title text", "Simplified price chart background"],
+                "risk_note": "Teaching illustration | Not real-time market data",
+            }, None, [], output, 1080, 1080, language="en")
+
+            self.assertTrue(output.is_file())
+            self.assertFalse(result["layout_overflow"])
+            self.assertFalse(result["layout_overlap"])
+            self.assertEqual(result["render_language"], "en")
+            self.assertEqual(result["typography_metrics"]["body_line_count"], 4)
+
+    def test_english_content_page_fits_valid_four_line_body(self):
+        with tempfile.TemporaryDirectory() as directory:
+            chart_path = Path(directory) / "chart.png"
+            render_chart({
+                "page_no": 2,
+                "visual_type": "indicator_panel",
+                "visual_focus": "RSI range overview",
+                "required_elements": ["RSI"],
+                "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "overview",
+                },
+            }, chart_path, {"topic_text": "RSI tutorial"}, language="en")
+            output = Path(directory) / "english-content.png"
+            result = render_page({
+                "page_no": 2,
+                "page_role": "definition",
+                "title": "What Is RSI",
+                "body": (
+                    "RSI is a technical indicator. In simple terms, it turns the "
+                    "changes in price strength over a period into a line, helping "
+                    "readers observe roughly which range the market is currently in."
+                ),
+                "key_message": "RSI turns price strength changes into a readable line",
+                "visual_type": "indicator_panel",
+                "visual_focus": "Upper price area and lower RSI panel",
+                "required_elements": ["Upper price area", "Lower RSI panel", "RSI line"],
+                "risk_note": "Teaching illustration | Not real-time market data",
+            }, {"asset_path": str(chart_path)}, [], output, 1080, 1080, language="en")
+
+            self.assertFalse(result["layout_overflow"])
+            self.assertFalse(result["layout_overlap"])
+            self.assertEqual(result["typography_metrics"]["body_line_count"], 4)
+
+    def test_english_content_page_reduces_body_font_before_overflow(self):
+        image = Image.new("RGB", (1080, 1080), "white")
+        draw = ImageDraw.Draw(image)
+        _, overflow, _, metrics = _draw_english_header(
+            draw,
+            {
+                "title": "Teaching Example: How to Read a Segment of RSI",
+                "body": (
+                    "This example does not judge whether price will rise or fall. "
+                    "It only demonstrates the reading order: first match the price "
+                    "area with the indicator area, then see which range the RSI line "
+                    "enters, and finally check whether it keeps staying there or leaves quickly."
+                ),
+                "visual_focus": "RSI teaching example",
+            },
+            1080,
+            cover=False,
+        )
+
+        self.assertFalse(overflow)
+        self.assertEqual(metrics["body_line_count"], 4)
+        self.assertEqual(metrics["body_size"], 26)
+
+    def test_english_summary_supports_four_schema_valid_points(self):
+        image = Image.new("RGB", (1080, 1080), "white")
+        draw = ImageDraw.Draw(image)
+        box, overflow = _draw_summary(
+            draw,
+            {
+                "required_elements": [
+                    "Point 1: read the range first",
+                    "Point 2: then read changes",
+                    "Point 3: combine with price",
+                    "Risk reminder",
+                ],
+            },
+            1080,
+            985,
+            language="en",
+        )
+
+        self.assertFalse(overflow)
+        self.assertIsNotNone(box)
 
     def test_content_chart_fills_the_page_from_left_edge_to_right_edge(self):
         with tempfile.TemporaryDirectory() as directory:

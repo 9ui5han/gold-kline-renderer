@@ -155,13 +155,23 @@ def _draw_english_header(
     body = str(page.get("body") or "").strip()
     focus = _cover_focus_label(page).upper()
     title_size = 58 if cover else 50
-    body_size = 31 if cover else 34
     title_font = _english_font(title_size, 800)
-    body_font = _english_font(body_size, 400)
     title_lines = _wrapped_word_lines(title, 920, title_font)
+    body_line_limit = 4
+    body_sizes = (31, 29, 27, 26) if cover else (34, 32, 30, 28, 26)
+    body_size = body_sizes[-1]
+    body_font = _english_font(body_size, 400)
     body_lines = _wrapped_word_lines(body, 900, body_font)
+    for candidate_size in body_sizes:
+        candidate_font = _english_font(candidate_size, 400)
+        candidate_lines = _wrapped_word_lines(body, 900, candidate_font)
+        if len(candidate_lines) <= body_line_limit:
+            body_size = candidate_size
+            body_font = candidate_font
+            body_lines = candidate_lines
+            break
     overflow = (
-        len(title_lines) > 2 or len(body_lines) > 3 or
+        len(title_lines) > 2 or len(body_lines) > body_line_limit or
         any(draw.textlength(line, font=title_font) > 920 for line in title_lines) or
         any(draw.textlength(line, font=body_font) > 900 for line in body_lines)
     )
@@ -186,7 +196,7 @@ def _draw_english_header(
             x += word_width + space
         y += title_size + 16
     y += 20
-    for line in body_lines[:3]:
+    for line in body_lines[:body_line_limit]:
         line_width = draw.textlength(line, font=body_font)
         position = ((width - line_width) / 2, y)
         draw.text(position, line, font=body_font, fill=INK)
@@ -209,6 +219,8 @@ def _draw_english_header(
         },
         "body_shadow": False,
         "body_line_width": 900,
+        "title_line_count": len(title_lines),
+        "body_line_count": len(body_lines),
         "layout_regions": {
             "header": header_box,
             "title": title_box,
@@ -595,27 +607,27 @@ def _draw_summary(
         ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
     )
     source_items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
-    if len(source_items) > 3:
+    if len(source_items) > 4:
         return None, True
-    items = (source_items + defaults)[:3]
+    items = (source_items + defaults)[:4]
     y = 390
     item_boxes: list[tuple[int, int, int, int]] = []
-    for index, item in enumerate(items[:3], start=1):
-        item_box = (100, y, width - 100, y + 120)
+    for index, item in enumerate(items[:4], start=1):
+        item_box = (100, y, width - 100, y + 105)
         draw.rounded_rectangle(item_box, radius=22, fill=PANEL, outline="#DCE5EB", width=2)
-        draw.ellipse((135, y + 27, 201, y + 93), fill=CYAN)
-        draw.text((158, y + 43), str(index), fill="white", font=_font(24, True))
+        draw.ellipse((135, y + 20, 201, y + 86), fill=CYAN)
+        draw.text((158, y + 36), str(index), fill="white", font=_font(24, True))
         item_font = _english_font(27, 600) if language == "en" else _font(29, True)
         lines = _wrapped_lines(item, width - 360, item_font)
         if len(lines) > 2:
             return None, True
-        line_y = y + (38 if len(lines) == 1 else 20)
+        line_y = y + (31 if len(lines) == 1 else 13)
         for line in lines:
             draw.text((235, line_y), line, fill=INK, font=item_font)
             line_y += 38
         item_boxes.append(item_box)
-        y += 145
-    return _merge_bounds(*item_boxes), y - 25 > max_bottom
+        y += 125
+    return _merge_bounds(*item_boxes), y - 20 > max_bottom
 
 
 def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
