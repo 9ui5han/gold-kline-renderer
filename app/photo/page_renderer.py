@@ -600,6 +600,7 @@ def _draw_summary(
     width: int,
     max_bottom: int,
     language: str = "zh-CN",
+    start_y: int = 390,
 ) -> tuple[tuple[int, int, int, int] | None, bool]:
     defaults = (
         ["Identify the indicator state", "Confirm with price", "Do not rely on one indicator"]
@@ -610,7 +611,7 @@ def _draw_summary(
     if len(source_items) > 4:
         return None, True
     items = (source_items + defaults)[:4]
-    y = 390
+    y = start_y
     item_boxes: list[tuple[int, int, int, int]] = []
     for index, item in enumerate(items[:4], start=1):
         item_box = (100, y, width - 100, y + 105)
@@ -713,7 +714,12 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
         if layout == "summary":
             summary_box, summary_overflow = _draw_summary(
-                draw, page, width, height - 95, language=language
+                draw,
+                page,
+                width,
+                height - 95,
+                language=language,
+                start_y=max(390, header_bottom + 28),
             )
             if summary_overflow:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")

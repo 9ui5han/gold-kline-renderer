@@ -448,6 +448,33 @@ class PhotoTemplateRendererTests(unittest.TestCase):
         self.assertFalse(overflow)
         self.assertIsNotNone(box)
 
+    def test_english_summary_starts_below_a_four_line_header(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "long-summary.png"
+            result = render_page({
+                "page_no": 7,
+                "page_role": "summary",
+                "title": "Reminders for Learning RSI Ranges",
+                "body": (
+                    "RSI is better used as an observation tool and should not be used alone "
+                    "as a basis for decisions. When reading range states, try to understand "
+                    "them together with state persistence, the shift process, and the use case."
+                ),
+                "key_message": "Treat RSI as an observation tool, not a standalone source of conclusions.",
+                "visual_type": "summary_card",
+                "visual_focus": "A summary card listing key learning points and risk reminders",
+                "required_elements": [
+                    "Key learning points",
+                    "State observation tips",
+                    "Risk reminder",
+                ],
+                "risk_note": "Teaching diagram | Does not represent live market conditions",
+            }, None, [], output, 1080, 1080, language="en")
+
+            self.assertEqual(result["layout_template"], "summary")
+            self.assertFalse(result["layout_overlap"])
+            self.assertEqual(result["typography_metrics"]["body_line_count"], 4)
+
     def test_content_chart_fills_the_page_from_left_edge_to_right_edge(self):
         with tempfile.TemporaryDirectory() as directory:
             chart_path = Path(directory) / "chart.png"
