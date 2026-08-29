@@ -141,6 +141,54 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                 self.assertGreaterEqual(body_heights[len(body_heights) // 2], 10.0)
                 self.assertTrue(scene["signal_contract_valid"])
 
+    def test_drawn_candle_body_has_a_global_minimum_visible_height(self):
+        candle = {"open": 100.0, "high": 100.02, "low": 99.98, "close": 100.001}
+        source_geometry = chart_renderer._candle_geometry(candle, lambda value: 1000 - value)
+        visible_geometry = chart_renderer._visible_candle_geometry(source_geometry)
+
+        self.assertLess(source_geometry["body_bottom"] - source_geometry["body_top"], 1.0)
+        self.assertGreaterEqual(
+            visible_geometry["body_bottom"] - visible_geometry["body_top"],
+            chart_renderer.MIN_CANDLE_BODY_HEIGHT,
+        )
+        self.assertEqual(visible_geometry["wick_top"], source_geometry["wick_top"])
+        self.assertEqual(visible_geometry["wick_bottom"], source_geometry["wick_bottom"])
+
+    def test_rsi_components_draws_price_candles_but_overview_does_not(self):
+        def page(lesson_goal):
+            return {
+                "page_no": 2,
+                "visual_type": "indicator_panel",
+                "visual_focus": "Indicator teaching chart",
+                "required_elements": ["price", "indicator", "range"],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": lesson_goal,
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(
+                chart_renderer,
+                "_draw_realistic_candles",
+                wraps=chart_renderer._draw_realistic_candles,
+            ) as draw_candles:
+                render_chart(page("overview"), Path(directory) / "overview.png")
+                self.assertEqual(draw_candles.call_count, 0)
+
+                render_chart(page("components"), Path(directory) / "components.png")
+                self.assertGreater(draw_candles.call_count, 0)
+
+        self.assertEqual(
+            chart_renderer._label("rsi_range_overview", "en"),
+            "RSI range overview",
+        )
+        self.assertEqual(
+            chart_renderer._label("rsi_range_components", "en"),
+            "RSI components",
+        )
+
     def test_rsi_uses_hidden_warmup_and_curve_reaches_both_plot_edges(self):
         for scenario_id in (
             "range_overview", "overbought_reversal", "oversold_recovery", "worked_example",

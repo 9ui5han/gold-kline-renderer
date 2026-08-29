@@ -23,11 +23,17 @@ LABEL_RIGHT_SAFETY = 12
 # Baseline was .60; .40 is exactly one-third narrower while leaving enough
 # horizontal breathing room for a denser, full-width candle sequence.
 CANDLE_BODY_WIDTH = 10.0
+MIN_CANDLE_BODY_HEIGHT = 10.0
 ANNOTATION_ALPHA = 150
 
 SEMANTIC_LABELS: dict[str, dict[str, str]] = {
     "zh-CN": {
         "rsi_range_overview": "RSI区间总览",
+        "rsi_range_components": "RSI组成部分",
+        "price_candles": "价格K线",
+        "rsi_panel": "RSI面板",
+        "rsi_curve": "RSI曲线",
+        "range_levels": "区间参考线",
         "rsi_overbought_reversal": "RSI超买转弱示例",
         "rsi_oversold_recovery": "RSI超卖回升示例",
         "rsi_worked_example": "完整示例：指标信号到价格确认",
@@ -99,6 +105,11 @@ SEMANTIC_LABELS: dict[str, dict[str, str]] = {
     },
     "en": {
         "rsi_range_overview": "RSI range overview",
+        "rsi_range_components": "RSI components",
+        "price_candles": "Price candles",
+        "rsi_panel": "RSI panel",
+        "rsi_curve": "RSI curve",
+        "range_levels": "Range levels",
         "rsi_overbought_reversal": "RSI overbought reversal",
         "rsi_oversold_recovery": "RSI oversold recovery",
         "rsi_worked_example": "Worked example: signal to price confirmation",
@@ -542,6 +553,20 @@ def _candle_geometry(candle: dict[str, float], y_for) -> dict[str, float]:
     }
 
 
+def _visible_candle_geometry(
+    geometry: dict[str, float],
+    minimum_height: float = MIN_CANDLE_BODY_HEIGHT,
+) -> dict[str, float]:
+    """Enlarge only the drawable body; source OHLC and wick geometry stay exact."""
+    visible = dict(geometry)
+    body_height = visible["body_bottom"] - visible["body_top"]
+    if body_height < minimum_height:
+        midpoint = (visible["body_top"] + visible["body_bottom"]) / 2
+        visible["body_top"] = midpoint - minimum_height / 2
+        visible["body_bottom"] = midpoint + minimum_height / 2
+    return visible
+
+
 def _display_candles(candles: list[dict[str, float]]) -> list[dict[str, float]]:
     """Return continuous, internally valid OHLC candles without visual exaggeration."""
     display: list[dict[str, float]] = []
@@ -566,7 +591,7 @@ def _draw_realistic_candles(draw: ImageDraw.ImageDraw, candles: list[dict[str, f
     for index, candle in enumerate(display_candles):
         x = x_for(index)
         color = CYAN if candle["close"] >= candle["open"] else "#5E6873"
-        geometry = _candle_geometry(candle, y_for)
+        geometry = _visible_candle_geometry(_candle_geometry(candle, y_for))
         draw.line((x, geometry["wick_top"], x, geometry["wick_bottom"]), fill=INK, width=1)
         draw.rectangle(
             (x - half_body, geometry["body_top"], x + half_body, geometry["body_bottom"]),
@@ -587,7 +612,52 @@ def _draw_rsi_teaching_scene(
 ) -> tuple[tuple[int, int], tuple[int, int]]:
     candles = scene["ohlc"]
     signal = scene["signals"][0]
-    if scene["scenario_id"] in {"range_overview", "range_components"}:
+    if scene["scenario_id"] == "range_components":
+        price_box = _plot_box(width, 48, 244)
+        panel_box = _plot_box(width, 304, height - 38)
+        _draw_tracked_text(
+            draw, layout, "title", (layout.label_left, 8),
+            _label("rsi_range_components", language),
+            _language_font(language, 24, True),
+        )
+        x_for, _ = _draw_realistic_candles(draw, candles, price_box)
+        for upper, lower, fill in (
+            (100, 70, RED_FILL), (70, 30, "#F7FAFC"), (30, 0, BLUE_FILL),
+        ):
+            y_top = panel_box[3] - upper / 100 * (panel_box[3] - panel_box[1])
+            y_bottom = panel_box[3] - lower / 100 * (panel_box[3] - panel_box[1])
+            draw.rectangle((panel_box[0], y_top, panel_box[2], y_bottom), fill=fill)
+        for value, color in ((70, RED), (50, GRID), (30, CYAN)):
+            y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+            draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
+            _draw_tracked_text(
+                draw, layout, "y_axis", (9, y - 9), str(value),
+                _language_font(language, 14, True),
+            )
+        points = [
+            (
+                x_for(index),
+                panel_box[3] - value / 100 * (panel_box[3] - panel_box[1]),
+            )
+            for index, value in enumerate(scene["indicator_values"])
+            if value is not None
+        ]
+        if points:
+            points[0] = (panel_box[0], points[0][1])
+            points[-1] = (panel_box[2] - 1, points[-1][1])
+        _draw_smooth_line(draw, points, fill="#138EB9", width=4)
+        component_font = _language_font(language, 14, True)
+        component_labels = (
+            ("1  " + _label("price_candles", language), price_box[0] + 8, price_box[1] + 8),
+            ("2  " + _label("rsi_panel", language), panel_box[0] + 8, panel_box[1] + 8),
+            ("3  " + _label("rsi_curve", language), panel_box[0] + 225, panel_box[1] + 48),
+            ("4  " + _label("range_levels", language), panel_box[2] - 170, panel_box[1] + 8),
+        )
+        for text, x, y in component_labels:
+            _draw_tracked_text(draw, layout, "legend", (x, y), text, component_font)
+        return (price_box[0], price_box[2]), (panel_box[0], panel_box[2])
+
+    if scene["scenario_id"] == "range_overview":
         panel_box = _plot_box(width, 58, height - 38)
         _draw_tracked_text(
             draw, layout, "title", (layout.label_left, 12),
