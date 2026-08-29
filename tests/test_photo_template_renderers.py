@@ -93,7 +93,7 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["typography_metrics"]["title_shadow"], {
                 "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
             })
-            self.assertFalse(result["typography_metrics"]["body_shadow"])
+            self.assertTrue(result["typography_metrics"]["body_shadow"])
             self.assertTrue(result["copy_contract_valid"])
             self.assertGreater(_non_white_ratio(output), 0.055)
 

@@ -154,6 +154,44 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         self.assertEqual(visible_geometry["wick_top"], source_geometry["wick_top"])
         self.assertEqual(visible_geometry["wick_bottom"], source_geometry["wick_bottom"])
 
+    def test_global_minimum_visible_candle_body_is_twenty_pixels(self):
+        self.assertEqual(chart_renderer.MIN_CANDLE_BODY_HEIGHT, 20.0)
+
+    def test_rsi_event_labels_use_ordered_lane_outside_chart_regions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = render_chart({
+                "page_no": 31,
+                "visual_type": "candlestick_demo",
+                "visual_focus": "RSI condition, trigger, then price confirmation",
+                "required_elements": [
+                    "Indicator condition", "Indicator trigger", "Price confirmation",
+                ],
+                "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "worked_example",
+                },
+            }, Path(directory) / "rsi-ordered-lane.png", language="en-US")
+
+        annotations = result["annotation_bounds"]
+        self.assertEqual(
+            [item["text"] for item in annotations],
+            ["Indicator condition", "Indicator trigger", "Price confirmation"],
+        )
+        self.assertEqual([item["event_order"] for item in annotations], [1, 2, 3])
+        self.assertTrue(all(item["lane"] == "event_labels" for item in annotations))
+        self.assertTrue(all(
+            item["bounds"][3] <= result["chart_layout"]["price_plot_bounds"][1]
+            for item in annotations
+        ))
+        self.assertEqual(result["chart_layout"]["annotation_plot_collisions"], [])
+        self.assertTrue(all(
+            item.get("protected_background")
+            for item in result["chart_layout"]["y_axis_label_bounds"]
+        ))
+        self.assertFalse(result["label_overlap"])
+
     def test_rsi_components_draws_price_candles_but_overview_does_not(self):
         def page(lesson_goal):
             return {

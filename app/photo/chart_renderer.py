@@ -23,7 +23,7 @@ LABEL_RIGHT_SAFETY = 12
 # Baseline was .60; .40 is exactly one-third narrower while leaving enough
 # horizontal breathing room for a denser, full-width candle sequence.
 CANDLE_BODY_WIDTH = 10.0
-MIN_CANDLE_BODY_HEIGHT = 10.0
+MIN_CANDLE_BODY_HEIGHT = 20.0
 ANNOTATION_ALPHA = 150
 
 SEMANTIC_LABELS: dict[str, dict[str, str]] = {
@@ -38,7 +38,7 @@ SEMANTIC_LABELS: dict[str, dict[str, str]] = {
         "rsi_oversold_recovery": "RSI超卖回升示例",
         "rsi_worked_example": "完整示例：指标信号到价格确认",
         "indicator_condition": "指标条件出现",
-        "rsi_trigger": "RSI触发",
+        "indicator_trigger": "指标触发",
         "price_confirmation": "价格确认",
         "rsi_caption": "RSI（14）— 与价格K线使用同一时间轴",
         "overbought_zone": "超买区",
@@ -114,7 +114,7 @@ SEMANTIC_LABELS: dict[str, dict[str, str]] = {
         "rsi_oversold_recovery": "RSI oversold recovery",
         "rsi_worked_example": "Worked example: signal to price confirmation",
         "indicator_condition": "Indicator condition",
-        "rsi_trigger": "RSI trigger",
+        "indicator_trigger": "Indicator trigger",
         "price_confirmation": "Price confirmation",
         "rsi_caption": "RSI (14) — shares the price time axis",
         "overbought_zone": "Overbought zone",
@@ -250,6 +250,7 @@ class _ChartLayout:
         self.bounds: dict[str, list[dict[str, Any]]] = {
             "title": [], "legend": [], "y_axis": [], "annotation": [], "caption": [],
         }
+        self.plot_regions: dict[str, tuple[int, int, int, int]] = {}
         self.rendered_labels: list[str] = []
 
     def add_label(
@@ -271,6 +272,9 @@ class _ChartLayout:
             for item in items
         ]
 
+    def add_plot_region(self, name: str, box: tuple[int, int, int, int]) -> None:
+        self.plot_regions[name] = box
+
     def overlap_pairs(self) -> list[dict[str, Any]]:
         flattened = [
             (kind, item)
@@ -289,6 +293,12 @@ class _ChartLayout:
 
     def metadata(self, price_edges: tuple[int, int], indicator_edges: tuple[int, int]) -> dict[str, Any]:
         collisions = self.overlap_pairs()
+        annotation_plot_collisions = [
+            {"annotation": item["text"], "plot_region": name}
+            for item in self.bounds["annotation"]
+            for name, box in self.plot_regions.items()
+            if _boxes_overlap(tuple(item["bounds"]), box)
+        ]
         return {
             "plot_left": self.plot_left,
             "plot_right": self.plot_right,
@@ -304,12 +314,15 @@ class _ChartLayout:
             "right_plot_border": False,
             "price_plot_edges": list(price_edges),
             "indicator_plot_edges": list(indicator_edges),
+            "price_plot_bounds": list(self.plot_regions.get("price", (price_edges[0], 0, price_edges[1], 0))),
+            "indicator_plot_bounds": list(self.plot_regions.get("indicator", (indicator_edges[0], 0, indicator_edges[1], 0))),
             "title_bounds": self.bounds["title"],
             "legend_bounds": self.bounds["legend"],
             "y_axis_label_bounds": self.bounds["y_axis"],
             "annotation_bounds": self.bounds["annotation"],
             "caption_bounds": self.bounds["caption"],
             "collisions": collisions,
+            "annotation_plot_collisions": annotation_plot_collisions,
             "label_overlap": bool(collisions),
         }
 
@@ -468,6 +481,58 @@ def _draw_annotation(
         background_alpha=ANNOTATION_ALPHA,
         font_size=chosen_font_size,
         horizontal_offset=round(box_center[0] - anchor_x, 2),
+    )
+
+
+def _draw_ordered_event_annotations(
+    draw: ImageDraw.ImageDraw,
+    layout: _ChartLayout,
+    events: list[tuple[int, str, str]],
+    language: str,
+) -> list[dict[str, Any]]:
+    """Place ordered event labels in a lane reserved above the price plot."""
+    rendered: list[dict[str, Any]] = []
+    lane_width = layout.label_right - layout.label_left
+    count = max(1, len(events))
+    for order, (event_index, label_key, color) in enumerate(events, start=1):
+        lane_x = layout.label_left + lane_width * (order - .5) / count
+        item = _draw_annotation(
+            draw,
+            layout,
+            lane_x,
+            43,
+            _label(label_key, language),
+            color,
+            language,
+        )
+        item.update({
+            "event_order": order,
+            "event_index": event_index,
+            "lane": "event_labels",
+        })
+        rendered.append(item)
+    return rendered
+
+
+def _draw_axis_value(
+    draw: ImageDraw.ImageDraw,
+    layout: _ChartLayout,
+    y: float,
+    value: int,
+    language: str,
+) -> None:
+    """Draw an axis number last on an opaque chip so chart lines cannot hide it."""
+    font = _language_font(language, 14, True)
+    text = str(value)
+    text_xy = (layout.label_left + 5, y - 9)
+    text_box = _text_box(draw, text_xy, text, font)
+    chip = (layout.label_left, text_box[1] - 3, text_box[2] + 5, text_box[3] + 3)
+    draw.rounded_rectangle(chip, radius=4, fill="white", outline="#E4E9EE", width=1)
+    draw.text(text_xy, text, fill=INK, font=font)
+    layout.add_label(
+        "y_axis", text, chip,
+        text_bounds=list(text_box),
+        protected_background=True,
     )
 
 
@@ -630,10 +695,6 @@ def _draw_rsi_teaching_scene(
         for value, color in ((70, RED), (50, GRID), (30, CYAN)):
             y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
             draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
-            _draw_tracked_text(
-                draw, layout, "y_axis", (9, y - 9), str(value),
-                _language_font(language, 14, True),
-            )
         points = [
             (
                 x_for(index),
@@ -646,6 +707,9 @@ def _draw_rsi_teaching_scene(
             points[0] = (panel_box[0], points[0][1])
             points[-1] = (panel_box[2] - 1, points[-1][1])
         _draw_smooth_line(draw, points, fill="#138EB9", width=4)
+        for value in (70, 50, 30):
+            y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+            _draw_axis_value(draw, layout, y, value, language)
         component_font = _language_font(language, 14, True)
         component_labels = (
             ("1  " + _label("price_candles", language), price_box[0] + 8, price_box[1] + 8),
@@ -675,10 +739,6 @@ def _draw_rsi_teaching_scene(
         for value, color in ((100, GRID), (70, RED), (50, GRID), (30, CYAN), (0, GRID)):
             y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
             draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
-            _draw_tracked_text(
-                draw, layout, "y_axis", (8, y - 9), str(value),
-                _language_font(language, 14, True),
-            )
         points = []
         for index, value in enumerate(scene["indicator_values"]):
             if value is not None:
@@ -689,6 +749,9 @@ def _draw_rsi_teaching_scene(
             points[0] = (panel_box[0], points[0][1])
             points[-1] = (panel_box[2] - 1, points[-1][1])
         _draw_smooth_line(draw, points, fill="#138EB9", width=5)
+        for value in (100, 70, 50, 30, 0):
+            y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+            _draw_axis_value(draw, layout, y, value, language)
         zone_font = _language_font(language, 14, True)
         _draw_tracked_text(
             draw, layout, "legend", (width - 175, panel_box[1] + 8),
@@ -699,8 +762,12 @@ def _draw_rsi_teaching_scene(
             _label("oversold_zone", language), zone_font,
         )
         return (panel_box[0], panel_box[2]), (panel_box[0], panel_box[2])
-    price_box = _plot_box(width, 42, 306)
+    # The top strip is a dedicated event-label lane. It keeps labels separate
+    # from candles, indicator curves, and axis values.
+    price_box = _plot_box(width, 84, 306)
     panel_box = _plot_box(width, 350, height - 32)
+    layout.add_plot_region("price", price_box)
+    layout.add_plot_region("indicator", panel_box)
     heading_key = {
         "range_overview": "rsi_range_overview",
         "range_components": "rsi_range_overview",
@@ -722,10 +789,6 @@ def _draw_rsi_teaching_scene(
     for value, color in ((70, RED), (50, GRID), (30, CYAN)):
         y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
         draw.line((panel_box[0], y, panel_box[2], y), fill=color, width=2)
-        _draw_tracked_text(
-            draw, layout, "y_axis", (9, y - 9), str(value),
-            _language_font(language, 14, True),
-        )
     points = []
     for index, value in enumerate(scene["indicator_values"]):
         if value is not None:
@@ -735,19 +798,28 @@ def _draw_rsi_teaching_scene(
         points[0] = (panel_box[0], points[0][1])
         points[-1] = (panel_box[2] - 1, points[-1][1])
     _draw_smooth_line(draw, points, fill="#138EB9", width=4)
+    for value in (70, 50, 30):
+        y = panel_box[3] - value / 100 * (panel_box[3] - panel_box[1])
+        _draw_axis_value(draw, layout, y, value, language)
     labels = [] if scene["scenario_id"] == "range_overview" else [
         (signal["indicator_candle_index"], "indicator_condition", "#E99AA5"),
-        (signal["cross_candle_index"], "rsi_trigger", CYAN),
+        (signal["cross_candle_index"], "indicator_trigger", CYAN),
         (signal["confirmation_candle_index"], "price_confirmation", "#D9A62E"),
     ]
-    for index, label_key, color in labels:
+    annotation_items = _draw_ordered_event_annotations(
+        draw, layout, labels, language,
+    )
+    for (index, _label_key, color), annotation in zip(labels, annotation_items):
         x = x_for(index)
         draw.line((x, price_box[1], x, panel_box[3]), fill=color, width=2)
         candle = candles[index]
         py = price_y(candle["high"])
         draw.ellipse((x - 5, py - 5, x + 5, py + 5), fill=color)
-        _draw_annotation(
-            draw, layout, x, 52, _label(label_key, language), color, language,
+        label_center_x = (annotation["bounds"][0] + annotation["bounds"][2]) / 2
+        draw.line(
+            (label_center_x, annotation["bounds"][3], x, price_box[1]),
+            fill=color,
+            width=2,
         )
     _draw_tracked_text(
         draw, layout, "caption", (layout.label_left, 320),
@@ -1045,6 +1117,8 @@ def render_chart(
     layout_metadata = layout.metadata(price_edges, indicator_edges)
     if layout_metadata["label_overlap"]:
         raise ValueError("CHART_LABEL_LAYOUT_OVERLAP")
+    if layout_metadata["annotation_plot_collisions"]:
+        raise ValueError("CHART_ANNOTATION_PLOT_OVERLAP")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(output_path, format="PNG")
     return {
@@ -1070,6 +1144,7 @@ def render_chart(
             for key in (
                 "title_bounds", "legend_bounds", "y_axis_label_bounds",
                 "annotation_bounds", "caption_bounds", "collisions",
+                "annotation_plot_collisions",
             )
         },
         "rendered_labels": layout.rendered_labels,

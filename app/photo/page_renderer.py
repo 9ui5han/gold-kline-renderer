@@ -199,8 +199,10 @@ def _draw_english_header(
     for line in body_lines[:body_line_limit]:
         line_width = draw.textlength(line, font=body_font)
         position = ((width - line_width) / 2, y)
-        draw.text(position, line, font=body_font, fill=INK)
-        body_bounds.append(_drawn_text_bounds(draw, position, line, body_font))
+        _draw_shadow_text(draw, position, line, body_font, INK, shadow=True)
+        body_bounds.append(
+            _drawn_text_bounds(draw, position, line, body_font, shadow_padding=8)
+        )
         y += body_size + 15
     title_box = _merge_bounds(*title_bounds)
     body_box = _merge_bounds(*body_bounds)
@@ -217,7 +219,9 @@ def _draw_english_header(
         "title_shadow": {
             "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
         },
-        "body_shadow": False,
+        "body_shadow": {
+            "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
+        },
         "body_line_width": 900,
         "title_line_count": len(title_lines),
         "body_line_count": len(body_lines),
