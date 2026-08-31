@@ -5,6 +5,7 @@ from fastapi import APIRouter, HTTPException
 
 from .asset_registry import AssetRegistry
 from .chart_renderer import render_chart
+from .market_chart_renderer import render_market_chart, validate_market_request
 from .models import (
     PhotoAssetRequest,
     PhotoChartRequest,
@@ -43,20 +44,40 @@ def build_photo_router(
 
     @router.post("/charts/render")
     def charts_render(payload: PhotoChartRequest) -> dict:
-        if payload.content_type != "knowledge":
+        if payload.content_type not in {"knowledge", "market"}:
             raise HTTPException(
                 status_code=422,
-                detail="PHOTO_MARKET_CHART_NOT_IMPLEMENTED",
+                detail="PHOTO_CHART_CONTENT_TYPE_UNSUPPORTED",
             )
         photo_job_id = f"photo-{uuid.uuid4().hex[:16]}"
         chart_dir = store.job_dir(photo_job_id) / "charts"
         assets = []
-        for page in payload.pages:
-            output = chart_dir / f"chart_{page.page_no:02d}.png"
+        if payload.content_type == "market":
+            # Preserve the historical rejection for legacy market requests;
+            # only carousel-route-v2 may enter the real-data renderer.
+            if payload.route_payload.get("schema_version") == "photo-route-v1":
+                raise HTTPException(
+                    status_code=422,
+                    detail="PHOTO_MARKET_CHART_NOT_IMPLEMENTED",
+                )
+            try:
+                analysis_pages = validate_market_request(
+                    [page.model_dump() for page in payload.pages],
+                    payload.route_payload,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            pages_to_render = analysis_pages
+            renderer = render_market_chart
+        else:
+            pages_to_render = [page.model_dump() for page in payload.pages]
+            renderer = render_chart
+        for page in pages_to_render:
+            output = chart_dir / f"chart_{int(page['page_no']):02d}.png"
             try:
                 assets.append(
-                    render_chart(
-                        page.model_dump(),
+                    renderer(
+                        page,
                         output,
                         payload.route_payload,
                         language=payload.language,
@@ -67,7 +88,7 @@ def build_photo_router(
         fingerprints: dict[str, int] = {}
         for asset in assets:
             value = str(asset.get("data_fingerprint") or "")
-            if value in fingerprints:
+            if payload.content_type == "knowledge" and value in fingerprints:
                 raise HTTPException(
                     status_code=422,
                     detail=(
