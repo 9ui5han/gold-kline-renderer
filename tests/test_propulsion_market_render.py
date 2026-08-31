@@ -43,10 +43,12 @@ def market_page(page_no=1):
              "price_low": 4003.0, "price_high": 4004.0, "label": "Propulsion"},
         ],
         "markers": [
-            {"kind": "liquidity_sweep", "index": 2, "price": 4001.0},
-            {"kind": "inducement", "index": 5, "price": 4004.0},
+            {"kind": "liquidity_sweep", "index": 2, "price": 4001.0, "reference_index": 0},
+            {"kind": "inducement", "index": 5, "price": 4004.0, "reference_index": 3},
         ],
-        "rule_version": "pb-project-v1",
+        "rule_version": "pb-edu-v1",
+        "chart_mode": "educational_reconstruction",
+        "historical_pattern_claim": False,
     }
 
 
@@ -62,6 +64,12 @@ class PropulsionMarketRenderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'MARKET_MARKER_PRICE_MISMATCH'):
                 render_market_chart(page,Path(tmp)/'bad.png',{'timeframe':'1h'},language='en')
 
+    def test_marker_reference_must_be_earlier_and_in_range(self):
+        page=market_page(); page['markers'][0]['reference_index']=-999
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError,'MARKET_MARKER_REFERENCE_INVALID'):
+                render_market_chart(page,Path(tmp)/'bad.png',{'timeframe':'1h'},language='en')
+
     def test_full_local_pipeline_and_reused_real_chart(self):
         from fastapi import FastAPI
         from fastapi.testclient import TestClient
@@ -74,7 +82,7 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         rules['rules'].append(dict(rules['rules'][0],page_no=3))
         a=analysis['main'](json.dumps(source),rules,'[]')
         self.assertTrue(a['tool2_valid'],a)
-        copy_pages=[dict(page_no=i,role='cover' if i==1 else 'promo' if i==4 else 'example',
+        copy_pages=[dict(page_no=i,role='cover' if i==1 else 'promo' if i==4 else 'definition',
             en_title='Example',en_body='',zh_translation='示例',text_position='top',
             analysis_page_no=None if i in (1,4) else i) for i in range(1,5)]
         plan=runpy.run_path(str(root/'03_plan.py'))['main'](a['trusted_analysis_json'],{'pages':copy_pages},'{}','{"model":"gpt-image-2"}')
@@ -86,9 +94,12 @@ class PropulsionMarketRenderTests(unittest.TestCase):
             client=TestClient(app)
             response=client.post('/v1/photo/charts/render',json=json.loads(build['chart_req_json']))
             self.assertEqual(response.status_code,200,response.text)
+            legacy=json.loads(build['chart_req_json']); legacy['content_type']='market'
+            legacy_response=client.post('/v1/photo/charts/render',json=legacy)
+            self.assertEqual(legacy_response.status_code,422,legacy_response.text)
             assets=response.json()['assets']
             self.assertEqual(len(assets),2)
-            self.assertEqual(assets[0]['data_fingerprint'],assets[1]['data_fingerprint'])
+            self.assertNotEqual(assets[0]['data_fingerprint'],assets[1]['data_fingerprint'])
             self.assertTrue(Path(assets[0]['asset_path']).is_file())
             # These cover URLs are local response fixtures, not real image API calls.
             image_body='{"data":[{"url":"https://example.invalid/test.png"}]}'
@@ -108,7 +119,7 @@ class PropulsionMarketRenderTests(unittest.TestCase):
                 {"market": "XAUUSD", "timeframe": "1h", "input_meta": {"data_timezone": "not_provided"}},
                 language="en",
             )
-            self.assertEqual(result["source_type"], "market")
+            self.assertEqual(result["source_type"], "educational_reconstruction")
             self.assertEqual(result["data_timezone"], "not_provided")
             self.assertEqual(result["rendered_candle_count"], 8)
             self.assertEqual(result["coordinate_map"]["zones"][0]["start_index"], 1)
@@ -164,8 +175,8 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         root = Path(os.environ["PROPULSION_V2_ROOT"])
         analysis = runpy.run_path(str(root / "02_analyze.py"))
         fixtures = runpy.run_path(str(root / "test_analysis.py"), run_name="fixture_module")
-        for bear, lesson in ((False, "example"), (True, "example"), (False, "checklist")):
-            source, rules = fixtures["inputs"](bear, lesson)
+        for direction, lesson in (("bullish", "definition"), ("bearish", "definition"), ("unspecified", "checklist")):
+            source, rules = fixtures["inputs"](direction, lesson)
             response = analysis["main"](json.dumps(source), rules, "[]")
             self.assertTrue(response["tool2_valid"], response)
             output = json.loads(response["trusted_analysis_json"])
@@ -185,6 +196,7 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         request_pages = [{"page_no": 1, "visual_type": "market_chart"}]
         payload = {
             "schema_version": "carousel-route-v2",
+            "analysis_mode": "educational_reconstruction",
             "market": "XAUUSD",
             "timeframe": "1h",
             "input_meta": {"timezone": "unknown"},

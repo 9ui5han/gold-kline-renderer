@@ -44,7 +44,7 @@ def build_photo_router(
 
     @router.post("/charts/render")
     def charts_render(payload: PhotoChartRequest) -> dict:
-        if payload.content_type not in {"knowledge", "market"}:
+        if payload.content_type not in {"knowledge", "market", "educational_reconstruction"}:
             raise HTTPException(
                 status_code=422,
                 detail="PHOTO_CHART_CONTENT_TYPE_UNSUPPORTED",
@@ -53,12 +53,15 @@ def build_photo_router(
         chart_dir = store.job_dir(photo_job_id) / "charts"
         assets = []
         if payload.content_type == "market":
-            # Preserve the historical rejection for legacy market requests;
-            # only carousel-route-v2 may enter the real-data renderer.
-            if payload.route_payload.get("schema_version") == "photo-route-v1":
+            raise HTTPException(
+                status_code=422,
+                detail="PHOTO_MARKET_CHART_NOT_IMPLEMENTED",
+            )
+        if payload.content_type == "educational_reconstruction":
+            if payload.route_payload.get("schema_version") != "carousel-route-v2":
                 raise HTTPException(
                     status_code=422,
-                    detail="PHOTO_MARKET_CHART_NOT_IMPLEMENTED",
+                    detail="EDUCATIONAL_ROUTE_VERSION_INVALID",
                 )
             try:
                 analysis_pages = validate_market_request(

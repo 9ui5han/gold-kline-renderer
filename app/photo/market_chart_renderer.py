@@ -17,7 +17,7 @@ from .chart_renderer import _english_font, _font
 WIDTH, HEIGHT = 1080, 720
 PLOT = (74, 126, 1014, 626)
 ROUTE_VERSION = "carousel-route-v2"
-RULE_VERSION = "pb-project-v1"
+RULE_VERSION = "pb-edu-v1"
 ZONE_KINDS = {"order_block", "propulsion_block"}
 MARKER_KINDS = {"liquidity_sweep", "inducement"}
 TIMEFRAME_RE = re.compile(r"^([1-9][0-9]*)(m|h|d|w)$")
@@ -67,6 +67,8 @@ def _timeframe_seconds(value: Any) -> float:
 
 
 def _validate_page(page: dict[str, Any], timeframe: Any) -> list[dict[str, Any]]:
+    if page.get("chart_mode") != "educational_reconstruction" or page.get("historical_pattern_claim") is not False:
+        _fail("EDUCATIONAL_RECONSTRUCTION_REQUIRED")
     if page.get('direction') not in {'bullish','bearish'}:
         _fail('MARKET_DIRECTION_INVALID')
     if str(page.get("rule_version") or "") != RULE_VERSION:
@@ -139,6 +141,9 @@ def _validate_page(page: dict[str, Any], timeframe: Any) -> list[dict[str, Any]]
             _fail("MARKET_MARKER_KIND_INVALID")
         if not _is_int(marker.get("index")) or not 0 <= marker["index"] < count:
             _fail("MARKET_MARKER_INDEX_OUT_OF_RANGE")
+        reference = marker.get("reference_index")
+        if not _is_int(reference) or not 0 <= reference < marker["index"]:
+            _fail("MARKET_MARKER_REFERENCE_INVALID")
         _number(marker.get("price"), "MARKET_MARKER_PRICE_INVALID", positive=True)
         expected = normalized[marker['index']]['h' if page['direction']=='bearish' else 'l']
         if abs(float(marker['price'])-expected)>1e-9:
@@ -155,6 +160,8 @@ def _validate_page(page: dict[str, Any], timeframe: Any) -> list[dict[str, Any]]
 def validate_market_request(request_pages: list[dict[str, Any]], route_payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(route_payload, dict) or route_payload.get("schema_version") != ROUTE_VERSION:
         _fail("MARKET_ROUTE_VERSION_INVALID")
+    if route_payload.get("analysis_mode") != "educational_reconstruction":
+        _fail("EDUCATIONAL_RECONSTRUCTION_REQUIRED")
     if not str(route_payload.get("market") or "").strip():
         _fail("MARKET_ROUTE_IDENTITY_INVALID")
     _timeframe_seconds(route_payload.get("timeframe"))
@@ -201,7 +208,7 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
         y = top + fraction * (bottom - top) / 4
         draw.line((left, y, right, y), fill="#D9E0E6", width=1)
     draw.text((left, 20), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill="#17212B", font=_font_for(language, 25, True))
-    _bounded_text(draw, (left, 55), f"{page.get('concept_term', '')} | confirmed bar timestamp: {page.get('as_of', '')}", _font_for(language, 14))
+    _bounded_text(draw, (left, 55), f"{page.get('concept_term', '')} | constructed educational sequence", _font_for(language, 14))
     coord_zones, coord_markers = [], []
     colors = {"order_block": (47, 161, 211, 82), "propulsion_block": (231, 154, 165, 92)}
     for ordinal, zone in enumerate(page["zones"]):
@@ -224,9 +231,9 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
     draw.rectangle(PLOT, outline="#8D98A4", width=2)
     for value, y in ((high - pad, y_for(high-pad)), (low + pad, y_for(low+pad))):
         _bounded_text(draw, (right + 7, y - 8), f"{value:.2f}", _font_for(language, 13))
-    caption = ('Checklist verified at confirmation under pb-project-v1.' if page.get('lesson_type')=='checklist'
-               else 'Basic historical pattern only; not a full-checklist validation.')
+    caption = ('Four checklist conditions constructed for teaching.' if page.get('lesson_type')=='checklist'
+               else 'Constructed educational example based on user-supplied price style.')
     _bounded_text(draw,(left,685),caption,_font_for(language,12))
     image.save(output_path, "PNG")
     fingerprint_input = {"market": route_payload.get("market"), "timeframe": route_payload.get("timeframe"), "visible_kline": page["visible_kline"], "zones": page["zones"], "markers": page["markers"], "as_of": page["as_of"], "rule_version": page["rule_version"]}
-    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "market", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}
+    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "educational_reconstruction", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}

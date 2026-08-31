@@ -3,7 +3,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-ContentType = Literal["knowledge", "market", "forecast"]
+ContentType = Literal["knowledge", "market", "educational_reconstruction", "forecast"]
 AllowedAssetSource = Literal[
     "project_owned",
     "lucide",
