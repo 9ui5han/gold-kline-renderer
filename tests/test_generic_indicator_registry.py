@@ -12,6 +12,27 @@ from app.photo.indicators.registry import (
 
 
 class GenericIndicatorRegistryTests(unittest.TestCase):
+    def test_generic_lesson_goals_resolve_to_distinct_scenarios(self):
+        lesson_goals = (
+            "overview", "state_a", "state_b",
+            "components", "setup", "worked_example",
+        )
+        for indicator_id in (
+            "rsi", "kdj", "macd", "bollinger",
+            "moving_average", "atr", "obv", "ict",
+        ):
+            with self.subTest(indicator_id=indicator_id):
+                config = self.registry.get_config(indicator_id)
+                scenarios = [
+                    self.registry.resolve_scenario(config, goal)
+                    for goal in lesson_goals
+                ]
+                self.assertEqual(
+                    len(scenarios),
+                    len(set(scenarios)),
+                    f"{indicator_id} has duplicate generic teaching scenarios: {scenarios}",
+                )
+
     def setUp(self):
         self.registry = IndicatorRegistry.default()
 

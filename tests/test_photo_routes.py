@@ -266,8 +266,8 @@ class PhotoRoutesTests(unittest.TestCase):
     def test_rsi_four_page_teaching_path_returns_distinct_assets(self):
         definitions = (
             (2, "indicator_panel", "overview"),
-            (3, "indicator_panel", "state_a"),
-            (4, "indicator_panel", "state_b"),
+            (3, "indicator_panel", "components"),
+            (4, "zone_diagram", "state_a"),
             (6, "candlestick_demo", "worked_example"),
         )
         pages = [{

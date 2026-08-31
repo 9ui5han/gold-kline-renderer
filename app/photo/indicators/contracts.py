@@ -6,8 +6,8 @@ from typing import Any
 
 
 ENGINE_VERSION = "indicator-teaching-v1"
-CANDLE_BODY_SCALE = 1.85
-TEACHING_CANDLE_COUNT = 96
+CANDLE_BODY_SCALE = 1.0
+TEACHING_CANDLE_COUNT = 68
 
 
 def demo_ohlcv(seed: int = 0, count: int = TEACHING_CANDLE_COUNT) -> list[dict[str, float]]:
@@ -29,14 +29,20 @@ def candles_from_closes(closes: list[float]) -> list[dict[str, float]]:
     candles = []
     previous = closes[0] - 0.35
     for index, close in enumerate(closes):
-        movement = close - previous
-        open_price = close - movement * CANDLE_BODY_SCALE
+        open_price = previous
         body_size = abs(close - open_price)
-        wick = max(0.24, min(0.58, body_size * 0.42 + (index % 3) * 0.04))
+        upper_wick = max(
+            0.12,
+            min(0.62, body_size * (0.22 + ((index * 7) % 11) * 0.035) + (index % 4) * 0.025),
+        )
+        lower_wick = max(
+            0.10,
+            min(0.58, body_size * (0.18 + ((index * 5 + 3) % 13) * 0.032) + (index % 5) * 0.018),
+        )
         candles.append({
             "open": round(open_price, 4),
-            "high": round(max(open_price, close) + wick, 4),
-            "low": round(min(open_price, close) - wick * 0.9, 4),
+            "high": round(max(open_price, close) + upper_wick, 4),
+            "low": round(min(open_price, close) - lower_wick, 4),
             "close": round(close, 4),
         })
         previous = close

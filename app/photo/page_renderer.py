@@ -1,10 +1,11 @@
+import math
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from .chart_renderer import CYAN, INK, RED, _english_font, _font
+from .chart_renderer import LABEL_LEFT, CYAN, INK, RED, _english_font, _font
 
 MUTED, PANEL = "#66717D", "#F3F7FA"
 CHINESE_DISCLAIMER = "教学示意图｜不代表实时行情"
@@ -154,13 +155,23 @@ def _draw_english_header(
     body = str(page.get("body") or "").strip()
     focus = _cover_focus_label(page).upper()
     title_size = 58 if cover else 50
-    body_size = 31 if cover else 34
     title_font = _english_font(title_size, 800)
-    body_font = _english_font(body_size, 400)
     title_lines = _wrapped_word_lines(title, 920, title_font)
+    body_line_limit = 4
+    body_sizes = (31, 29, 27, 26) if cover else (34, 32, 30, 28, 26)
+    body_size = body_sizes[-1]
+    body_font = _english_font(body_size, 400)
     body_lines = _wrapped_word_lines(body, 900, body_font)
+    for candidate_size in body_sizes:
+        candidate_font = _english_font(candidate_size, 400)
+        candidate_lines = _wrapped_word_lines(body, 900, candidate_font)
+        if len(candidate_lines) <= body_line_limit:
+            body_size = candidate_size
+            body_font = candidate_font
+            body_lines = candidate_lines
+            break
     overflow = (
-        len(title_lines) > 2 or len(body_lines) > 3 or
+        len(title_lines) > 2 or len(body_lines) > body_line_limit or
         any(draw.textlength(line, font=title_font) > 920 for line in title_lines) or
         any(draw.textlength(line, font=body_font) > 900 for line in body_lines)
     )
@@ -185,11 +196,13 @@ def _draw_english_header(
             x += word_width + space
         y += title_size + 16
     y += 20
-    for line in body_lines[:3]:
+    for line in body_lines[:body_line_limit]:
         line_width = draw.textlength(line, font=body_font)
         position = ((width - line_width) / 2, y)
-        draw.text(position, line, font=body_font, fill=INK)
-        body_bounds.append(_drawn_text_bounds(draw, position, line, body_font))
+        _draw_shadow_text(draw, position, line, body_font, INK, shadow=True)
+        body_bounds.append(
+            _drawn_text_bounds(draw, position, line, body_font, shadow_padding=8)
+        )
         y += body_size + 15
     title_box = _merge_bounds(*title_bounds)
     body_box = _merge_bounds(*body_bounds)
@@ -206,8 +219,12 @@ def _draw_english_header(
         "title_shadow": {
             "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
         },
-        "body_shadow": False,
+        "body_shadow": {
+            "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
+        },
         "body_line_width": 900,
+        "title_line_count": len(title_lines),
+        "body_line_count": len(body_lines),
         "layout_regions": {
             "header": header_box,
             "title": title_box,
@@ -448,26 +465,32 @@ def _draw_cover_topic_visual(
     language: str = "zh-CN",
 ) -> tuple[str, int, int, float, int, float]:
     topic = _topic_key(page)
-    left, right = 70, width - 70
+    left, right = 0, width
     chart_top, chart_bottom = 350, 735
     close_levels = [
-        .82, .78, .74, .77, .71, .68, .70, .64, .59, .62,
-        .56, .52, .49, .53, .47, .43, .46, .41, .38, .42,
-        .45, .40, .44, .48, .43, .39, .35, .38, .33, .29,
-        .32, .27, .24, .28, .23, .20, .24, .19, .16, .20,
-        .17, .13, .16,
+        .70, .74, .68, .72, .63, .66, .59, .55, .62, .50,
+        .54, .47, .60, .38, .34, .41, .44, .40, .47, .43,
+        .50, .36, .30, .22, .46, .34, .40, .38, .45, .36,
+        .42, .30, .34, .26, .32, .28, .38, .31, .35, .25,
+        .30, .20, .24, .17, .29, .22, .27, .16, .21, .12,
+        .18, .10, .14, .08,
+        .13, .09, .15, .11, .18, .14, .20, .16, .22, .17,
+        .24, .20, .26, .22,
     ]
     step = (right - left) / len(close_levels)
-    body_half = step * .45
+    body_half = 6.0
     candle_gap_ratio = 1 - body_half * 2 / step
     for index, close_ratio in enumerate(close_levels):
-        open_ratio = close_levels[index - 1] if index else .82
+        previous_close = close_levels[index - 1] if index else .82
+        open_ratio = previous_close
         up = close_ratio <= open_ratio
         x = left + (index + .5) * step
         open_y = int(chart_top + open_ratio * (chart_bottom - chart_top))
         close_y = int(chart_top + close_ratio * (chart_bottom - chart_top))
-        high = min(open_y, close_y) - 25
-        low = max(open_y, close_y) + 25
+        upper_wick = 7 + int(((math.sin(index * 1.91) + 1.0) / 2.0) * 24)
+        lower_wick = 6 + int(((math.cos(index * 1.17 + .63) + 1.0) / 2.0) * 27)
+        high = max(chart_top, min(open_y, close_y) - upper_wick)
+        low = min(chart_bottom, max(open_y, close_y) + lower_wick)
         draw.line((x, high, x, low), fill=INK, width=2)
         color = CYAN if up else "#6C7782"
         draw.rectangle(
@@ -494,7 +517,16 @@ def _draw_cover_topic_visual(
         draw.line((left, panel_top + .7 * (panel_bottom - panel_top), right, panel_top + .7 * (panel_bottom - panel_top)), fill=CYAN, width=2)
         indicator_font = _english_font(24, 600) if language == "en" else _font(24, True)
         indicator_label = "RSI (14)" if language == "en" else "RSI（14）"
-        draw.text((left, panel_top - 35), indicator_label, fill=INK, font=indicator_font)
+        indicator_x = LABEL_LEFT
+        indicator_box = draw.textbbox(
+            (indicator_x, panel_top - 35), indicator_label, font=indicator_font,
+        )
+        if indicator_box[0] < LABEL_LEFT:
+            indicator_x += LABEL_LEFT - indicator_box[0]
+        draw.text(
+            (indicator_x, panel_top - 35), indicator_label,
+            fill=INK, font=indicator_font,
+        )
         return (
             "indicator_rsi", len(close_levels), len(smooth_points),
             candle_gap_ratio, 8, body_half * 2,
@@ -558,9 +590,10 @@ def _paste_chart(
         return None
     chart_image = Image.open(path).convert("RGB")
     left, top, right, bottom = box
-    chart_image.thumbnail((right - left, bottom - top))
-    x = left + (right - left - chart_image.width) // 2
-    y = top + (bottom - top - chart_image.height) // 2
+    chart_image = chart_image.resize(
+        (right - left, bottom - top), Image.Resampling.LANCZOS,
+    )
+    x, y = left, top
     image.paste(chart_image, (x, y))
     return (x, y, x + chart_image.width, y + chart_image.height)
 
@@ -571,6 +604,7 @@ def _draw_summary(
     width: int,
     max_bottom: int,
     language: str = "zh-CN",
+    start_y: int = 390,
 ) -> tuple[tuple[int, int, int, int] | None, bool]:
     defaults = (
         ["Identify the indicator state", "Confirm with price", "Do not rely on one indicator"]
@@ -578,27 +612,27 @@ def _draw_summary(
         ["识别指标状态", "结合价格确认", "不要依赖单一指标"]
     )
     source_items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
-    if len(source_items) > 3:
+    if len(source_items) > 4:
         return None, True
-    items = (source_items + defaults)[:3]
-    y = 390
+    items = (source_items + defaults)[:4]
+    y = start_y
     item_boxes: list[tuple[int, int, int, int]] = []
-    for index, item in enumerate(items[:3], start=1):
-        item_box = (100, y, width - 100, y + 120)
+    for index, item in enumerate(items[:4], start=1):
+        item_box = (100, y, width - 100, y + 105)
         draw.rounded_rectangle(item_box, radius=22, fill=PANEL, outline="#DCE5EB", width=2)
-        draw.ellipse((135, y + 27, 201, y + 93), fill=CYAN)
-        draw.text((158, y + 43), str(index), fill="white", font=_font(24, True))
+        draw.ellipse((135, y + 20, 201, y + 86), fill=CYAN)
+        draw.text((158, y + 36), str(index), fill="white", font=_font(24, True))
         item_font = _english_font(27, 600) if language == "en" else _font(29, True)
         lines = _wrapped_lines(item, width - 360, item_font)
         if len(lines) > 2:
             return None, True
-        line_y = y + (38 if len(lines) == 1 else 20)
+        line_y = y + (31 if len(lines) == 1 else 13)
         for line in lines:
             draw.text((235, line_y), line, fill=INK, font=item_font)
             line_y += 38
         item_boxes.append(item_box)
-        y += 145
-    return _merge_bounds(*item_boxes), y - 25 > max_bottom
+        y += 125
+    return _merge_bounds(*item_boxes), y - 20 > max_bottom
 
 
 def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
@@ -684,7 +718,12 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
         if layout == "summary":
             summary_box, summary_overflow = _draw_summary(
-                draw, page, width, height - 95, language=language
+                draw,
+                page,
+                width,
+                height - 95,
+                language=language,
+                start_y=max(390, header_bottom + 28),
             )
             if summary_overflow:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
@@ -697,8 +736,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             if checklist_item_count == 0:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
         else:
-            top = max(390, header_bottom + 25)
-            chart_box = _paste_chart(image, chart, (72, top, width - 72, height - 105))
+            top = max(330, header_bottom + 25)
+            chart_box = _paste_chart(image, chart, (0, top, width, height - 105))
             chart_present = chart_box is not None
             if visual_type in CHART_REQUIRED_TYPES and not chart_present:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")

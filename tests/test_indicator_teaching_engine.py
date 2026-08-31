@@ -51,6 +51,19 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         for values in macd_values.values():
             self.assertEqual(len(values), len(scenes["macd"]["ohlc"]))
 
+    def test_every_indicator_uses_valid_display_ohlc_before_drawing(self):
+        for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
+            with self.subTest(indicator_id=indicator_id):
+                source = build_teaching_scene(indicator_id, "overview")["ohlc"]
+                display = chart_renderer._display_candles(source)
+
+                self.assertEqual(len(display), len(source))
+                self.assertTrue(ohlc_series_valid(display))
+                for index in range(1, len(display)):
+                    self.assertAlmostEqual(
+                        display[index]["open"], display[index - 1]["close"], places=4,
+                    )
+
     def test_validator_rejects_short_or_invalid_ohlc_before_signal_validation(self):
         for indicator_id in ("rsi", "kdj", "macd", "bollinger", "moving_average", "atr", "obv", "ict"):
             with self.subTest(indicator_id=indicator_id):
@@ -111,13 +124,154 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
         )
         self.assertIn("lesson_steps", scenarios["worked_example"]["layers"])
 
+    def test_rsi_teaching_candles_remain_readable_without_breaking_signal_shapes(self):
+        for scenario_id in ("overbought_reversal", "oversold_recovery", "worked_example"):
+            with self.subTest(scenario_id=scenario_id):
+                scene = build_teaching_scene("rsi", scenario_id)
+                candles = chart_renderer._display_candles(scene["ohlc"])
+                _, y_for = chart_renderer._chart_transform(candles, (0, 48, 900, 275))
+                body_heights = sorted(
+                    abs(
+                        chart_renderer._candle_geometry(candle, y_for)["body_bottom"]
+                        - chart_renderer._candle_geometry(candle, y_for)["body_top"]
+                    )
+                    for candle in candles
+                )
+
+                self.assertGreaterEqual(body_heights[len(body_heights) // 2], 10.0)
+                self.assertTrue(scene["signal_contract_valid"])
+
+    def test_drawn_candle_body_has_a_global_minimum_visible_height(self):
+        candle = {"open": 100.0, "high": 100.02, "low": 99.98, "close": 100.001}
+        source_geometry = chart_renderer._candle_geometry(candle, lambda value: 1000 - value)
+        visible_geometry = chart_renderer._visible_candle_geometry(source_geometry)
+
+        self.assertLess(source_geometry["body_bottom"] - source_geometry["body_top"], 1.0)
+        self.assertGreaterEqual(
+            visible_geometry["body_bottom"] - visible_geometry["body_top"],
+            chart_renderer.MIN_CANDLE_BODY_HEIGHT,
+        )
+        self.assertEqual(visible_geometry["wick_top"], source_geometry["wick_top"])
+        self.assertEqual(visible_geometry["wick_bottom"], source_geometry["wick_bottom"])
+
+    def test_global_minimum_visible_candle_body_is_twenty_pixels(self):
+        self.assertEqual(chart_renderer.MIN_CANDLE_BODY_HEIGHT, 20.0)
+
+    def test_rsi_event_labels_use_ordered_lane_outside_chart_regions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            result = render_chart({
+                "page_no": 31,
+                "visual_type": "candlestick_demo",
+                "visual_focus": "RSI condition, trigger, then price confirmation",
+                "required_elements": [
+                    "Indicator condition", "Indicator trigger", "Price confirmation",
+                ],
+                "annotations": [],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "worked_example",
+                },
+            }, Path(directory) / "rsi-ordered-lane.png", language="en-US")
+
+        annotations = result["annotation_bounds"]
+        self.assertEqual(
+            [item["text"] for item in annotations],
+            ["Indicator condition", "Indicator trigger", "Price confirmation"],
+        )
+        self.assertEqual([item["event_order"] for item in annotations], [1, 2, 3])
+        self.assertTrue(all(item["lane"] == "event_labels" for item in annotations))
+        self.assertTrue(all(
+            item["bounds"][3] <= result["chart_layout"]["price_plot_bounds"][1]
+            for item in annotations
+        ))
+        self.assertEqual(result["chart_layout"]["annotation_plot_collisions"], [])
+        self.assertTrue(all(
+            item.get("protected_background")
+            for item in result["chart_layout"]["y_axis_label_bounds"]
+        ))
+        self.assertFalse(result["label_overlap"])
+
+    def test_rsi_components_draws_price_candles_but_overview_does_not(self):
+        def page(lesson_goal):
+            return {
+                "page_no": 2,
+                "visual_type": "indicator_panel",
+                "visual_focus": "Indicator teaching chart",
+                "required_elements": ["price", "indicator", "range"],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": lesson_goal,
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(
+                chart_renderer,
+                "_draw_realistic_candles",
+                wraps=chart_renderer._draw_realistic_candles,
+            ) as draw_candles:
+                render_chart(page("overview"), Path(directory) / "overview.png")
+                self.assertEqual(draw_candles.call_count, 0)
+
+                render_chart(page("components"), Path(directory) / "components.png")
+                self.assertGreater(draw_candles.call_count, 0)
+
+        self.assertEqual(
+            chart_renderer._label("rsi_range_overview", "en"),
+            "RSI range overview",
+        )
+        self.assertEqual(
+            chart_renderer._label("rsi_range_components", "en"),
+            "RSI components",
+        )
+
+    def test_rsi_uses_hidden_warmup_and_curve_reaches_both_plot_edges(self):
+        for scenario_id in (
+            "range_overview", "overbought_reversal", "oversold_recovery", "worked_example",
+        ):
+            with self.subTest(scenario_id=scenario_id):
+                scene = build_teaching_scene("rsi", scenario_id)
+                self.assertEqual(len(scene["indicator_values"]), TEACHING_CANDLE_COUNT)
+                self.assertTrue(all(value is not None for value in scene["indicator_values"]))
+
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "rsi-edge-to-edge.png"
+            render_chart({
+                "page_no": 18,
+                "visual_type": "indicator_panel",
+                "visual_focus": "RSI range overview",
+                "required_elements": ["RSI", "30", "70"],
+                "teaching_spec": {
+                    "indicator_id": "rsi",
+                    "indicator_kind": "oscillator",
+                    "lesson_goal": "overview",
+                },
+            }, output)
+            image = Image.open(output).convert("RGB")
+            rsi_color = (19, 142, 185)
+            is_rsi_pixel = lambda pixel: sum(
+                abs(channel - expected) for channel, expected in zip(pixel, rsi_color)
+            ) <= 4
+            left_pixels = sum(
+                is_rsi_pixel(image.getpixel((0, y)))
+                for y in range(50, 525)
+            )
+            right_pixels = sum(
+                is_rsi_pixel(image.getpixel((899, y)))
+                for y in range(50, 525)
+            )
+            self.assertGreater(left_pixels, 0)
+            self.assertGreater(right_pixels, 0)
+
     def test_rsi_generic_lesson_goals_map_to_existing_scenarios(self):
         expected = {
             "overview": "range_overview",
             "state_a": "overbought_reversal",
             "state_b": "oversold_recovery",
-            "components": "range_overview",
-            "setup": "worked_example",
+            "components": "range_components",
+            "setup": "setup_example",
             "worked_example": "worked_example",
         }
 
@@ -153,7 +307,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
 
     def test_ict_generic_lesson_goals_map_to_existing_scenarios(self):
         expected = {
-            "overview": "bullish_order_block",
+            "overview": "structure_overview",
             "state_a": "bullish_order_block",
             "state_b": "bearish_order_block",
             "components": "bullish_fvg",
@@ -324,11 +478,18 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                     self.assertGreaterEqual(result["line_supersample"], 4)
                     self.assertFalse(result["left_plot_border"])
                     self.assertFalse(result["right_plot_border"])
-                    self.assertGreaterEqual(result["ohlc_count"], 96)
+                    self.assertEqual(result["ohlc_count"], 68)
                     self.assertFalse(result["label_overlap"])
                     layout = result["chart_layout"]
-                    self.assertGreater(layout["plot_right"], 880)
+                    self.assertEqual(layout["plot_edges"], [0, 900])
+                    self.assertEqual(layout["price_plot_edges"], [0, 900])
+                    self.assertEqual(layout["label_left"], 44)
+                    self.assertTrue(all(
+                        item["bounds"][0] >= layout["label_left"]
+                        for item in layout["title_bounds"]
+                    ))
                     self.assertGreater(layout["candle_pitch"], 0)
+                    self.assertAlmostEqual(layout["candle_body_width"], 10.0)
                     self.assertEqual(layout["price_plot_edges"], layout["indicator_plot_edges"])
 
     def test_rsi_signal_annotations_are_bilingual_centered_and_translucent(self):
@@ -362,20 +523,47 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                     if language.startswith("en"):
                         self.assertNotIn("K-line", " ".join(result["rendered_labels"]))
 
-    def test_candle_body_scale_enlarges_bodies_without_breaking_ohlc_direction(self):
+    def test_candle_open_equals_previous_close_and_preserves_valid_ohlc(self):
         closes = [100.0, 101.0, 99.5, 102.0]
         candles = candles_from_closes(closes)
 
-        self.assertEqual(CANDLE_BODY_SCALE, 1.85)
+        self.assertEqual(CANDLE_BODY_SCALE, 1.0)
         expected_previous = closes[0] - 0.35
         for index, candle in enumerate(candles):
             previous_close = expected_previous if index == 0 else closes[index - 1]
             movement = closes[index] - previous_close
-            body = abs(candle["close"] - candle["open"])
-            self.assertAlmostEqual(body, abs(movement) * CANDLE_BODY_SCALE, places=3)
+            self.assertAlmostEqual(candle["open"], previous_close, places=4)
             self.assertLessEqual(candle["low"], min(candle["open"], candle["close"]))
             self.assertGreaterEqual(candle["high"], max(candle["open"], candle["close"]))
             self.assertEqual(candle["close"] >= candle["open"], movement >= 0)
+
+    def test_drawn_candle_geometry_uses_the_exact_ohlc_values(self):
+        candle = {"open": 102.0, "high": 108.0, "low": 96.0, "close": 99.0}
+        geometry = chart_renderer._candle_geometry(candle, lambda value: -value)
+
+        self.assertEqual(geometry["body_top"], -102.0)
+        self.assertEqual(geometry["body_bottom"], -99.0)
+        self.assertEqual(geometry["wick_top"], -108.0)
+        self.assertEqual(geometry["wick_bottom"], -96.0)
+
+    def test_display_candles_preserve_source_open_close_and_valid_ohlc(self):
+        source_candles = candles_from_closes([
+            100.0, 100.2, 100.0, 100.8, 100.1, 101.4,
+            101.2, 102.3, 101.6, 101.9, 100.7, 101.0,
+        ])
+        candles = chart_renderer._display_candles(source_candles)
+        upper_wicks = [round(item["high"] - max(item["open"], item["close"]), 4) for item in candles]
+        lower_wicks = [round(min(item["open"], item["close"]) - item["low"], 4) for item in candles]
+
+        self.assertGreaterEqual(len(set(upper_wicks)), 7)
+        self.assertGreaterEqual(len(set(lower_wicks)), 7)
+        self.assertTrue(any(upper != lower for upper, lower in zip(upper_wicks, lower_wicks)))
+        for index, (source, display) in enumerate(zip(source_candles, candles)):
+            self.assertEqual(display, source)
+            if index:
+                self.assertAlmostEqual(display["open"], candles[index - 1]["close"], places=4)
+            self.assertLessEqual(display["low"], min(display["open"], display["close"]))
+            self.assertGreaterEqual(display["high"], max(display["open"], display["close"]))
 
     def test_all_supported_indicator_scenarios_render_in_chinese_and_english(self):
         indicator_kinds = {
@@ -423,6 +611,19 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                             labels = " | ".join(result["rendered_labels"])
                             self.assertFalse(result["label_overlap"])
                             self.assertTrue(labels)
+                            layout = result["chart_layout"]
+                            for bounds_key in (
+                                "title_bounds", "legend_bounds",
+                                "y_axis_label_bounds", "annotation_bounds",
+                                "caption_bounds",
+                            ):
+                                for item in layout[bounds_key]:
+                                    self.assertGreaterEqual(
+                                        item["bounds"][0], layout["label_left"],
+                                    )
+                                    self.assertLessEqual(
+                                        item["bounds"][2], layout["label_right"],
+                                    )
                             if language == "zh-CN":
                                 lowered = labels.lower()
                                 self.assertIn(expected_chinese_names[indicator_id], labels)
@@ -494,9 +695,7 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
             self.assertGreaterEqual(interpolate.call_count, 4)
             self.assertGreaterEqual(resize_filters.count(Image.Resampling.LANCZOS), 4)
 
-    def test_full_width_pitch_preserves_prior_density_with_documented_tolerance(self):
-        prior_pitch = (900 - 58 - 28) / 96
-        allowed_pitch_change_px = 0.35
+    def test_content_candles_match_cover_width_and_reduced_gap(self):
         with tempfile.TemporaryDirectory() as directory:
             result = render_chart({
                 "page_no": 44,
@@ -511,11 +710,15 @@ class IndicatorTeachingEngineTests(unittest.TestCase):
                 },
             }, Path(directory) / "pitch.png")
 
-        self.assertLessEqual(
-            abs(result["chart_layout"]["candle_pitch"] - prior_pitch),
-            allowed_pitch_change_px,
-        )
-        self.assertEqual(chart_renderer._plot_box(900, 48, 275), (44, 48, 888, 275))
+        self.assertEqual(result["ohlc_count"], 68)
+        self.assertAlmostEqual(result["chart_layout"]["candle_body_width"], 10.0)
+        self.assertAlmostEqual(result["chart_layout"]["candle_body_width"] * 1080 / 900, 12.0)
+        rendered_gap = (
+            result["chart_layout"]["candle_pitch"]
+            - result["chart_layout"]["candle_body_width"]
+        ) * 1080 / 900
+        self.assertAlmostEqual(rendered_gap, 1080 / 68 - 12, places=3)
+        self.assertEqual(chart_renderer._plot_box(900, 48, 275), (0, 48, 900, 275))
 
 
 if __name__ == "__main__":
