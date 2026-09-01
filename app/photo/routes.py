@@ -31,6 +31,7 @@ def materialize_template_assets(
     job_dir: Path,
     expected_page_nos: set[int],
     require_templates: bool = False,
+    required_template_page_nos: set[int] | None = None,
 ) -> dict:
     source = visual_assets.get("assets") if isinstance(visual_assets, dict) else None
     if not isinstance(source, list):
@@ -75,7 +76,14 @@ def materialize_template_assets(
         item.pop("asset_url", None)
         item["asset_path"] = str(target)
         output.append(item)
-    if (require_templates or template_pages) and template_pages != expected_page_nos:
+    required_pages = (
+        set(required_template_page_nos)
+        if required_template_page_nos is not None
+        else expected_page_nos if require_templates else template_pages
+    )
+    if not required_pages.issubset(expected_page_nos):
+        raise ValueError("TEMPLATE_PAGE_SET_INVALID")
+    if template_pages != required_pages:
         raise ValueError("TEMPLATE_PAGE_SET_INVALID")
     return {"schema_version": "photo-assets-v1", "assets": output}
 
@@ -196,12 +204,22 @@ def build_photo_router(
         if len(chart_page_nos) != len(set(chart_page_nos)):
             raise HTTPException(status_code=422, detail="PHOTO_CHART_PAGE_DUPLICATE")
         chart_by_page = {int(item.get("page_no") or 0): item for item in chart_items}
+        required_template_page_nos = (
+            {
+                int(page.get("page_no") or 0)
+                for page in plan_pages
+                if isinstance(page, dict)
+                and str(page.get("page_role") or "") in {"cover", "promo"}
+            }
+            if payload.photo_plan.get("style_contract")
+            else set()
+        )
         try:
             local_visual_assets = materialize_template_assets(
                 payload.visual_assets,
                 job_dir,
                 expected_page_nos,
-                require_templates=bool(payload.photo_plan.get("style_contract")),
+                required_template_page_nos=required_template_page_nos,
             )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc

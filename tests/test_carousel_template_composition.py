@@ -79,6 +79,44 @@ class CarouselTemplateCompositionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(ValueError, "TEMPLATE_HOST_INVALID"):
             materialize_template_assets(assets, Path(tmp), {2})
 
+    def test_only_cover_and_promo_templates_are_required_for_seven_page_carousel(self):
+        buffer = BytesIO()
+        Image.new("RGB", (32, 32), "#FFFFFF").save(buffer, "PNG")
+
+        class Response:
+            status_code = 200
+            headers = {"content-type": "image/png"}
+            content = buffer.getvalue()
+
+        assets = {
+            "schema_version": "photo-assets-v1",
+            "assets": [
+                {
+                    "page_no": page_no,
+                    "asset_type": "background",
+                    "asset_key": asset_key,
+                    "purpose": "page_template",
+                    "asset_url": f"https://file.302.ai/{asset_key}.png",
+                }
+                for page_no, asset_key in ((1, "cover_template"), (7, "promo_template"))
+            ],
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "app.photo.routes.httpx.get", return_value=Response()
+        ):
+            result = materialize_template_assets(
+                assets,
+                Path(tmp),
+                set(range(1, 8)),
+                required_template_page_nos={1, 7},
+            )
+
+        self.assertEqual(
+            {item["page_no"] for item in result["assets"]},
+            {1, 7},
+        )
+
     def test_template_set_missing_url_and_redirect_fail_closed(self):
         assets = {"schema_version": "photo-assets-v1", "assets": [{
             "page_no": 2, "asset_type": "background", "asset_key": "content_template",
