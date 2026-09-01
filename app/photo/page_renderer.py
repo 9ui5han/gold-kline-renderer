@@ -159,8 +159,12 @@ def _draw_english_header(
     title_size = 58 if cover else 50
     title_font = _english_font(title_size, 800)
     title_lines = _wrapped_word_lines(title, 920, title_font)
-    body_line_limit = 4
-    body_sizes = (31, 29, 27, 26) if cover else (34, 32, 30, 28, 26)
+    body_line_limit = 4 if cover else 6
+    body_sizes = (
+        (31, 29, 27, 26)
+        if cover else
+        (34, 32, 30, 28, 26, 24, 22, 20)
+    )
     body_size = body_sizes[-1]
     body_font = _english_font(body_size, 400)
     body_lines = _wrapped_word_lines(body, 900, body_font)

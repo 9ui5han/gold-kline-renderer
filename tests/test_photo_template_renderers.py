@@ -97,6 +97,28 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertTrue(result["copy_contract_valid"])
             self.assertGreater(_non_white_ratio(output), 0.055)
 
+    def test_english_content_header_adapts_to_long_teaching_copy(self):
+        image = Image.new("RGB", (1024, 1024), "white")
+        draw = ImageDraw.Draw(image)
+        _, overflow, _, metrics = _draw_english_header(
+            draw,
+            {
+                "title": "What Is a Propulsion Block?",
+                "body": (
+                    "A propulsion block is a candlestick that trades into an order "
+                    "block, after which price moves away from that area. It helps show "
+                    "how price can react after revisiting an order block in this "
+                    "educational example. Review the candle, the order block, and the "
+                    "subsequent move as separate observations before drawing a conclusion. "
+                    "This is not a historical market record."
+                ),
+            },
+            1024,
+            cover=False,
+        )
+        self.assertFalse(overflow)
+        self.assertLessEqual(metrics["body_line_count"], 6)
+
     def test_chinese_header_uses_compact_readable_typography(self):
         image = Image.new("RGB", (1080, 1080), "white")
         draw = ImageDraw.Draw(image)
