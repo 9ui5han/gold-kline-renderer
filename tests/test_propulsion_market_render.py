@@ -85,7 +85,8 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         copy_pages=[dict(page_no=i,role='cover' if i==1 else 'promo' if i==4 else 'definition',
             en_title='Example',en_body='',zh_translation='示例',text_position='top',
             analysis_page_no=None if i in (1,4) else i) for i in range(1,5)]
-        plan=runpy.run_path(str(root/'03_plan.py'))['main'](a['trusted_analysis_json'],{'pages':copy_pages},'{}','{"model":"gpt-image-2"}')
+        promo = json.dumps({"platform": "telegram", "account": "TikTok111", "cta": "JOIN FREE"})
+        plan=runpy.run_path(str(root/'03_plan.py'))['main'](a['trusted_analysis_json'],{'pages':copy_pages},promo,'{"model":"gpt-image-2"}')
         self.assertTrue(plan['tool3_valid'],plan)
         build=runpy.run_path(str(root/'04_build.py'))['main'](plan['trusted_page_plan_json'])
         self.assertTrue(build['build_valid'],build)
@@ -128,6 +129,32 @@ class PropulsionMarketRenderTests(unittest.TestCase):
             with Image.open(result["asset_path"]) as image:
                 self.assertEqual(image.mode, "RGB")
                 self.assertEqual(image.size, (1080, 720))
+
+    def test_editorial_style_metadata_does_not_change_data_fingerprint(self):
+        page = market_page()
+        expected = {
+            "market": "XAUUSD",
+            "timeframe": "1h",
+            "visible_kline": page["visible_kline"],
+            "zones": page["zones"],
+            "markers": page["markers"],
+            "as_of": page["as_of"],
+            "rule_version": page["rule_version"],
+        }
+        expected_fingerprint = __import__("hashlib").sha256(
+            json.dumps(expected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render_market_chart(
+                page,
+                Path(tmp) / "styled.png",
+                {"market": "XAUUSD", "timeframe": "1h", "input_meta": {}},
+                language="en",
+            )
+        self.assertEqual(result["data_fingerprint"], expected_fingerprint)
+        self.assertEqual(result["style_version"], "trading-editorial-v1")
+        self.assertEqual(result["palette"]["bullish"], "#D8A12E")
+        self.assertEqual(result["palette"]["bearish"], "#123B5D")
 
     def test_rejects_out_of_bounds_and_unclosed_page_data(self):
         page = market_page()

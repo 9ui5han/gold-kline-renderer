@@ -16,6 +16,16 @@ from .chart_renderer import _english_font, _font
 
 WIDTH, HEIGHT = 1080, 720
 PLOT = (74, 126, 1014, 626)
+STYLE_VERSION = "trading-editorial-v1"
+PALETTE = {
+    "background": "#F7F8FA",
+    "ink": "#123B5D",
+    "bullish": "#D8A12E",
+    "bearish": "#123B5D",
+    "grid": "#DCE4EA",
+    "order_block": "#2E7896",
+    "propulsion_block": "#D8A12E",
+}
 ROUTE_VERSION = "carousel-route-v2"
 RULE_VERSION = "pb-edu-v1"
 ZONE_KINDS = {"order_block", "propulsion_block"}
@@ -196,7 +206,7 @@ def _bounded_text(draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str,
 def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: dict[str, Any], *, language: str) -> dict[str, Any]:
     candles = _validate_page(page, route_payload.get("timeframe"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", (WIDTH, HEIGHT), "#F7FAFC")
+    image = Image.new("RGB", (WIDTH, HEIGHT), PALETTE["background"])
     draw = ImageDraw.Draw(image, "RGBA")
     left, top, right, bottom = PLOT
     prices = [item[key] for item in candles for key in ("h", "l")] + [float(z[key]) for z in page["zones"] for key in ("price_low", "price_high")] + [float(m["price"]) for m in page["markers"]]
@@ -206,11 +216,11 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
     y_for = lambda value: bottom - (value - low) / (high - low) * (bottom - top)
     for fraction in range(5):
         y = top + fraction * (bottom - top) / 4
-        draw.line((left, y, right, y), fill="#D9E0E6", width=1)
-    draw.text((left, 20), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill="#17212B", font=_font_for(language, 25, True))
+        draw.line((left, y, right, y), fill=PALETTE["grid"], width=1)
+    draw.text((left, 20), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill=PALETTE["ink"], font=_font_for(language, 25, True))
     _bounded_text(draw, (left, 55), f"{page.get('concept_term', '')} | constructed educational sequence", _font_for(language, 14))
     coord_zones, coord_markers = [], []
-    colors = {"order_block": (47, 161, 211, 82), "propulsion_block": (231, 154, 165, 92)}
+    colors = {"order_block": (46, 120, 150, 70), "propulsion_block": (216, 161, 46, 78)}
     for ordinal, zone in enumerate(page["zones"]):
         x1 = max(left, x_for(zone["start_index"]) - pitch / 2); x2 = min(right, x_for(zone["end_index"]) + pitch / 2)
         y1, y2 = sorted((y_for(float(zone["price_high"])), y_for(float(zone["price_low"]))))
@@ -220,9 +230,11 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
         _bounded_text(draw, (left + ordinal * 420 + 18, 84), label[:45], _font_for(language, 14))
         coord_zones.append({"kind": zone["kind"], "start_index": zone["start_index"], "end_index": zone["end_index"], "pixel_box": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]})
     for index, candle in enumerate(candles):
-        x = x_for(index); color = "#1594B8" if candle["c"] >= candle["o"] else "#D96B78"
+        x = x_for(index); color = PALETTE["bullish"] if candle["c"] >= candle["o"] else PALETTE["bearish"]
         draw.line((x, y_for(candle["h"]), x, y_for(candle["l"])), fill=color, width=3)
-        y1, y2 = sorted((y_for(candle["o"]), y_for(candle["c"]))); draw.rectangle((x - pitch * .28, y1, x + pitch * .28, max(y2, y1 + 2)), fill=color)
+        y1, y2 = sorted((y_for(candle["o"]), y_for(candle["c"])))
+        body = (x - pitch * .28, y1, x + pitch * .28, max(y2, y1 + 3))
+        draw.rounded_rectangle(body, radius=max(1, int(pitch * .06)), fill=color)
     for ordinal, marker in enumerate(page["markers"]):
         x, y = x_for(marker["index"]), y_for(float(marker["price"])); color = "#D96B78" if marker["kind"] == "liquidity_sweep" else "#D9A62E"
         draw.ellipse((x - 8, y - 8, x + 8, y + 8), fill=color, outline="#17212B", width=1)
@@ -236,4 +248,4 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
     _bounded_text(draw,(left,685),caption,_font_for(language,12))
     image.save(output_path, "PNG")
     fingerprint_input = {"market": route_payload.get("market"), "timeframe": route_payload.get("timeframe"), "visible_kline": page["visible_kline"], "zones": page["zones"], "markers": page["markers"], "as_of": page["as_of"], "rule_version": page["rule_version"]}
-    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "educational_reconstruction", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}
+    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "educational_reconstruction", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "style_version": STYLE_VERSION, "palette": dict(PALETTE), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}

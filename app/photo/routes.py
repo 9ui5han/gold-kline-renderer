@@ -1,7 +1,11 @@
 import uuid
+from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, HTTPException
+from PIL import Image
 
 from .asset_registry import AssetRegistry
 from .chart_renderer import render_chart
@@ -16,6 +20,46 @@ from .models import (
 from .page_renderer import render_page
 from .store import PhotoStore
 from .validator import validate_post
+
+
+def materialize_template_assets(visual_assets: dict, job_dir: Path) -> dict:
+    source = visual_assets.get("assets") if isinstance(visual_assets, dict) else None
+    if not isinstance(source, list):
+        raise ValueError("VISUAL_ASSETS_INVALID")
+    output = []
+    template_dir = job_dir / "templates"
+    for raw in source:
+        if not isinstance(raw, dict):
+            raise ValueError("VISUAL_ASSET_INVALID")
+        item = dict(raw)
+        url = str(item.get("asset_url") or "").strip()
+        if item.get("purpose") != "page_template" or not url:
+            output.append(item)
+            continue
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.hostname != "file.302.ai":
+            raise ValueError("TEMPLATE_HOST_INVALID")
+        try:
+            response = httpx.get(url, follow_redirects=True, timeout=20.0)
+        except httpx.HTTPError as exc:
+            raise ValueError("TEMPLATE_DOWNLOAD_FAILED") from exc
+        if response.status_code != 200 or not str(response.headers.get("content-type") or "").lower().startswith("image/"):
+            raise ValueError("TEMPLATE_DOWNLOAD_FAILED")
+        if not response.content or len(response.content) > 12 * 1024 * 1024:
+            raise ValueError("TEMPLATE_FILE_INVALID")
+        try:
+            with Image.open(BytesIO(response.content)) as candidate:
+                candidate.verify()
+        except (OSError, ValueError) as exc:
+            raise ValueError("TEMPLATE_FILE_INVALID") from exc
+        template_dir.mkdir(parents=True, exist_ok=True)
+        target = template_dir / f"page_{int(item.get('page_no') or 0):02d}.png"
+        with Image.open(BytesIO(response.content)) as candidate:
+            candidate.convert("RGB").save(target, "PNG")
+        item.pop("asset_url", None)
+        item["asset_path"] = str(target)
+        output.append(item)
+    return {"schema_version": "photo-assets-v1", "assets": output}
 
 
 def build_photo_router(
@@ -126,8 +170,12 @@ def build_photo_router(
             for item in payload.chart_assets.get("assets", [])
             if isinstance(item, dict)
         }
+        try:
+            local_visual_assets = materialize_template_assets(payload.visual_assets, job_dir)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         visual_by_page: dict[int, list[dict]] = {}
-        for item in payload.visual_assets.get("assets", []):
+        for item in local_visual_assets.get("assets", []):
             if isinstance(item, dict):
                 visual_by_page.setdefault(int(item.get("page_no") or 0), []).append(item)
         images = []

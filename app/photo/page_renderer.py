@@ -251,6 +251,27 @@ def _paste_character(image: Image.Image, visual_assets: list[dict[str, Any]],
     return (x, y, x + character.width, y + character.height)
 
 
+def _paste_template_background(
+    image: Image.Image,
+    visual_assets: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    item = next((
+        asset for asset in visual_assets
+        if asset.get("asset_type") == "background"
+        and asset.get("purpose") == "page_template"
+    ), None)
+    path = Path(str((item or {}).get("asset_path") or ""))
+    if not path.is_file():
+        return False, ""
+    try:
+        template = Image.open(path).convert("RGB")
+    except (OSError, ValueError):
+        return False, ""
+    template = template.resize(image.size, Image.Resampling.LANCZOS)
+    image.paste(template, (0, 0))
+    return True, str(item.get("asset_key") or "")
+
+
 def _paste_cover_illustration(
     image: Image.Image,
     visual_assets: list[dict[str, Any]],
@@ -640,6 +661,9 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
                 width: int, height: int, compact: bool = False,
                 language: str = "zh-CN") -> dict[str, Any]:
     image = Image.new("RGB", (width, height), "white")
+    template_background_present, template_asset_key = _paste_template_background(
+        image, visual_assets,
+    )
     draw = ImageDraw.Draw(image)
     role = str(page.get("page_role") or "")
     visual_type = str(page.get("visual_type") or "")
@@ -686,20 +710,24 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             header_bottom, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
         if overflow:
             raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
-        (
-            cover_visual_type,
-            cover_candle_count,
-            cover_indicator_point_count,
-            cover_candle_gap_ratio,
-            cover_indicator_supersample,
-            cover_candle_body_width,
-        ) = _draw_cover_topic_visual(draw, page, width, height, language=language)
-        topic_visual_present = True
-        cover_asset_box, cover_asset_key, cover_asset_opacity = _paste_cover_illustration(
-            image, visual_assets, (600, 285, width - 55, 700)
-        )
-        character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
-        character_present = character_box is not None
+        if template_background_present:
+            cover_visual_type = "template_background"
+            topic_visual_present = True
+        else:
+            (
+                cover_visual_type,
+                cover_candle_count,
+                cover_indicator_point_count,
+                cover_candle_gap_ratio,
+                cover_indicator_supersample,
+                cover_candle_body_width,
+            ) = _draw_cover_topic_visual(draw, page, width, height, language=language)
+            topic_visual_present = True
+            cover_asset_box, cover_asset_key, cover_asset_opacity = _paste_cover_illustration(
+                image, visual_assets, (600, 285, width - 55, 700)
+            )
+            character_box = _paste_character(image, visual_assets, (320, 350, width - 320, height - 90))
+            character_present = character_box is not None
         swipe_text = "SWIPE  →" if language == "en" else "滑动查看  →"
         swipe_font = _english_font(20, 600) if language == "en" else _font(20, True)
         swipe_position = (width - 205, height - 65)
@@ -795,6 +823,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     image.save(output_path, format="PNG")
     return {
         "page_no": int(page["page_no"]), "path": str(output_path), "width": width, "height": height,
+        "template_background_present": template_background_present,
+        "template_asset_key": template_asset_key,
         "layout_overflow": overflow, "risk_note_present": True, "chart_present": chart_present,
         "character_present": character_present, "layout_template": layout, "render_language": language,
         "rendered_disclaimer": disclaimer, "disclaimer_count": 1,
