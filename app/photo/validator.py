@@ -97,6 +97,9 @@ def validate_post(
             if item.get("checklist_present") is not True or int(item.get("checklist_item_count") or 0) < 1:
                 bad_pages.add(page_no)
                 errors.append({"page_no": page_no, "code": "CHECKLIST_CONTENT_MISSING", "message": "检查清单主体为空"})
+            if item.get("chart_present") is not True:
+                bad_pages.add(page_no)
+                errors.append({"page_no": page_no, "code": "CHECKLIST_CHART_MISSING", "message": "检查清单缺少教学K线图"})
         if page.get("visual_type") in {"indicator_panel", "zone_diagram", "candlestick_demo", "market_chart"}:
             evidence = item.get("teaching_evidence") if isinstance(item.get("teaching_evidence"), dict) else {}
             if (

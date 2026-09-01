@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.photo.market_chart_renderer import render_market_chart
+from app.photo.market_chart_renderer import PLOT, render_market_chart
 
 
 def _bars(count=8):
@@ -53,6 +53,19 @@ def market_page(page_no=1):
 
 
 class PropulsionMarketRenderTests(unittest.TestCase):
+    def test_market_chart_uses_a_taller_plot_without_changing_source_coordinates(self):
+        self.assertEqual(PLOT, (74, 95, 1014, 650))
+        page = market_page()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render_market_chart(
+                page,
+                Path(tmp) / "market.png",
+                {"market": "XAUUSD", "timeframe": "1h", "input_meta": {}},
+                language="en",
+            )
+        self.assertEqual(result["coordinate_map"]["zones"][0]["start_index"], 1)
+        self.assertEqual(result["coordinate_map"]["markers"][1]["index"], 5)
+
     def test_invalid_direction_and_marker_price_rejected(self):
         for field,value,error in [('direction','unknown','MARKET_DIRECTION_INVALID')]:
             page=market_page(); page[field]=value

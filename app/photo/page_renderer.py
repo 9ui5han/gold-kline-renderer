@@ -583,28 +583,50 @@ def _draw_checklist_page(
     items = [str(item).strip() for item in page.get("required_elements") or [] if str(item).strip()]
     if not items:
         return 0, None, False
-    if len(items) > 4:
+    # Short teaching checklists read like the reference bullet list; only longer lists split.
+    columns = 1 if len(items) <= 4 else 2
+    rows = math.ceil(len(items) / columns)
+    gap = 10
+    available_height = max_bottom - top
+    row_height = min(92, (available_height - gap * (rows - 1)) // rows)
+    if row_height < 38:
         return 0, None, True
-    y = max(top, 360)
-    item_font = _english_font(27, 400) if language == "en" else _font(28)
+    side_margin = 62
+    column_gap = 18
+    column_width = (width - side_margin * 2 - column_gap * (columns - 1)) // columns
     item_boxes: list[tuple[int, int, int, int]] = []
-    for index, item in enumerate(items[:4], start=1):
-        item_box = (105, y, width - 105, y + 105)
-        draw.rounded_rectangle(item_box, radius=20, fill=PANEL, outline="#DCE5EB", width=2)
-        draw.ellipse((135, y + 24, 191, y + 80), fill=CYAN)
+    for index, item in enumerate(items, start=1):
+        row, column = divmod(index - 1, columns)
+        x = side_margin + column * (column_width + column_gap)
+        y = top + row * (row_height + gap)
+        item_box = (x, y, x + column_width, y + row_height)
+        draw.rounded_rectangle(item_box, radius=min(16, row_height // 4), fill="#F8FAFC", outline="#DCE5EB", width=1)
+        badge_size = max(24, min(40, row_height - 18))
+        badge_x, badge_y = x + 16, y + (row_height - badge_size) // 2
+        draw.ellipse((badge_x, badge_y, badge_x + badge_size, badge_y + badge_size), fill=CYAN)
         number = str(index)
-        number_width = draw.textbbox((0, 0), number, font=_font(21, True))[2]
-        draw.text((163 - number_width // 2, y + 38), number, fill="white", font=_font(21, True))
-        lines = _wrapped_lines(item, width - 360, item_font)
-        if len(lines) > 2:
+        number_font = _english_font(max(13, badge_size // 2), 700) if language == "en" else _font(max(13, badge_size // 2), True)
+        number_width = draw.textbbox((0, 0), number, font=number_font)[2]
+        number_height = draw.textbbox((0, 0), number, font=number_font)[3]
+        draw.text((badge_x + (badge_size - number_width) // 2, badge_y + (badge_size - number_height) // 2), number, fill="white", font=number_font)
+        text_width = column_width - badge_size - 54
+        selected_font = None
+        lines: list[str] = []
+        for size in range(min(26, max(14, row_height // 2)), 12, -1):
+            candidate_font = _english_font(size, 400) if language == "en" else _font(size)
+            candidate_lines = _wrapped_lines(item, text_width, candidate_font)
+            if len(candidate_lines) <= 2:
+                selected_font, lines = candidate_font, candidate_lines
+                break
+        if selected_font is None:
             return 0, None, True
-        line_y = y + (31 if len(lines) == 1 else 15)
+        line_height = max(16, int(row_height * .34))
+        line_y = y + (row_height - line_height * len(lines)) // 2
         for line in lines:
-            draw.text((225, line_y), line, fill=INK, font=item_font)
-            line_y += 38
+            draw.text((badge_x + badge_size + 18, line_y), line, fill=INK, font=selected_font)
+            line_y += line_height
         item_boxes.append(item_box)
-        y += 125
-    return len(items), _merge_bounds(*item_boxes), y - 20 > max_bottom
+    return len(items), _merge_bounds(*item_boxes), False
 
 
 def _paste_chart(
@@ -783,16 +805,24 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
             if summary_overflow:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
         elif layout == "checklist":
+            checklist_top = max(header_bottom + 22, 280)
+            # Reserve a readable lower chart even for the contract maximum of 12 checks.
+            checklist_max_bottom = height - 95 - 360 - 18
             checklist_item_count, checklist_box, checklist_overflow = _draw_checklist_page(
-                draw, page, width, header_bottom + 28, height - 95, language=language
+                draw, page, width, checklist_top, checklist_max_bottom, language=language
             )
             if checklist_overflow:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_LAYOUT_OVERFLOW")
             if checklist_item_count == 0:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHECKLIST_REQUIRED")
+            chart_top = checklist_box[3] + 18 if checklist_box is not None else checklist_max_bottom + 18
+            chart_box = _paste_chart(image, chart, (0, chart_top, width, height - 95))
+            chart_present = chart_box is not None
+            if not chart_present:
+                raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")
         else:
-            top = max(330, header_bottom + 25)
-            chart_box = _paste_chart(image, chart, (0, top, width, height - 105))
+            top = max(300, header_bottom + 20)
+            chart_box = _paste_chart(image, chart, (0, top, width, height - 95))
             chart_present = chart_box is not None
             if visual_type in CHART_REQUIRED_TYPES and not chart_present:
                 raise ValueError(f"PAGE_{int(page.get('page_no') or 0)}_CHART_REQUIRED")

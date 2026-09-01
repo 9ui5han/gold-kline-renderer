@@ -15,10 +15,11 @@ from PIL import Image, ImageDraw
 from .chart_renderer import _english_font, _font
 
 WIDTH, HEIGHT = 1080, 720
-PLOT = (74, 126, 1014, 626)
+# Keep the deterministic chart data intact while giving candles and zones more canvas.
+PLOT = (74, 95, 1014, 650)
 STYLE_VERSION = "trading-editorial-v1"
 PALETTE = {
-    "background": "#F7F8FA",
+    "background": "#FFFFFF",
     "ink": "#123B5D",
     "bullish": "#D8A12E",
     "bearish": "#123B5D",
@@ -217,8 +218,7 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
     for fraction in range(5):
         y = top + fraction * (bottom - top) / 4
         draw.line((left, y, right, y), fill=PALETTE["grid"], width=1)
-    draw.text((left, 20), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill=PALETTE["ink"], font=_font_for(language, 25, True))
-    _bounded_text(draw, (left, 55), f"{page.get('concept_term', '')} | constructed educational sequence", _font_for(language, 14))
+    draw.text((left, 18), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill=PALETTE["ink"], font=_font_for(language, 23, True))
     coord_zones, coord_markers = [], []
     colors = {"order_block": (46, 120, 150, 70), "propulsion_block": (216, 161, 46, 78)}
     for ordinal, zone in enumerate(page["zones"]):
@@ -226,8 +226,8 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
         y1, y2 = sorted((y_for(float(zone["price_high"])), y_for(float(zone["price_low"]))))
         color = colors[zone["kind"]]; draw.rectangle((x1, y1, x2, y2), fill=color, outline=color[:3] + (220,), width=2)
         label = f"{zone['kind'].replace('_', ' ')}: {zone['label']}"
-        draw.rectangle((left + ordinal * 420, 88, left + ordinal * 420 + 12, 100), fill=color[:3] + (220,))
-        _bounded_text(draw, (left + ordinal * 420 + 18, 84), label[:45], _font_for(language, 14))
+        draw.rectangle((left + ordinal * 420, 57, left + ordinal * 420 + 14, 71), fill=color[:3] + (220,))
+        _bounded_text(draw, (left + ordinal * 420 + 21, 50), label[:45], _font_for(language, 17))
         coord_zones.append({"kind": zone["kind"], "start_index": zone["start_index"], "end_index": zone["end_index"], "pixel_box": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]})
     for index, candle in enumerate(candles):
         x = x_for(index); color = PALETTE["bullish"] if candle["c"] >= candle["o"] else PALETTE["bearish"]
@@ -239,13 +239,10 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
         x, y = x_for(marker["index"]), y_for(float(marker["price"])); color = "#D96B78" if marker["kind"] == "liquidity_sweep" else "#D9A62E"
         draw.ellipse((x - 8, y - 8, x + 8, y + 8), fill=color, outline="#17212B", width=1)
         coord_markers.append({"kind": marker["kind"], "index": marker["index"], "price": marker["price"], "pixel": [round(x, 2), round(y, 2)]})
-        _bounded_text(draw, (left+ordinal*370, 650), marker['kind'].replace('_',' ')+f" (bar {marker['index']})", _font_for(language,14))
+        _bounded_text(draw, (left + ordinal * 420, 674), marker['kind'].replace('_', ' ') + f" (bar {marker['index']})", _font_for(language, 16))
     draw.rectangle(PLOT, outline="#8D98A4", width=2)
     for value, y in ((high - pad, y_for(high-pad)), (low + pad, y_for(low+pad))):
-        _bounded_text(draw, (right + 7, y - 8), f"{value:.2f}", _font_for(language, 13))
-    caption = ('Four checklist conditions constructed for teaching.' if page.get('lesson_type')=='checklist'
-               else 'Constructed educational example based on user-supplied price style.')
-    _bounded_text(draw,(left,685),caption,_font_for(language,12))
+        _bounded_text(draw, (right + 7, y - 9), f"{value:.2f}", _font_for(language, 16))
     image.save(output_path, "PNG")
     fingerprint_input = {"market": route_payload.get("market"), "timeframe": route_payload.get("timeframe"), "visible_kline": page["visible_kline"], "zones": page["zones"], "markers": page["markers"], "as_of": page["as_of"], "rule_version": page["rule_version"]}
     return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "educational_reconstruction", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "style_version": STYLE_VERSION, "palette": dict(PALETTE), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}

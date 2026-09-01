@@ -259,6 +259,29 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertIn("COVER_TOPIC_VISUAL_MISSING", codes)
             self.assertIn("CHECKLIST_CONTENT_MISSING", codes)
 
+    def test_qa_rejects_checklist_without_its_chart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "page.png"
+            Image.new("RGB", (1080, 1080), "white").save(path)
+            plan = {"content_type": "knowledge", "pages": [{
+                "page_no": 5, "page_role": "checklist", "visual_type": "checklist",
+            }]}
+            rendered = {"photo_job_id": "photo-test", "images": [{
+                "page_no": 5, "path": str(path), "width": 1080, "height": 1080,
+                "layout_overflow": False, "risk_note_present": True,
+                "render_language": "zh-CN", "layout_overlap": False,
+                "chinese_contract_valid": True, "copy_contract_valid": True,
+                "disclaimer_count": 1, "checklist_present": True,
+                "checklist_item_count": 3, "chart_present": False,
+                "layout_regions": {
+                    "header": [1, 1, 2, 2], "title": [1, 1, 2, 2],
+                    "body": [1, 1, 2, 2], "footer": [1, 3, 2, 4],
+                    "checklist": [1, 5, 2, 6],
+                },
+            }]}
+            qa = validate_post(plan, rendered)
+            self.assertIn("CHECKLIST_CHART_MISSING", {item["code"] for item in qa["errors"]})
+
     def test_rsi_visual_types_render_distinct_chinese_charts(self):
         cases = [
             ("indicator_panel", "RSI scale from 0 to 100", ["RSI", "30", "70"]),
@@ -544,9 +567,11 @@ class PhotoTemplateRendererTests(unittest.TestCase):
             self.assertEqual(result["cover_asset_key"], "undraw_predictive_analytics")
             self.assertEqual(result["cover_asset_opacity"], 1.0)
 
-    def test_checklist_renders_from_page_elements_without_chart_asset(self):
+    def test_checklist_renders_items_and_chart_without_overlap(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "checklist.png"
+            chart = Path(directory) / "chart.png"
+            Image.new("RGB", (1080, 720), "#D8A12E").save(chart)
             result = render_page({
                 "page_no": 5,
                 "page_role": "checklist",
@@ -557,11 +582,38 @@ class PhotoTemplateRendererTests(unittest.TestCase):
                 "visual_focus": "RSI使用步骤",
                 "required_elements": ["确认30与70区间", "观察价格是否确认", "检查趋势背景"],
                 "risk_note": "教学示意图｜不代表实时行情",
-            }, None, [], output, 1080, 1080)
+            }, {"asset_path": str(chart)}, [], output, 1080, 1080)
             self.assertTrue(result["checklist_present"])
             self.assertEqual(result["checklist_item_count"], 3)
-            self.assertFalse(result["chart_present"])
+            self.assertTrue(result["chart_present"])
+            self.assertIn("checklist", result["layout_regions"])
+            self.assertIn("chart", result["layout_regions"])
+            self.assertFalse(result["layout_overlap"])
             self.assertGreater(_non_white_ratio(output), 0.035)
+
+    def test_checklist_rejects_missing_chart_and_does_not_truncate_long_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            page = {
+                "page_no": 5,
+                "page_role": "checklist",
+                "title": "使用RSI的检查清单",
+                "body": "按顺序完成以下检查。",
+                "key_message": "不要只看一个数值。",
+                "visual_type": "checklist",
+                "visual_focus": "RSI使用步骤",
+                "required_elements": [f"检查项目{index}" for index in range(1, 13)],
+                "risk_note": "教学示意图｜不代表实时行情",
+            }
+            with self.assertRaisesRegex(ValueError, "PAGE_5_CHART_REQUIRED"):
+                render_page(page, None, [], Path(directory) / "missing-chart.png", 1080, 1080)
+
+            chart = Path(directory) / "chart.png"
+            Image.new("RGB", (1080, 720), "#D8A12E").save(chart)
+            result = render_page(page, {"asset_path": str(chart)}, [], Path(directory) / "long-list.png", 1080, 1080)
+            self.assertEqual(result["checklist_item_count"], 12)
+            self.assertTrue(result["checklist_present"])
+            self.assertTrue(result["chart_present"])
+            self.assertFalse(result["layout_overlap"])
 
     def test_required_financial_chart_missing_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
