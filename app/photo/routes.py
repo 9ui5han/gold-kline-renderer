@@ -1,4 +1,5 @@
 import uuid
+import logging
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlparse
@@ -20,6 +21,9 @@ from .models import (
 from .page_renderer import render_page
 from .store import PhotoStore
 from .validator import validate_post
+
+
+logger = logging.getLogger("gold_kline_renderer.photo")
 
 
 def materialize_template_assets(
@@ -224,6 +228,27 @@ def build_photo_router(
                     style_contract=payload.photo_plan.get("style_contract"),
                 )
             except ValueError as exc:
+                if str(exc) == f"PAGE_{page_no}_LAYOUT_OVERFLOW":
+                    chart_asset = chart_by_page.get(page_no) or {}
+                    template_keys = [
+                        str(asset.get("asset_key") or "")
+                        for asset in visual_by_page.get(page_no, [])
+                        if asset.get("purpose") == "page_template"
+                    ]
+                    logger.warning(
+                        "PHOTO_RENDER_LAYOUT_OVERFLOW page_no=%s canvas=%sx%s "
+                        "role=%s visual_type=%s title_chars=%s body_chars=%s "
+                        "chart_path_exists=%s template_keys=%s",
+                        page_no,
+                        payload.canvas.width,
+                        payload.canvas.height,
+                        page.get("page_role", ""),
+                        page.get("visual_type", ""),
+                        len(str(page.get("title") or "")),
+                        len(str(page.get("body") or "")),
+                        Path(str(chart_asset.get("asset_path") or "")).is_file(),
+                        template_keys,
+                    )
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
             item["url"] = f"{base_url}/photo-media/{photo_job_id}/{output.name}"
             images.append(item)

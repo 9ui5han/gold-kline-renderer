@@ -1,6 +1,7 @@
 import copy
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -346,6 +347,36 @@ class PhotoRoutesTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
         self.assertIn("PAGE_1_CHINESE_COPY_REQUIRED", response.text)
+
+    def test_render_logs_page_context_when_layout_overflows(self):
+        plan = photo_plan()
+        plan["pages"][0]["page_no"] = 2
+        with patch(
+            "app.photo.routes.render_page",
+            side_effect=ValueError("PAGE_2_LAYOUT_OVERFLOW"),
+        ):
+            with self.assertLogs("gold_kline_renderer.photo", level="WARNING") as logs:
+                response = self.api.post(
+                    "/v1/photo/render-post",
+                    headers=AUTH,
+                    json={
+                        "schema_version": "photo-render-request-v1",
+                        "photo_request_id": "photo-layout-log-001",
+                        "canvas": {"width": 1024, "height": 1024},
+                        "theme_id": "finance_education_v1",
+                        "platform": "tiktok",
+                        "photo_plan": plan,
+                        "chart_assets": {"schema_version": "photo-chart-v1", "assets": []},
+                        "visual_assets": {"schema_version": "photo-assets-v1", "assets": []},
+                    },
+                )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("PAGE_2_LAYOUT_OVERFLOW", response.text)
+        self.assertTrue(any(
+            "PHOTO_RENDER_LAYOUT_OVERFLOW page_no=2" in line
+            for line in logs.output
+        ))
 
     def test_render_post_accepts_optional_english_release_mode(self):
         plan = photo_plan()
