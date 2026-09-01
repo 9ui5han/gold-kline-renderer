@@ -57,12 +57,15 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         self.assertEqual(PLOT, (74, 95, 1014, 650))
         page = market_page()
         with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "market.png"
             result = render_market_chart(
                 page,
-                Path(tmp) / "market.png",
+                output,
                 {"market": "XAUUSD", "timeframe": "1h", "input_meta": {}},
                 language="en",
             )
+            self.assertEqual(Image.open(output).convert("RGB").getpixel((0, 0)), (255, 255, 255))
+        self.assertEqual(result["palette"]["background"], "#F7F8FA")
         self.assertEqual(result["coordinate_map"]["zones"][0]["start_index"], 1)
         self.assertEqual(result["coordinate_map"]["markers"][1]["index"], 5)
 

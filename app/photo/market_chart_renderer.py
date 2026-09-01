@@ -19,7 +19,7 @@ WIDTH, HEIGHT = 1080, 720
 PLOT = (74, 95, 1014, 650)
 STYLE_VERSION = "trading-editorial-v1"
 PALETTE = {
-    "background": "#FFFFFF",
+    "background": "#F7F8FA",
     "ink": "#123B5D",
     "bullish": "#D8A12E",
     "bearish": "#123B5D",
@@ -27,6 +27,7 @@ PALETTE = {
     "order_block": "#2E7896",
     "propulsion_block": "#D8A12E",
 }
+CANVAS_BACKGROUND = "#FFFFFF"
 ROUTE_VERSION = "carousel-route-v2"
 RULE_VERSION = "pb-edu-v1"
 ZONE_KINDS = {"order_block", "propulsion_block"}
@@ -207,7 +208,7 @@ def _bounded_text(draw: ImageDraw.ImageDraw, xy: tuple[float, float], text: str,
 def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: dict[str, Any], *, language: str) -> dict[str, Any]:
     candles = _validate_page(page, route_payload.get("timeframe"))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image = Image.new("RGB", (WIDTH, HEIGHT), PALETTE["background"])
+    image = Image.new("RGB", (WIDTH, HEIGHT), CANVAS_BACKGROUND)
     draw = ImageDraw.Draw(image, "RGBA")
     left, top, right, bottom = PLOT
     prices = [item[key] for item in candles for key in ("h", "l")] + [float(z[key]) for z in page["zones"] for key in ("price_low", "price_high")] + [float(m["price"]) for m in page["markers"]]
