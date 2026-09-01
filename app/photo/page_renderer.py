@@ -150,6 +150,8 @@ def _draw_english_header(
     page: dict[str, Any],
     width: int,
     cover: bool,
+    primary_color: str = INK,
+    accent_color: str = CYAN,
 ) -> tuple[int, bool, tuple[int, int, int, int], dict[str, Any]]:
     title = str(page.get("title") or "").strip().upper()
     body = str(page.get("body") or "").strip()
@@ -188,7 +190,7 @@ def _draw_english_header(
         for word, word_width in zip(words, widths):
             clean = "".join(character for character in word if character.isalnum()).upper()
             highlighted = clean == focus or (focus and focus in clean)
-            color = CYAN if highlighted else INK
+            color = accent_color if highlighted else primary_color
             if highlighted:
                 highlight_words.append(word)
             _draw_shadow_text(draw, (x, y), word, title_font, color, shadow=True)
@@ -199,7 +201,7 @@ def _draw_english_header(
     for line in body_lines[:body_line_limit]:
         line_width = draw.textlength(line, font=body_font)
         position = ((width - line_width) / 2, y)
-        _draw_shadow_text(draw, position, line, body_font, INK, shadow=True)
+        _draw_shadow_text(draw, position, line, body_font, primary_color, shadow=True)
         body_bounds.append(
             _drawn_text_bounds(draw, position, line, body_font, shadow_padding=8)
         )
@@ -223,6 +225,8 @@ def _draw_english_header(
             "offset_x": 2, "offset_y": 3, "blur": 3, "opacity": 0.16,
         },
         "body_line_width": 900,
+        "primary_color": primary_color,
+        "accent_color": accent_color,
         "title_line_count": len(title_lines),
         "body_line_count": len(body_lines),
         "layout_regions": {
@@ -659,7 +663,24 @@ def _draw_summary(
 def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
                 visual_assets: list[dict[str, Any]], output_path: Path,
                 width: int, height: int, compact: bool = False,
-                language: str = "zh-CN") -> dict[str, Any]:
+                language: str = "zh-CN",
+                style_contract: dict[str, Any] | None = None) -> dict[str, Any]:
+    style = style_contract or {}
+    style_version = str(style.get("style_version") or "")
+    palette = style.get("palette") if isinstance(style.get("palette"), dict) else {}
+    if style and style_version != "trading-editorial-v1":
+        raise ValueError("PHOTO_STYLE_VERSION_INVALID")
+    expected_palette = {
+        "background": "#F7F8FA",
+        "primary": "#123B5D",
+        "secondary": "#2E7896",
+        "accent": "#D8A12E",
+        "grid": "#DCE4EA",
+    }
+    if style and any(palette.get(key) != value for key, value in expected_palette.items()):
+        raise ValueError("PHOTO_STYLE_PALETTE_INVALID")
+    primary_color = str(palette.get("primary") or INK)
+    accent_color = str(palette.get("accent") or CYAN)
     image = Image.new("RGB", (width, height), "white")
     template_background_present, template_asset_key = _paste_template_background(
         image, visual_assets,
@@ -704,7 +725,8 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     if layout == "cover":
         if language == "en":
             header_bottom, overflow, content_box, typography_metrics = _draw_english_header(
-                draw, page, width, cover=True
+                draw, page, width, cover=True,
+                primary_color=primary_color, accent_color=accent_color,
             )
         else:
             header_bottom, overflow, content_box, typography_metrics = _draw_cover_header(draw, page, width)
@@ -731,12 +753,13 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         swipe_text = "SWIPE  →" if language == "en" else "滑动查看  →"
         swipe_font = _english_font(20, 600) if language == "en" else _font(20, True)
         swipe_position = (width - 205, height - 65)
-        draw.text(swipe_position, swipe_text, fill=INK, font=swipe_font)
+        draw.text(swipe_position, swipe_text, fill=primary_color, font=swipe_font)
         swipe_box = _drawn_text_bounds(draw, swipe_position, swipe_text, swipe_font)
     else:
         if language == "en":
             header_bottom, overflow, content_box, typography_metrics = _draw_english_header(
-                draw, page, width, cover=False
+                draw, page, width, cover=False,
+                primary_color=primary_color, accent_color=accent_color,
             )
         else:
             header_bottom, overflow, content_box, typography_metrics = _draw_header(
@@ -774,7 +797,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
     disclaimer = ENGLISH_DISCLAIMER if language == "en" else CHINESE_DISCLAIMER
     disclaimer_font = _english_font(19, 400) if language == "en" else _font(22)
     footer_position = (72, height - 55)
-    draw.text(footer_position, disclaimer, fill=MUTED, font=disclaimer_font)
+    draw.text(footer_position, disclaimer, fill=primary_color, font=disclaimer_font)
     disclaimer_count += 1
     footer_box = _merge_bounds(
         _drawn_text_bounds(draw, footer_position, disclaimer, disclaimer_font),
@@ -825,6 +848,7 @@ def render_page(page: dict[str, Any], chart: dict[str, Any] | None,
         "page_no": int(page["page_no"]), "path": str(output_path), "width": width, "height": height,
         "template_background_present": template_background_present,
         "template_asset_key": template_asset_key,
+        "style_version": style_version,
         "layout_overflow": overflow, "risk_note_present": True, "chart_present": chart_present,
         "character_present": character_present, "layout_template": layout, "render_language": language,
         "rendered_disclaimer": disclaimer, "disclaimer_count": 1,

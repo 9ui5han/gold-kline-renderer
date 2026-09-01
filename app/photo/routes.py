@@ -22,25 +22,37 @@ from .store import PhotoStore
 from .validator import validate_post
 
 
-def materialize_template_assets(visual_assets: dict, job_dir: Path) -> dict:
+def materialize_template_assets(
+    visual_assets: dict,
+    job_dir: Path,
+    expected_page_nos: set[int],
+    require_templates: bool = False,
+) -> dict:
     source = visual_assets.get("assets") if isinstance(visual_assets, dict) else None
     if not isinstance(source, list):
         raise ValueError("VISUAL_ASSETS_INVALID")
     output = []
+    template_pages: set[int] = set()
     template_dir = job_dir / "templates"
     for raw in source:
         if not isinstance(raw, dict):
             raise ValueError("VISUAL_ASSET_INVALID")
         item = dict(raw)
-        url = str(item.get("asset_url") or "").strip()
-        if item.get("purpose") != "page_template" or not url:
+        if item.get("purpose") != "page_template":
             output.append(item)
             continue
+        page_no = int(item.get("page_no") or 0)
+        if page_no in template_pages:
+            raise ValueError("TEMPLATE_PAGE_DUPLICATE")
+        template_pages.add(page_no)
+        url = str(item.get("asset_url") or "").strip()
+        if not url:
+            raise ValueError("TEMPLATE_URL_MISSING")
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname != "file.302.ai":
             raise ValueError("TEMPLATE_HOST_INVALID")
         try:
-            response = httpx.get(url, follow_redirects=True, timeout=20.0)
+            response = httpx.get(url, follow_redirects=False, timeout=20.0)
         except httpx.HTTPError as exc:
             raise ValueError("TEMPLATE_DOWNLOAD_FAILED") from exc
         if response.status_code != 200 or not str(response.headers.get("content-type") or "").lower().startswith("image/"):
@@ -53,12 +65,14 @@ def materialize_template_assets(visual_assets: dict, job_dir: Path) -> dict:
         except (OSError, ValueError) as exc:
             raise ValueError("TEMPLATE_FILE_INVALID") from exc
         template_dir.mkdir(parents=True, exist_ok=True)
-        target = template_dir / f"page_{int(item.get('page_no') or 0):02d}.png"
+        target = template_dir / f"page_{page_no:02d}.png"
         with Image.open(BytesIO(response.content)) as candidate:
             candidate.convert("RGB").save(target, "PNG")
         item.pop("asset_url", None)
         item["asset_path"] = str(target)
         output.append(item)
+    if (require_templates or template_pages) and template_pages != expected_page_nos:
+        raise ValueError("TEMPLATE_PAGE_SET_INVALID")
     return {"schema_version": "photo-assets-v1", "assets": output}
 
 
@@ -164,22 +178,38 @@ def build_photo_router(
     def render_post(payload: PhotoRenderRequest) -> dict:
         photo_job_id = payload.photo_request_id
         job_dir = store.job_dir(photo_job_id)
-        store.save_context(photo_job_id, payload.model_dump(mode="json"))
-        chart_by_page = {
-            item.get("page_no"): item
-            for item in payload.chart_assets.get("assets", [])
-            if isinstance(item, dict)
+        plan_pages = payload.photo_plan.get("pages", [])
+        expected_page_nos = {
+            int(page.get("page_no") or 0)
+            for page in plan_pages
+            if isinstance(page, dict)
         }
+        chart_items = [
+            item for item in payload.chart_assets.get("assets", [])
+            if isinstance(item, dict)
+        ]
+        chart_page_nos = [int(item.get("page_no") or 0) for item in chart_items]
+        if len(chart_page_nos) != len(set(chart_page_nos)):
+            raise HTTPException(status_code=422, detail="PHOTO_CHART_PAGE_DUPLICATE")
+        chart_by_page = {int(item.get("page_no") or 0): item for item in chart_items}
         try:
-            local_visual_assets = materialize_template_assets(payload.visual_assets, job_dir)
+            local_visual_assets = materialize_template_assets(
+                payload.visual_assets,
+                job_dir,
+                expected_page_nos,
+                require_templates=bool(payload.photo_plan.get("style_contract")),
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        context = payload.model_dump(mode="json")
+        context["visual_assets"] = local_visual_assets
+        store.save_context(photo_job_id, context)
         visual_by_page: dict[int, list[dict]] = {}
         for item in local_visual_assets.get("assets", []):
             if isinstance(item, dict):
                 visual_by_page.setdefault(int(item.get("page_no") or 0), []).append(item)
         images = []
-        for page in payload.photo_plan.get("pages", []):
+        for page in plan_pages:
             page_no = int(page.get("page_no") or 0)
             output = job_dir / f"page_{page_no:02d}.png"
             try:
@@ -191,6 +221,7 @@ def build_photo_router(
                     payload.canvas.width,
                     payload.canvas.height,
                     language=payload.language,
+                    style_contract=payload.photo_plan.get("style_contract"),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -266,6 +297,7 @@ def build_photo_router(
                     int(existing["height"]),
                     compact=True,
                     language=str(context.get("language") or "zh-CN"),
+                    style_contract=context.get("photo_plan", {}).get("style_contract"),
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc

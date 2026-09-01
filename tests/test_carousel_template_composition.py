@@ -36,11 +36,22 @@ class CarouselTemplateCompositionTests(unittest.TestCase):
                 1024,
                 1024,
                 language="en",
+                style_contract={
+                    "style_version": "trading-editorial-v1",
+                    "palette": {
+                        "background": "#F7F8FA", "primary": "#123B5D",
+                        "secondary": "#2E7896", "accent": "#D8A12E",
+                        "grid": "#DCE4EA",
+                    },
+                },
             )
             self.assertEqual(result["cover_visual_type"], "template_background")
             self.assertTrue(result["topic_visual_present"])
             self.assertFalse(result["character_present"])
             self.assertFalse(result["cover_asset_present"])
+            self.assertEqual(result["style_version"], "trading-editorial-v1")
+            self.assertEqual(result["typography_metrics"]["primary_color"], "#123B5D")
+            self.assertEqual(result["typography_metrics"]["accent_color"], "#D8A12E")
 
     def test_remote_template_is_materialized_only_from_302_file_host(self):
         buffer = BytesIO()
@@ -85,6 +96,14 @@ class CarouselTemplateCompositionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, patch("app.photo.routes.httpx.get", return_value=Redirect()), self.assertRaisesRegex(ValueError, "TEMPLATE_DOWNLOAD_FAILED"):
             materialize_template_assets(assets, Path(tmp), {2})
 
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
+            ValueError, "TEMPLATE_PAGE_SET_INVALID",
+        ):
+            materialize_template_assets(
+                {"schema_version": "photo-assets-v1", "assets": []},
+                Path(tmp), {1, 2}, require_templates=True,
+            )
+
     def test_template_background_is_used_before_backend_text_and_chart(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -118,6 +137,20 @@ class CarouselTemplateCompositionTests(unittest.TestCase):
             self.assertTrue(result["chart_present"])
             with Image.open(output) as image:
                 self.assertEqual(image.getpixel((10, 10)), (232, 238, 242))
+
+    def test_style_contract_rejects_palette_drift(self):
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaisesRegex(
+            ValueError, "PHOTO_STYLE_PALETTE_INVALID",
+        ):
+            render_page(
+                {"page_no": 1, "page_role": "cover", "visual_type": "cover_illustration",
+                 "title": "Propulsion Blocks", "body": "A precise educational guide."},
+                None, [], Path(tmp) / "page.png", 1024, 1024, language="en",
+                style_contract={
+                    "style_version": "trading-editorial-v1",
+                    "palette": {"primary": "#000000"},
+                },
+            )
 
 
 if __name__ == "__main__":
