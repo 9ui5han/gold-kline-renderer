@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import main
+from app.kline_render import _body_width
 
 
 AUTH = {"Authorization": "Bearer kline-test-token"}
@@ -99,6 +100,9 @@ class KlineRenderTests(unittest.TestCase):
         self.assertIn((242, 245, 248), colors)
         self.assertIn((48, 70, 126), colors)
         self.assertIn((24, 30, 40), colors)
+
+    def test_candle_body_uses_a_wider_share_of_each_cell(self):
+        self.assertGreaterEqual(_body_width(6.0), 4)
 
     def test_missing_configuration_remains_fail_closed(self):
         with patch.object(main, "TOKEN", "change-me"):

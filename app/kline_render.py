@@ -55,6 +55,10 @@ def _price_y(price: float, price_min: float, price_max: float, top: int, height:
     return top + (price_max - price) / span * height
 
 
+def _body_width(cell_width: float) -> int:
+    return max(2, min(12, int(cell_width * 0.70)))
+
+
 def _draw_panel(
     draw: ImageDraw.ImageDraw,
     panel: KlinePanel,
@@ -72,7 +76,7 @@ def _draw_panel(
     price_max += padding
 
     cell_width = width / len(panel.bars)
-    body_width = max(2, min(12, int(cell_width * 0.55)))
+    body_width = _body_width(cell_width)
     wick_width = 1
 
     for index, bar in enumerate(panel.bars):
