@@ -72,6 +72,8 @@ OUTLINE = (24, 30, 40)
 BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
+ZONE_OB_OUTLINE = (72, 116, 151, 190)
+ZONE_PB_OUTLINE = (173, 103, 20, 235)
 
 
 def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -147,12 +149,20 @@ def _draw_zone_layers(
         top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
         bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
         zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
+        outline_color = (
+            ZONE_OB_OUTLINE
+            if annotation.type == "ob"
+            else ZONE_PB_OUTLINE
+        )
+        outline_width = 1 if annotation.type == "ob" else 2
 
         layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
         layer_draw = ImageDraw.Draw(layer)
         layer_draw.rectangle(
             (left_x, top_y, right_x, bottom_y),
             fill=zone_color,
+            outline=outline_color,
+            width=outline_width,
         )
         image = Image.alpha_composite(image, layer)
 
@@ -278,10 +288,14 @@ def _draw_panel(
                 (top_y + bottom_y - label_height) / 2,
             ),
             annotation.label,
-            fill=ZONE_LABEL,
+            fill=(
+                ZONE_LABEL
+                if annotation.type == "ob"
+                else ZONE_PB_OUTLINE[:3]
+            ),
             font=font,
-            stroke_width=1,
-            stroke_fill=ZONE_LABEL,
+            stroke_width=2,
+            stroke_fill=BACKGROUND,
         )
 
 
