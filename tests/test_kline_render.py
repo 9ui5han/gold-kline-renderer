@@ -10,7 +10,6 @@ from app.kline_render import (
     ZONE_FILL,
     ZONE_FILL_PB,
     ZONE_LABEL,
-    ZONE_PB_OUTLINE,
     _body_width,
     _draw_panel,
     _zone_font,
@@ -149,6 +148,8 @@ class KlineRenderTests(unittest.TestCase):
             if name == "rectangle"
         )
         self.assertGreater(text_index, last_rectangle_index)
+        self.assertEqual(draw.text.call_args.kwargs["stroke_width"], 0)
+        self.assertNotIn("stroke_fill", draw.text.call_args.kwargs)
 
     def test_renders_ob_annotation(self):
         payload = kline_payload()
@@ -225,34 +226,6 @@ class KlineRenderTests(unittest.TestCase):
         self.assertNotEqual(ZONE_FILL, ZONE_FILL_PB)
         self.assertIn(ZONE_FILL, colors)
         self.assertIn(ZONE_FILL_PB, colors)
-
-    def test_pb_has_a_high_contrast_teaching_outline(self):
-        payload = kline_payload()
-        payload["panels"][0]["annotations"] = [{
-            "annotation_id": "pb_1",
-            "type": "pb",
-            "label": "PB",
-            "direction": "bullish",
-            "start_index": 6,
-            "end_index": 9,
-            "price_low": 106.0,
-            "price_high": 112.0,
-        }]
-
-        response = self.client.post(
-            "/v1/kline/render",
-            headers=AUTH,
-            json=payload,
-        )
-        self.assertEqual(response.status_code, 200, response.text)
-        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
-        image_path = Path(main.MEDIA_DIR) / file_name
-        self.addCleanup(image_path.unlink, missing_ok=True)
-
-        with Image.open(image_path) as image:
-            colors = set(image.getdata())
-
-        self.assertIn(ZONE_PB_OUTLINE[:3], colors)
 
     def test_overlapping_zones_are_alpha_composited(self):
         payload = kline_payload()
