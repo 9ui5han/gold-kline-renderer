@@ -3,11 +3,11 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from app import main
 from app.kline_render import (
-    RENDER_SCALE,
+    TEXT_RENDER_SCALE,
     ZONE_FILL,
     ZONE_FILL_PB,
     ZONE_LABEL,
@@ -105,27 +105,88 @@ class KlineRenderTests(unittest.TestCase):
 
         with Image.open(image_path) as image:
             colors = set(image.getdata())
-        for expected in ((242, 245, 248), (48, 70, 126), (24, 30, 40)):
-            self.assertTrue(
-                any(
-                    max(abs(actual[index] - expected[index]) for index in range(3)) <= 4
-                    for actual in colors
-                ),
-                expected,
-            )
+        self.assertIn((242, 245, 248), colors)
+        self.assertIn((48, 70, 126), colors)
+        self.assertIn((24, 30, 40), colors)
 
     def test_candle_body_uses_a_wider_share_of_each_cell(self):
         self.assertGreaterEqual(_body_width(6.0), 4)
+
+    def test_candle_geometry_stays_at_original_canvas_resolution(self):
+        draw = Mock()
+        from app.kline_render import KlinePanel
+
+        _draw_panel(
+            draw,
+            KlinePanel.model_validate(kline_payload()["panels"][0]),
+            36,
+            28,
+            1008,
+            664,
+        )
+
+        self.assertTrue(draw.line.call_args_list)
+        self.assertTrue(
+            all(call.kwargs["width"] == 1 for call in draw.line.call_args_list)
+        )
+        self.assertTrue(draw.rectangle.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs["width"] == 1
+                for call in draw.rectangle.call_args_list
+            )
+        )
+        self.assertTrue(
+            all(
+                max(call.args[0]) <= 1080
+                for call in draw.line.call_args_list
+            )
+        )
 
     def test_zone_label_font_is_readable(self):
         self.assertEqual(getattr(_zone_font(), "size", 0), 19)
 
     def test_zone_labels_are_drawn_at_supersampled_resolution(self):
-        self.assertGreaterEqual(RENDER_SCALE, 3)
+        self.assertGreaterEqual(TEXT_RENDER_SCALE, 3)
         self.assertEqual(
-            getattr(_zone_font(RENDER_SCALE), "size", 0),
-            19 * RENDER_SCALE,
+            getattr(_zone_font(TEXT_RENDER_SCALE), "size", 0),
+            19 * TEXT_RENDER_SCALE,
         )
+
+    def test_all_kline_text_uses_a_dedicated_text_layer(self):
+        base_image = Image.new("RGBA", (1080, 720), (255, 255, 255, 255))
+        text_layer = Image.new(
+            "RGBA",
+            (1080 * TEXT_RENDER_SCALE, 720 * TEXT_RENDER_SCALE),
+            (0, 0, 0, 0),
+        )
+        panel = kline_payload()["panels"][0]
+        panel["annotations"] = [{
+            "annotation_id": "ob_1",
+            "type": "ob",
+            "label": "OB",
+            "direction": "bullish",
+            "start_index": 4,
+            "end_index": 12,
+            "price_low": 102.0,
+            "price_high": 112.0,
+        }]
+
+        from app.kline_render import KlinePanel
+
+        _draw_panel(
+            ImageDraw.Draw(base_image),
+            KlinePanel.model_validate(panel),
+            36,
+            28,
+            1008,
+            664,
+            draw_zones=False,
+            text_layer=text_layer,
+        )
+
+        self.assertIsNotNone(text_layer.getbbox())
+        self.assertNotIn(ZONE_LABEL, set(base_image.convert("RGB").getdata()))
 
     def test_zone_label_is_drawn_after_candles(self):
         draw = Mock()

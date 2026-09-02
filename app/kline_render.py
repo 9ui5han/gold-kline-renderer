@@ -73,7 +73,7 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
-RENDER_SCALE = 4
+TEXT_RENDER_SCALE = 4
 
 
 def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -170,13 +170,13 @@ def _draw_panel(
     width: int,
     height: int,
     draw_zones: bool = True,
-    scale: float = 1.0,
+    text_layer: Image.Image | None = None,
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
     cell_width = width / len(panel.bars)
     body_width = _body_width(cell_width)
-    wick_width = max(1, round(scale))
+    wick_width = 1
 
     if draw_zones:
         for annotation in panel.annotations:
@@ -240,12 +240,16 @@ def _draw_panel(
             ),
             fill=body_fill,
             outline=OUTLINE,
-            width=max(1, round(scale)),
+            width=1,
         )
 
     # Draw labels after both zones and candles so OB/PB stays on the front
-    # layer and remains readable when a candle crosses the zone.
-    font = _zone_font(scale)
+    # layer and remains readable when a candle crosses the zone.  When a
+    # separate layer is supplied, only the text is rendered at high
+    # resolution; candle geometry stays at its original size.
+    text_draw = ImageDraw.Draw(text_layer) if text_layer is not None else draw
+    coordinate_scale = TEXT_RENDER_SCALE if text_layer is not None else 1.0
+    font = _zone_font(coordinate_scale)
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
@@ -268,7 +272,7 @@ def _draw_panel(
             top,
             height,
         )
-        label_box = draw.textbbox(
+        label_box = text_draw.textbbox(
             (0, 0),
             annotation.label,
             font=font,
@@ -276,10 +280,10 @@ def _draw_panel(
         )
         label_width = label_box[2] - label_box[0]
         label_height = label_box[3] - label_box[1]
-        draw.text(
+        text_draw.text(
             (
-                (left_x + right_x - label_width) / 2,
-                (top_y + bottom_y - label_height) / 2,
+                ((left_x + right_x) * coordinate_scale - label_width) / 2,
+                ((top_y + bottom_y) * coordinate_scale - label_height) / 2,
             ),
             annotation.label,
             fill=(
@@ -296,20 +300,17 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     """Render all panels vertically without axes or grid lines."""
     canvas_width = 1080
     canvas_height = 720
-    scale = RENDER_SCALE
-    render_width = canvas_width * scale
-    render_height = canvas_height * scale
-    outer_x = 36 * scale
-    outer_y = 28 * scale
-    panel_gap = 24 * scale
-    panel_width = render_width - outer_x * 2
+    outer_x = 36
+    outer_y = 28
+    panel_gap = 24
+    panel_width = canvas_width - outer_x * 2
     panel_height = (
-        render_height - outer_y * 2 - panel_gap * (len(request.panels) - 1)
+        canvas_height - outer_y * 2 - panel_gap * (len(request.panels) - 1)
     ) // len(request.panels)
 
     image = Image.new(
         "RGBA",
-        (render_width, render_height),
+        (canvas_width, canvas_height),
         BACKGROUND + (255,),
     )
 
@@ -325,6 +326,11 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         )
 
     draw = ImageDraw.Draw(image)
+    text_layer = Image.new(
+        "RGBA",
+        (canvas_width * TEXT_RENDER_SCALE, canvas_height * TEXT_RENDER_SCALE),
+        (0, 0, 0, 0),
+    )
     for index, panel in enumerate(request.panels):
         panel_top = outer_y + index * (panel_height + panel_gap)
         _draw_panel(
@@ -335,8 +341,14 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             panel_width,
             panel_height,
             draw_zones=False,
-            scale=scale,
+            text_layer=text_layer,
         )
+
+    text_layer = text_layer.resize(
+        (canvas_width, canvas_height),
+        Image.Resampling.LANCZOS,
+    )
+    image = Image.alpha_composite(image, text_layer)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Flatten the RGBA drawing onto the white canvas so the returned PNG stays
@@ -345,10 +357,6 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         Image.new("RGBA", image.size, BACKGROUND + (255,)),
         image,
     ).convert("RGB")
-    flattened = flattened.resize(
-        (canvas_width, canvas_height),
-        Image.Resampling.LANCZOS,
-    )
     flattened.save(output_path, format="PNG", optimize=True)
 
 
