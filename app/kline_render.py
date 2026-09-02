@@ -110,14 +110,7 @@ def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     return ImageFont.load_default(size=19)
 
 
-def _draw_panel(
-    draw: ImageDraw.ImageDraw,
-    panel: KlinePanel,
-    left: int,
-    top: int,
-    width: int,
-    height: int,
-) -> None:
+def _panel_price_bounds(panel: KlinePanel) -> tuple[float, float]:
     values = [value for bar in panel.bars for value in (bar.h, bar.l)]
     values.extend(
         value
@@ -128,12 +121,20 @@ def _draw_panel(
     price_max = max(values)
     span = max(price_max - price_min, 1e-9)
     padding = span * 0.06
-    price_min -= padding
-    price_max += padding
+    return price_min - padding, price_max + padding
 
+
+def _draw_zone_layers(
+    image: Image.Image,
+    panel: KlinePanel,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+) -> Image.Image:
+    """Composite each zone separately so overlapping zones blend together."""
+    price_min, price_max = _panel_price_bounds(panel)
     cell_width = width / len(panel.bars)
-    body_width = _body_width(cell_width)
-    wick_width = 1
 
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
@@ -143,30 +144,69 @@ def _draw_panel(
 
         left_x = left + start_index * cell_width
         right_x = left + (end_index + 1) * cell_width
-        top_y = _price_y(
-            annotation.price_high,
-            price_min,
-            price_max,
-            top,
-            height,
-        )
-        bottom_y = _price_y(
-            annotation.price_low,
-            price_min,
-            price_max,
-            top,
-            height,
-        )
+        top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
+        bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
+        zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
 
-        zone_color = (
-            ZONE_OB_COLOR
-            if annotation.type == "ob"
-            else ZONE_PB_COLOR
-        )
-        draw.rectangle(
+        layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        layer_draw = ImageDraw.Draw(layer)
+        layer_draw.rectangle(
             (left_x, top_y, right_x, bottom_y),
             fill=zone_color,
         )
+        image = Image.alpha_composite(image, layer)
+
+    return image
+
+
+def _draw_panel(
+    draw: ImageDraw.ImageDraw,
+    panel: KlinePanel,
+    left: int,
+    top: int,
+    width: int,
+    height: int,
+    draw_zones: bool = True,
+) -> None:
+    price_min, price_max = _panel_price_bounds(panel)
+
+    cell_width = width / len(panel.bars)
+    body_width = _body_width(cell_width)
+    wick_width = 1
+
+    if draw_zones:
+        for annotation in panel.annotations:
+            start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
+            end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
+            if end_index < start_index:
+                continue
+
+            left_x = left + start_index * cell_width
+            right_x = left + (end_index + 1) * cell_width
+            top_y = _price_y(
+                annotation.price_high,
+                price_min,
+                price_max,
+                top,
+                height,
+            )
+            bottom_y = _price_y(
+                annotation.price_low,
+                price_min,
+                price_max,
+                top,
+                height,
+            )
+
+            zone_color = (
+                ZONE_OB_COLOR
+                if annotation.type == "ob"
+                else ZONE_PB_COLOR
+            )
+            draw.rectangle(
+                (left_x, top_y, right_x, bottom_y),
+                fill=zone_color,
+            )
 
     for index, bar in enumerate(panel.bars):
         center_x = left + (index + 0.5) * cell_width
@@ -262,10 +302,30 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         (canvas_width, canvas_height),
         BACKGROUND + (255,),
     )
+
+    for index, panel in enumerate(request.panels):
+        panel_top = outer_y + index * (panel_height + panel_gap)
+        image = _draw_zone_layers(
+            image,
+            panel,
+            outer_x,
+            panel_top,
+            panel_width,
+            panel_height,
+        )
+
     draw = ImageDraw.Draw(image)
     for index, panel in enumerate(request.panels):
         panel_top = outer_y + index * (panel_height + panel_gap)
-        _draw_panel(draw, panel, outer_x, panel_top, panel_width, panel_height)
+        _draw_panel(
+            draw,
+            panel,
+            outer_x,
+            panel_top,
+            panel_width,
+            panel_height,
+            draw_zones=False,
+        )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Flatten the RGBA drawing onto the white canvas so the returned PNG stays

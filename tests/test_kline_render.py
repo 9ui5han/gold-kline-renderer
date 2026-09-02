@@ -225,6 +225,54 @@ class KlineRenderTests(unittest.TestCase):
         self.assertIn(ZONE_FILL, colors)
         self.assertIn(ZONE_FILL_PB, colors)
 
+    def test_overlapping_zones_are_alpha_composited(self):
+        payload = kline_payload()
+        payload["panels"][0]["annotations"] = [
+            {
+                "annotation_id": "ob_overlap",
+                "type": "ob",
+                "label": "OB",
+                "direction": "bullish",
+                "start_index": 2,
+                "end_index": 12,
+                "price_low": 105.0,
+                "price_high": 115.0,
+            },
+            {
+                "annotation_id": "pb_overlap",
+                "type": "pb",
+                "label": "PB",
+                "direction": "bearish",
+                "start_index": 7,
+                "end_index": 17,
+                "price_low": 105.0,
+                "price_high": 115.0,
+            },
+        ]
+
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
+        image_path = Path(main.MEDIA_DIR) / file_name
+        self.addCleanup(image_path.unlink, missing_ok=True)
+
+        with Image.open(image_path) as image:
+            colors = set(image.getdata())
+
+        base = Image.new("RGBA", (1, 1), (255, 255, 255, 255))
+        ob_layer = Image.new("RGBA", (1, 1), (112, 163, 201, 105))
+        pb_layer = Image.new("RGBA", (1, 1), (232, 173, 88, 105))
+        expected = Image.alpha_composite(
+            Image.alpha_composite(base, ob_layer),
+            pb_layer,
+        ).convert("RGB").getpixel((0, 0))
+
+        self.assertIn(expected, colors)
+
     def test_rejects_inverted_annotation_price_range(self):
         payload = kline_payload()
         payload["panels"][0]["annotations"] = [{
