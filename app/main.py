@@ -27,6 +27,7 @@ from .macro_context import MacroContextError, MacroContextService
 from .macro_source_probe import probe_all_sources
 from .photo.routes import build_photo_router
 from .carousel.routes import build_carousel_router
+from .carousel.reference_routes import build_reference_carousel_router
 from .scenario_repair import process_scenario_step
 from .segment_narration_validation import (
     complete_tool08,
@@ -611,6 +612,10 @@ app.include_router(
 )
 app.include_router(
     build_carousel_router(DATA_DIR),
+    dependencies=[Depends(require_token)],
+)
+app.include_router(
+    build_reference_carousel_router(DATA_DIR),
     dependencies=[Depends(require_token)],
 )
 

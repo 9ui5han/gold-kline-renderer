@@ -79,8 +79,12 @@ def _timeframe_seconds(value: Any) -> float:
 
 
 def _validate_page(page: dict[str, Any], timeframe: Any) -> list[dict[str, Any]]:
-    if page.get("chart_mode") != "educational_reconstruction" or page.get("historical_pattern_claim") is not False:
-        _fail("EDUCATIONAL_RECONSTRUCTION_REQUIRED")
+    source_pair = (page.get("chart_mode"), page.get("historical_pattern_claim"))
+    if source_pair not in {
+        ("educational_reconstruction", False),
+        ("historical_detection", True),
+    }:
+        _fail("MARKET_SOURCE_MODE_INVALID")
     if page.get('direction') not in {'bullish','bearish'}:
         _fail('MARKET_DIRECTION_INVALID')
     if str(page.get("rule_version") or "") != RULE_VERSION:
@@ -172,8 +176,13 @@ def _validate_page(page: dict[str, Any], timeframe: Any) -> list[dict[str, Any]]
 def validate_market_request(request_pages: list[dict[str, Any]], route_payload: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(route_payload, dict) or route_payload.get("schema_version") != ROUTE_VERSION:
         _fail("MARKET_ROUTE_VERSION_INVALID")
-    if route_payload.get("analysis_mode") != "educational_reconstruction":
-        _fail("EDUCATIONAL_RECONSTRUCTION_REQUIRED")
+    route_mode = route_payload.get("analysis_mode")
+    if route_mode not in {
+        "educational_reconstruction",
+        "historical_detection",
+        "mixed_historical_and_educational",
+    }:
+        _fail("MARKET_ANALYSIS_MODE_INVALID")
     if not str(route_payload.get("market") or "").strip():
         _fail("MARKET_ROUTE_IDENTITY_INVALID")
     _timeframe_seconds(route_payload.get("timeframe"))
@@ -190,6 +199,24 @@ def validate_market_request(request_pages: list[dict[str, Any]], route_payload: 
         _fail("MARKET_PAGE_NO_DUPLICATE")
     if len(set(requested)) != len(requested) or set(requested) != set(page_nos):
         _fail("MARKET_PAGE_SET_MISMATCH")
+    source_pairs = {
+        (item.get("chart_mode"), item.get("historical_pattern_claim"))
+        for item in analysis_pages
+    }
+    valid_pairs = {
+        ("educational_reconstruction", False),
+        ("historical_detection", True),
+    }
+    if not source_pairs or not source_pairs.issubset(valid_pairs):
+        _fail("MARKET_SOURCE_MODE_INVALID")
+    modes = {pair[0] for pair in source_pairs}
+    expected_mode = (
+        "historical_detection" if modes == {"historical_detection"}
+        else "educational_reconstruction" if modes == {"educational_reconstruction"}
+        else "mixed_historical_and_educational"
+    )
+    if route_mode != expected_mode:
+        _fail("MARKET_ANALYSIS_MODE_MISMATCH")
     return analysis_pages
 
 
@@ -219,31 +246,35 @@ def render_market_chart(page: dict[str, Any], output_path: Path, route_payload: 
     for fraction in range(5):
         y = top + fraction * (bottom - top) / 4
         draw.line((left, y, right, y), fill=PALETTE["grid"], width=1)
-    draw.text((left, 18), f"{route_payload.get('market', '')} · {route_payload.get('timeframe', '')} · {page.get('direction', '')}", fill=PALETTE["ink"], font=_font_for(language, 23, True))
     coord_zones, coord_markers = [], []
     colors = {"order_block": (46, 120, 150, 70), "propulsion_block": (216, 161, 46, 78)}
     for ordinal, zone in enumerate(page["zones"]):
         x1 = max(left, x_for(zone["start_index"]) - pitch / 2); x2 = min(right, x_for(zone["end_index"]) + pitch / 2)
         y1, y2 = sorted((y_for(float(zone["price_high"])), y_for(float(zone["price_low"]))))
         color = colors[zone["kind"]]; draw.rectangle((x1, y1, x2, y2), fill=color, outline=color[:3] + (220,), width=2)
-        label = f"{zone['kind'].replace('_', ' ')}: {zone['label']}"
-        draw.rectangle((left + ordinal * 420, 57, left + ordinal * 420 + 14, 71), fill=color[:3] + (220,))
-        _bounded_text(draw, (left + ordinal * 420 + 21, 50), label[:45], _font_for(language, 17))
+        zone_tag = "OB" if zone["kind"] == "order_block" else "PB"
+        tag_font = _font_for(language, 17, True)
+        tag_x = min(max(x1 + 6, left + 4), max(left + 4, x2 - 34))
+        tag_y = min(max(y1 + 5, top + 3), max(top + 3, y2 - 24))
+        draw.text((tag_x, tag_y), zone_tag, fill=PALETTE["ink"], font=tag_font)
         coord_zones.append({"kind": zone["kind"], "start_index": zone["start_index"], "end_index": zone["end_index"], "pixel_box": [round(x1, 2), round(y1, 2), round(x2, 2), round(y2, 2)]})
     for index, candle in enumerate(candles):
         x = x_for(index); color = PALETTE["bullish"] if candle["c"] >= candle["o"] else PALETTE["bearish"]
         draw.line((x, y_for(candle["h"]), x, y_for(candle["l"])), fill=color, width=3)
         y1, y2 = sorted((y_for(candle["o"]), y_for(candle["c"])))
-        body = (x - pitch * .28, y1, x + pitch * .28, max(y2, y1 + 3))
+        body = (x - pitch * .39, y1, x + pitch * .39, max(y2, y1 + 3))
         draw.rounded_rectangle(body, radius=max(1, int(pitch * .06)), fill=color)
     for ordinal, marker in enumerate(page["markers"]):
         x, y = x_for(marker["index"]), y_for(float(marker["price"])); color = "#D96B78" if marker["kind"] == "liquidity_sweep" else "#D9A62E"
         draw.ellipse((x - 8, y - 8, x + 8, y + 8), fill=color, outline="#17212B", width=1)
         coord_markers.append({"kind": marker["kind"], "index": marker["index"], "price": marker["price"], "pixel": [round(x, 2), round(y, 2)]})
-        _bounded_text(draw, (left + ordinal * 420, 674), marker['kind'].replace('_', ' ') + f" (bar {marker['index']})", _font_for(language, 16))
-    draw.rectangle(PLOT, outline="#8D98A4", width=2)
+        marker_tag = "LS" if marker["kind"] == "liquidity_sweep" else "IND"
+        marker_font = _font_for(language, 16, True)
+        marker_x = x + 12 if x <= right - 62 else x - 52
+        marker_y = y - 31 if y >= top + 38 else y + 12
+        draw.text((marker_x, marker_y), marker_tag, fill=PALETTE["ink"], font=marker_font)
     for value, y in ((high - pad, y_for(high-pad)), (low + pad, y_for(low+pad))):
         _bounded_text(draw, (right + 7, y - 9), f"{value:.2f}", _font_for(language, 16))
     image.save(output_path, "PNG")
     fingerprint_input = {"market": route_payload.get("market"), "timeframe": route_payload.get("timeframe"), "visible_kline": page["visible_kline"], "zones": page["zones"], "markers": page["markers"], "as_of": page["as_of"], "rule_version": page["rule_version"]}
-    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": "educational_reconstruction", "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "style_version": STYLE_VERSION, "palette": dict(PALETTE), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}
+    return {"page_no": int(page["page_no"]), "asset_key": f"chart_page_{int(page['page_no']):02d}", "asset_type": "market_chart", "asset_path": str(output_path), "width": WIDTH, "height": HEIGHT, "source_type": str(page["chart_mode"]), "source_market": str(route_payload.get("market")), "source_timeframe": str(route_payload.get("timeframe")), "data_timezone": str(route_payload.get("input_meta", {}).get("data_timezone", "not_provided")), "source_as_of": str(page["as_of"]), "bars_closed": True, "rule_version": RULE_VERSION, "rendered_candle_count": len(candles), "data_fingerprint": hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest(), "style_version": STYLE_VERSION, "palette": dict(PALETTE), "coordinate_map": {"zones": coord_zones, "markers": coord_markers}}

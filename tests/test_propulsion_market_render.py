@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.photo.market_chart_renderer import PLOT, render_market_chart
+from app.photo.market_chart_renderer import PLOT, render_market_chart, validate_market_request
 
 
 def _bars(count=8):
@@ -53,6 +53,91 @@ def market_page(page_no=1):
 
 
 class PropulsionMarketRenderTests(unittest.TestCase):
+    def test_market_renderer_accepts_historical_detection_and_reports_true_source_type(self):
+        page = market_page()
+        page["chart_mode"] = "historical_detection"
+        page["historical_pattern_claim"] = True
+        route = {
+            "schema_version": "carousel-route-v2",
+            "analysis_mode": "historical_detection",
+            "market": "XAUUSD",
+            "timeframe": "1h",
+            "input_meta": {},
+            "analysis_pages": [page],
+        }
+        validated = validate_market_request(
+            [{"page_no": page["page_no"], "visual_type": "market_chart"}],
+            route,
+        )
+        self.assertEqual(validated[0]["chart_mode"], "historical_detection")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render_market_chart(page, Path(tmp) / "historical.png", route, language="en")
+        self.assertEqual(result["source_type"], "historical_detection")
+
+    def test_market_chart_places_compact_tags_inside_chart_without_external_legend_or_frame(self):
+        """The chart itself owns all labels; no header/footer legend or plot frame remains."""
+        page = market_page()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render_market_chart(
+                page,
+                Path(tmp) / "compact-labels.png",
+                {"market": "XAUUSD", "timeframe": "1h", "input_meta": {}},
+                language="en",
+            )
+            with Image.open(result["asset_path"]).convert("RGB") as image:
+                # Old market/timeframe title and zone legend occupied this header.
+                self.assertEqual(
+                    sum(pixel != (255, 255, 255) for pixel in image.crop((0, 0, 1080, PLOT[1])).getdata()),
+                    0,
+                )
+                # Old event legend occupied this footer; the nearby price labels remain above it.
+                self.assertEqual(
+                    sum(pixel != (255, 255, 255) for pixel in image.crop((0, PLOT[3] + 12, 1080, 720)).getdata()),
+                    0,
+                )
+                # The previous rectangular plot outline passed through this otherwise empty point.
+                self.assertEqual(image.getpixel((PLOT[0], PLOT[1] + 42)), (255, 255, 255))
+
+                order_block = result["coordinate_map"]["zones"][0]["pixel_box"]
+                x1, y1, _, _ = (round(value) for value in order_block)
+                # The OB tag is rendered directly inside the translucent order-block zone.
+                tag_pixels = image.crop((x1 + 4, y1 + 4, x1 + 46, y1 + 30)).getdata()
+                self.assertGreater(sum(red < 60 and green < 100 and blue < 130 for red, green, blue in tag_pixels), 5)
+
+                first_marker = result["coordinate_map"]["markers"][0]["pixel"]
+                marker_x, marker_y = (round(value) for value in first_marker)
+                # The LS tag sits beside its marker point instead of in a footer legend.
+                marker_pixels = image.crop((marker_x + 9, marker_y - 34, marker_x + 50, marker_y - 5)).getdata()
+                self.assertGreater(sum(red < 60 and green < 100 and blue < 130 for red, green, blue in marker_pixels), 5)
+
+    def test_market_chart_candle_bodies_use_dense_gap_ratio_without_moving_coordinate_map(self):
+        page = market_page()
+        with tempfile.TemporaryDirectory() as tmp:
+            result = render_market_chart(
+                page,
+                Path(tmp) / "dense-candles.png",
+                {"market": "XAUUSD", "timeframe": "1h", "input_meta": {}},
+                language="en",
+            )
+            pitch = (PLOT[2] - PLOT[0]) / len(page["visible_kline"])
+            with Image.open(result["asset_path"]).convert("RGB") as image:
+                # The first candle has no zone behind it, so its gold body can be measured directly.
+                body_y = 540
+                gold = (216, 161, 46)
+                groups: list[list[int]] = []
+                for x in range(PLOT[0], PLOT[2]):
+                    if image.getpixel((x, body_y)) == gold:
+                        if not groups or x > groups[-1][-1] + 1:
+                            groups.append([x])
+                        else:
+                            groups[-1].append(x)
+                body_width = max(len(group) for group in groups)
+        self.assertGreaterEqual(body_width, round(pitch * 0.72))
+        self.assertLessEqual(body_width, round(pitch * 0.84))
+        # Rendering-layer density changes must not move source-derived marker/zone positions.
+        self.assertEqual(result["coordinate_map"]["zones"][0]["pixel_box"], [191.5, 516.03, 1014, 563.88])
+        self.assertEqual(result["coordinate_map"]["markers"][0]["pixel"], [367.75, 516.03])
+
     def test_market_chart_uses_a_taller_plot_without_changing_source_coordinates(self):
         self.assertEqual(PLOT, (74, 95, 1014, 650))
         page = market_page()
@@ -98,9 +183,16 @@ class PropulsionMarketRenderTests(unittest.TestCase):
         rules['rules'].append(dict(rules['rules'][0],page_no=3))
         a=analysis['main'](json.dumps(source),rules,'[]')
         self.assertTrue(a['tool2_valid'],a)
-        copy_pages=[dict(page_no=i,role='cover' if i==1 else 'promo' if i==4 else 'definition',
-            en_title='Example',en_body='',zh_translation='示例',text_position='top',
-            analysis_page_no=None if i in (1,4) else i) for i in range(1,5)]
+        analysis_data=json.loads(a['trusted_analysis_json'])
+        roles={page['page_no']:page['lesson_type'] for page in analysis_data['analysis_pages']}
+        copy_pages=[]
+        for i in range(1,5):
+            role='cover' if i==1 else 'promo' if i==4 else roles[i]
+            title='JOIN FREE' if i==4 else 'Example'
+            body='telegram; TikTok111' if i==4 else 'Study guide' if i==1 else 'Educational body'
+            copy_pages.append(dict(page_no=i,role=role,en_title=title,en_body=body,
+                zh_translation='示例\n教学内容',text_position='top',
+                analysis_page_no=None if i in (1,4) else i))
         promo = json.dumps({"platform": "telegram", "account": "TikTok111", "cta": "JOIN FREE"})
         plan=runpy.run_path(str(root/'03_plan.py'))['main'](a['trusted_analysis_json'],{'pages':copy_pages},promo,'{"model":"gpt-image-2"}')
         self.assertTrue(plan['tool3_valid'],plan)
