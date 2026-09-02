@@ -7,6 +7,7 @@ from PIL import Image
 
 from app import main
 from app.kline_render import (
+    RENDER_SCALE,
     ZONE_FILL,
     ZONE_FILL_PB,
     ZONE_LABEL,
@@ -104,15 +105,27 @@ class KlineRenderTests(unittest.TestCase):
 
         with Image.open(image_path) as image:
             colors = set(image.getdata())
-        self.assertIn((242, 245, 248), colors)
-        self.assertIn((48, 70, 126), colors)
-        self.assertIn((24, 30, 40), colors)
+        for expected in ((242, 245, 248), (48, 70, 126), (24, 30, 40)):
+            self.assertTrue(
+                any(
+                    max(abs(actual[index] - expected[index]) for index in range(3)) <= 4
+                    for actual in colors
+                ),
+                expected,
+            )
 
     def test_candle_body_uses_a_wider_share_of_each_cell(self):
         self.assertGreaterEqual(_body_width(6.0), 4)
 
     def test_zone_label_font_is_readable(self):
         self.assertEqual(getattr(_zone_font(), "size", 0), 19)
+
+    def test_zone_labels_are_drawn_at_supersampled_resolution(self):
+        self.assertGreaterEqual(RENDER_SCALE, 3)
+        self.assertEqual(
+            getattr(_zone_font(RENDER_SCALE), "size", 0),
+            19 * RENDER_SCALE,
+        )
 
     def test_zone_label_is_drawn_after_candles(self):
         draw = Mock()

@@ -73,6 +73,7 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
+RENDER_SCALE = 4
 
 
 def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -99,7 +100,8 @@ def _body_width(cell_width: float) -> int:
     return max(2, min(12, int(cell_width * 0.70)))
 
 
-def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_size = max(1, round(19 * scale))
     bold_font_paths = (
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
@@ -107,8 +109,8 @@ def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     )
     for font_path in bold_font_paths:
         if Path(font_path).exists():
-            return ImageFont.truetype(font_path, size=19)
-    return ImageFont.load_default(size=19)
+            return ImageFont.truetype(font_path, size=font_size)
+    return ImageFont.load_default(size=font_size)
 
 
 def _panel_price_bounds(panel: KlinePanel) -> tuple[float, float]:
@@ -168,12 +170,13 @@ def _draw_panel(
     width: int,
     height: int,
     draw_zones: bool = True,
+    scale: float = 1.0,
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
     cell_width = width / len(panel.bars)
     body_width = _body_width(cell_width)
-    wick_width = 1
+    wick_width = max(1, round(scale))
 
     if draw_zones:
         for annotation in panel.annotations:
@@ -206,7 +209,7 @@ def _draw_panel(
             )
             draw.rectangle(
                 (left_x, top_y, right_x, bottom_y),
-                fill=zone_color,
+            fill=zone_color,
             )
 
     for index, bar in enumerate(panel.bars):
@@ -237,12 +240,12 @@ def _draw_panel(
             ),
             fill=body_fill,
             outline=OUTLINE,
-            width=1,
+            width=max(1, round(scale)),
         )
 
     # Draw labels after both zones and candles so OB/PB stays on the front
     # layer and remains readable when a candle crosses the zone.
-    font = _zone_font()
+    font = _zone_font(scale)
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
@@ -269,7 +272,7 @@ def _draw_panel(
             (0, 0),
             annotation.label,
             font=font,
-            stroke_width=1,
+            stroke_width=0,
         )
         label_width = label_box[2] - label_box[0]
         label_height = label_box[3] - label_box[1]
@@ -293,17 +296,20 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     """Render all panels vertically without axes or grid lines."""
     canvas_width = 1080
     canvas_height = 720
-    outer_x = 36
-    outer_y = 28
-    panel_gap = 24
-    panel_width = canvas_width - outer_x * 2
+    scale = RENDER_SCALE
+    render_width = canvas_width * scale
+    render_height = canvas_height * scale
+    outer_x = 36 * scale
+    outer_y = 28 * scale
+    panel_gap = 24 * scale
+    panel_width = render_width - outer_x * 2
     panel_height = (
-        canvas_height - outer_y * 2 - panel_gap * (len(request.panels) - 1)
+        render_height - outer_y * 2 - panel_gap * (len(request.panels) - 1)
     ) // len(request.panels)
 
     image = Image.new(
         "RGBA",
-        (canvas_width, canvas_height),
+        (render_width, render_height),
         BACKGROUND + (255,),
     )
 
@@ -329,6 +335,7 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             panel_width,
             panel_height,
             draw_zones=False,
+            scale=scale,
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,6 +345,10 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         Image.new("RGBA", image.size, BACKGROUND + (255,)),
         image,
     ).convert("RGB")
+    flattened = flattened.resize(
+        (canvas_width, canvas_height),
+        Image.Resampling.LANCZOS,
+    )
     flattened.save(output_path, format="PNG", optimize=True)
 
 
