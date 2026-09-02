@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import main
-from app.kline_render import _body_width
+from app.kline_render import ZONE_FILL, ZONE_LABEL, _body_width, _zone_font
 
 
 AUTH = {"Authorization": "Bearer kline-test-token"}
@@ -103,6 +103,64 @@ class KlineRenderTests(unittest.TestCase):
 
     def test_candle_body_uses_a_wider_share_of_each_cell(self):
         self.assertGreaterEqual(_body_width(6.0), 4)
+
+    def test_zone_label_font_is_readable(self):
+        self.assertGreaterEqual(getattr(_zone_font(), "size", 0), 16)
+
+    def test_renders_ob_annotation_behind_candles(self):
+        payload = kline_payload()
+        payload["panels"][0]["annotations"] = [{
+            "annotation_id": "ob_1",
+            "type": "ob",
+            "label": "OB",
+            "direction": "bullish",
+            "start_index": 4,
+            "end_index": 12,
+            "price_low": 102.0,
+            "price_high": 112.0,
+        }]
+
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
+        image_path = Path(main.MEDIA_DIR) / file_name
+        self.addCleanup(image_path.unlink, missing_ok=True)
+
+        with Image.open(image_path) as image:
+            colors = set(image.getdata())
+
+        self.assertIn(ZONE_FILL, colors)
+        self.assertTrue(
+            any(
+                red >= 180 and green <= 130 and blue <= 140
+                for red, green, blue in colors
+            )
+        )
+
+    def test_rejects_inverted_annotation_price_range(self):
+        payload = kline_payload()
+        payload["panels"][0]["annotations"] = [{
+            "annotation_id": "bad_1",
+            "type": "ob",
+            "label": "OB",
+            "direction": "bullish",
+            "start_index": 4,
+            "end_index": 12,
+            "price_low": 112.0,
+            "price_high": 102.0,
+        }]
+
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+
+        self.assertEqual(response.status_code, 422, response.text)
 
     def test_missing_configuration_remains_fail_closed(self):
         with patch.object(main, "TOKEN", "change-me"):

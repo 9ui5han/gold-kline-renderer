@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter
-from PIL import Image, ImageDraw
-from pydantic import BaseModel, ConfigDict, Field
+from PIL import Image, ImageDraw, ImageFont
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class KlineBar(BaseModel):
@@ -21,12 +21,34 @@ class KlineBar(BaseModel):
     c: float
 
 
+class KlineAnnotation(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    annotation_id: str = Field(min_length=1, max_length=64)
+    type: Literal["ob", "pb"]
+    label: str = Field(min_length=1, max_length=32)
+    direction: Literal["bullish", "bearish", "neutral"]
+    start_index: int = Field(ge=0)
+    end_index: int = Field(ge=0)
+    price_low: float
+    price_high: float
+
+    @model_validator(mode="after")
+    def validate_range(self) -> "KlineAnnotation":
+        if self.end_index < self.start_index:
+            raise ValueError("ANNOTATION_INDEX_RANGE_INVALID")
+        if self.price_high < self.price_low:
+            raise ValueError("ANNOTATION_PRICE_RANGE_INVALID")
+        return self
+
+
 class KlinePanel(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     panel_id: str = Field(min_length=1, max_length=64)
     visual_type: Literal["candlestick", "price_path", "mixed"]
     bars: list[KlineBar] = Field(min_length=20, max_length=300)
+    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
 
 
 class KlineRenderRequest(BaseModel):
@@ -48,6 +70,8 @@ UP_FILL = (242, 245, 248)
 DOWN_FILL = (48, 70, 126)
 OUTLINE = (24, 30, 40)
 BACKGROUND = (255, 255, 255)
+ZONE_FILL = (190, 204, 215)
+ZONE_LABEL = (218, 72, 84)
 
 
 def _price_y(price: float, price_min: float, price_max: float, top: int, height: int) -> float:
@@ -59,6 +83,10 @@ def _body_width(cell_width: float) -> int:
     return max(2, min(12, int(cell_width * 0.70)))
 
 
+def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    return ImageFont.load_default(size=18)
+
+
 def _draw_panel(
     draw: ImageDraw.ImageDraw,
     panel: KlinePanel,
@@ -68,6 +96,11 @@ def _draw_panel(
     height: int,
 ) -> None:
     values = [value for bar in panel.bars for value in (bar.h, bar.l)]
+    values.extend(
+        value
+        for annotation in panel.annotations
+        for value in (annotation.price_high, annotation.price_low)
+    )
     price_min = min(values)
     price_max = max(values)
     span = max(price_max - price_min, 1e-9)
@@ -78,6 +111,52 @@ def _draw_panel(
     cell_width = width / len(panel.bars)
     body_width = _body_width(cell_width)
     wick_width = 1
+
+    for annotation in panel.annotations:
+        start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
+        end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
+        if end_index < start_index:
+            continue
+
+        left_x = left + start_index * cell_width
+        right_x = left + (end_index + 1) * cell_width
+        top_y = _price_y(
+            annotation.price_high,
+            price_min,
+            price_max,
+            top,
+            height,
+        )
+        bottom_y = _price_y(
+            annotation.price_low,
+            price_min,
+            price_max,
+            top,
+            height,
+        )
+
+        draw.rectangle(
+            (left_x, top_y, right_x, bottom_y),
+            fill=ZONE_FILL,
+        )
+
+        font = _zone_font()
+        label_box = draw.textbbox(
+            (0, 0),
+            annotation.label,
+            font=font,
+        )
+        label_width = label_box[2] - label_box[0]
+        label_height = label_box[3] - label_box[1]
+        draw.text(
+            (
+                (left_x + right_x - label_width) / 2,
+                (top_y + bottom_y - label_height) / 2,
+            ),
+            annotation.label,
+            fill=ZONE_LABEL,
+            font=font,
+        )
 
     for index, bar in enumerate(panel.bars):
         center_x = left + (index + 0.5) * cell_width
