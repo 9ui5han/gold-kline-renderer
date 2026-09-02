@@ -84,7 +84,15 @@ def _body_width(cell_width: float) -> int:
 
 
 def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    return ImageFont.load_default(size=18)
+    bold_font_paths = (
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Helvetica Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    )
+    for font_path in bold_font_paths:
+        if Path(font_path).exists():
+            return ImageFont.truetype(font_path, size=28)
+    return ImageFont.load_default(size=28)
 
 
 def _draw_panel(
@@ -140,24 +148,6 @@ def _draw_panel(
             fill=ZONE_FILL,
         )
 
-        font = _zone_font()
-        label_box = draw.textbbox(
-            (0, 0),
-            annotation.label,
-            font=font,
-        )
-        label_width = label_box[2] - label_box[0]
-        label_height = label_box[3] - label_box[1]
-        draw.text(
-            (
-                (left_x + right_x - label_width) / 2,
-                (top_y + bottom_y - label_height) / 2,
-            ),
-            annotation.label,
-            fill=ZONE_LABEL,
-            font=font,
-        )
-
     for index, bar in enumerate(panel.bars):
         center_x = left + (index + 0.5) * cell_width
         high_y = _price_y(bar.h, price_min, price_max, top, height)
@@ -189,9 +179,54 @@ def _draw_panel(
             width=1,
         )
 
+    # Draw labels after both zones and candles so OB/PB stays on the front
+    # layer and remains readable when a candle crosses the zone.
+    font = _zone_font()
+    for annotation in panel.annotations:
+        start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
+        end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
+        if end_index < start_index:
+            continue
+
+        left_x = left + start_index * cell_width
+        right_x = left + (end_index + 1) * cell_width
+        top_y = _price_y(
+            annotation.price_high,
+            price_min,
+            price_max,
+            top,
+            height,
+        )
+        bottom_y = _price_y(
+            annotation.price_low,
+            price_min,
+            price_max,
+            top,
+            height,
+        )
+        label_box = draw.textbbox(
+            (0, 0),
+            annotation.label,
+            font=font,
+            stroke_width=1,
+        )
+        label_width = label_box[2] - label_box[0]
+        label_height = label_box[3] - label_box[1]
+        draw.text(
+            (
+                (left_x + right_x - label_width) / 2,
+                (top_y + bottom_y - label_height) / 2,
+            ),
+            annotation.label,
+            fill=ZONE_LABEL,
+            font=font,
+            stroke_width=1,
+            stroke_fill=ZONE_LABEL,
+        )
+
 
 def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
-    """Render all panels vertically without axes, grid, labels, or annotations."""
+    """Render all panels vertically without axes or grid lines."""
     canvas_width = 1080
     canvas_height = 720
     outer_x = 36

@@ -1,12 +1,18 @@
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
 from PIL import Image
 
 from app import main
-from app.kline_render import ZONE_FILL, ZONE_LABEL, _body_width, _zone_font
+from app.kline_render import (
+    ZONE_FILL,
+    ZONE_LABEL,
+    _body_width,
+    _draw_panel,
+    _zone_font,
+)
 
 
 AUTH = {"Authorization": "Bearer kline-test-token"}
@@ -105,9 +111,44 @@ class KlineRenderTests(unittest.TestCase):
         self.assertGreaterEqual(_body_width(6.0), 4)
 
     def test_zone_label_font_is_readable(self):
-        self.assertGreaterEqual(getattr(_zone_font(), "size", 0), 16)
+        self.assertGreaterEqual(getattr(_zone_font(), "size", 0), 24)
 
-    def test_renders_ob_annotation_behind_candles(self):
+    def test_zone_label_is_drawn_after_candles(self):
+        draw = Mock()
+        draw.textbbox.return_value = (0, 0, 20, 20)
+        panel = kline_payload()["panels"][0]
+        panel["annotations"] = [{
+            "annotation_id": "ob_1",
+            "type": "ob",
+            "label": "OB",
+            "direction": "bullish",
+            "start_index": 4,
+            "end_index": 12,
+            "price_low": 102.0,
+            "price_high": 112.0,
+        }]
+
+        from app.kline_render import KlinePanel
+
+        _draw_panel(
+            draw,
+            KlinePanel.model_validate(panel),
+            36,
+            28,
+            1008,
+            664,
+        )
+
+        method_names = [call[0] for call in draw.method_calls]
+        text_index = method_names.index("text")
+        last_rectangle_index = max(
+            index
+            for index, name in enumerate(method_names)
+            if name == "rectangle"
+        )
+        self.assertGreater(text_index, last_rectangle_index)
+
+    def test_renders_ob_annotation(self):
         payload = kline_payload()
         payload["panels"][0]["annotations"] = [{
             "annotation_id": "ob_1",
