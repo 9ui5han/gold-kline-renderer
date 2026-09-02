@@ -82,6 +82,24 @@ class KlineRenderTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422, response.text)
 
+    def test_uses_hollow_up_candles_dark_down_candles_and_dark_outlines(self):
+        payload = kline_payload()
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
+        image_path = Path(main.MEDIA_DIR) / file_name
+        self.addCleanup(image_path.unlink, missing_ok=True)
+
+        with Image.open(image_path) as image:
+            colors = set(image.getdata())
+        self.assertIn((242, 245, 248), colors)
+        self.assertIn((48, 70, 126), colors)
+        self.assertIn((24, 30, 40), colors)
+
     def test_missing_configuration_remains_fail_closed(self):
         with patch.object(main, "TOKEN", "change-me"):
             response = self.client.post(

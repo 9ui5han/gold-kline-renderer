@@ -44,8 +44,9 @@ class KlineRenderResponse(BaseModel):
     bar_count: int
 
 
-UP_COLOR = (213, 78, 78)
-DOWN_COLOR = (57, 157, 111)
+UP_FILL = (242, 245, 248)
+DOWN_FILL = (48, 70, 126)
+OUTLINE = (24, 30, 40)
 BACKGROUND = (255, 255, 255)
 
 
@@ -71,8 +72,8 @@ def _draw_panel(
     price_max += padding
 
     cell_width = width / len(panel.bars)
-    body_width = max(2, min(18, int(cell_width * 0.62)))
-    wick_width = max(1, min(3, body_width // 4))
+    body_width = max(2, min(12, int(cell_width * 0.55)))
+    wick_width = 1
 
     for index, bar in enumerate(panel.bars):
         center_x = left + (index + 0.5) * cell_width
@@ -80,11 +81,11 @@ def _draw_panel(
         low_y = _price_y(bar.l, price_min, price_max, top, height)
         open_y = _price_y(bar.o, price_min, price_max, top, height)
         close_y = _price_y(bar.c, price_min, price_max, top, height)
-        color = UP_COLOR if bar.c >= bar.o else DOWN_COLOR
+        body_fill = UP_FILL if bar.c >= bar.o else DOWN_FILL
 
         draw.line(
             (center_x, high_y, center_x, low_y),
-            fill=color,
+            fill=OUTLINE,
             width=wick_width,
         )
         body_top = min(open_y, close_y)
@@ -100,7 +101,9 @@ def _draw_panel(
                 center_x + body_width / 2,
                 body_bottom,
             ),
-            fill=color,
+            fill=body_fill,
+            outline=OUTLINE,
+            width=1,
         )
 
 
