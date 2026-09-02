@@ -70,7 +70,22 @@ UP_FILL = (242, 245, 248)
 DOWN_FILL = (48, 70, 126)
 OUTLINE = (24, 30, 40)
 BACKGROUND = (255, 255, 255)
-ZONE_FILL = (190, 204, 215)
+ZONE_OB_COLOR = (112, 163, 201, 105)
+ZONE_PB_COLOR = (232, 173, 88, 105)
+
+
+def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
+    alpha = color[3] / 255
+    return tuple(
+        round(color[index] * alpha + BACKGROUND[index] * (1 - alpha))
+        for index in range(3)
+    )
+
+
+# These are the colors visible after compositing the translucent zones on the
+# white canvas. They are kept as named RGB values for callers and tests.
+ZONE_FILL = _visible_zone_color(ZONE_OB_COLOR)
+ZONE_FILL_PB = _visible_zone_color(ZONE_PB_COLOR)
 ZONE_LABEL = (218, 72, 84)
 
 
@@ -143,9 +158,14 @@ def _draw_panel(
             height,
         )
 
+        zone_color = (
+            ZONE_OB_COLOR
+            if annotation.type == "ob"
+            else ZONE_PB_COLOR
+        )
         draw.rectangle(
             (left_x, top_y, right_x, bottom_y),
-            fill=ZONE_FILL,
+            fill=zone_color,
         )
 
     for index, bar in enumerate(panel.bars):
@@ -237,14 +257,24 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         canvas_height - outer_y * 2 - panel_gap * (len(request.panels) - 1)
     ) // len(request.panels)
 
-    image = Image.new("RGB", (canvas_width, canvas_height), BACKGROUND)
+    image = Image.new(
+        "RGBA",
+        (canvas_width, canvas_height),
+        BACKGROUND + (255,),
+    )
     draw = ImageDraw.Draw(image)
     for index, panel in enumerate(request.panels):
         panel_top = outer_y + index * (panel_height + panel_gap)
         _draw_panel(draw, panel, outer_x, panel_top, panel_width, panel_height)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output_path, format="PNG", optimize=True)
+    # Flatten the RGBA drawing onto the white canvas so the returned PNG stays
+    # RGB while preserving the translucent appearance of both zone colors.
+    flattened = Image.alpha_composite(
+        Image.new("RGBA", image.size, BACKGROUND + (255,)),
+        image,
+    ).convert("RGB")
+    flattened.save(output_path, format="PNG", optimize=True)
 
 
 def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:

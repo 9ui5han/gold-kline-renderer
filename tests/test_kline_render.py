@@ -8,6 +8,7 @@ from PIL import Image
 from app import main
 from app.kline_render import (
     ZONE_FILL,
+    ZONE_FILL_PB,
     ZONE_LABEL,
     _body_width,
     _draw_panel,
@@ -181,6 +182,48 @@ class KlineRenderTests(unittest.TestCase):
                 for red, green, blue in colors
             )
         )
+
+    def test_renders_ob_and_pb_with_different_translucent_colors(self):
+        payload = kline_payload()
+        payload["panels"][0]["annotations"] = [
+            {
+                "annotation_id": "ob_1",
+                "type": "ob",
+                "label": "OB",
+                "direction": "bullish",
+                "start_index": 1,
+                "end_index": 5,
+                "price_low": 100.0,
+                "price_high": 104.0,
+            },
+            {
+                "annotation_id": "pb_1",
+                "type": "pb",
+                "label": "PB",
+                "direction": "bearish",
+                "start_index": 10,
+                "end_index": 14,
+                "price_low": 113.0,
+                "price_high": 117.0,
+            },
+        ]
+
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
+        image_path = Path(main.MEDIA_DIR) / file_name
+        self.addCleanup(image_path.unlink, missing_ok=True)
+
+        with Image.open(image_path) as image:
+            colors = set(image.getdata())
+
+        self.assertNotEqual(ZONE_FILL, ZONE_FILL_PB)
+        self.assertIn(ZONE_FILL, colors)
+        self.assertIn(ZONE_FILL_PB, colors)
 
     def test_rejects_inverted_annotation_price_range(self):
         payload = kline_payload()
