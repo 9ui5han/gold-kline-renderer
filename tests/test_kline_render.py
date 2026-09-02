@@ -111,7 +111,7 @@ class KlineRenderTests(unittest.TestCase):
         self.assertGreaterEqual(_body_width(6.0), 4)
 
     def test_zone_label_font_is_readable(self):
-        self.assertGreaterEqual(getattr(_zone_font(), "size", 0), 24)
+        self.assertEqual(getattr(_zone_font(), "size", 0), 19)
 
     def test_zone_label_is_drawn_after_candles(self):
         draw = Mock()

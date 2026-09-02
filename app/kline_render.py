@@ -91,8 +91,8 @@ def _zone_font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     )
     for font_path in bold_font_paths:
         if Path(font_path).exists():
-            return ImageFont.truetype(font_path, size=28)
-    return ImageFont.load_default(size=28)
+            return ImageFont.truetype(font_path, size=19)
+    return ImageFont.load_default(size=19)
 
 
 def _draw_panel(
