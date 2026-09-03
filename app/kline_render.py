@@ -21,6 +21,15 @@ class KlineBar(BaseModel):
     c: float
 
 
+class NormalizedBox(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+
+
 class KlineAnnotation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -49,6 +58,7 @@ class KlinePanel(BaseModel):
     visual_type: Literal["candlestick", "price_path", "mixed"]
     bars: list[KlineBar] = Field(min_length=20, max_length=300)
     annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
+    plot_box: NormalizedBox | None = None
 
 
 class TextOverlay(BaseModel):
@@ -158,7 +168,9 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         box_width = overlay.width * width
         box_height = overlay.height * height
         font = _text_font(overlay, width)
-        text_box = draw.multiline_textbbox((0, 0), overlay.text, font=font, spacing=max(2, round(font.size * 0.22)))
+        lines = _wrap_text(draw, overlay.text, font, box_width)
+        wrapped_text = "\n".join(lines)
+        text_box = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=max(2, round(font.size * 0.22)))
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
         if overlay.align == "center":
@@ -170,12 +182,84 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         text_y = top + max(0, (box_height - text_height) / 2)
         draw.multiline_text(
             (text_x, text_y),
-            overlay.text,
+            wrapped_text,
             font=font,
             fill=OUTLINE,
             spacing=max(2, round(font.size * 0.22)),
             align=overlay.align if overlay.align != "unknown" else "left",
         )
+
+
+def _wrap_text(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    max_width: float,
+) -> list[str]:
+    """Wrap English text by words, hard-wrapping only unusually long tokens."""
+    lines: list[str] = []
+    for paragraph in str(text).splitlines() or [""]:
+        words = paragraph.split()
+        if not words:
+            lines.append("")
+            continue
+        current = ""
+        for word in words:
+            candidate = word if not current else f"{current} {word}"
+            if draw.textlength(candidate, font=font) <= max_width or not current:
+                current = candidate
+                continue
+            lines.append(current)
+            current = word
+        if current:
+            lines.append(current)
+    return lines or [""]
+
+
+def _box_intersects(left: NormalizedBox, right: NormalizedBox, gap: float) -> bool:
+    return not (
+        left.x + left.width + gap <= right.x
+        or right.x + right.width + gap <= left.x
+        or left.y + left.height + gap <= right.y
+        or right.y + right.height + gap <= left.y
+    )
+
+
+def _panel_box(
+    panel: KlinePanel,
+    fallback: NormalizedBox,
+    text_boxes: list[NormalizedBox],
+) -> NormalizedBox:
+    """Use the reference plot box and move it below text when boxes overlap."""
+    margin_x = 36 / CANVAS_WIDTH
+    margin_y = 28 / CANVAS_HEIGHT
+    source = panel.plot_box or fallback
+    x = max(margin_x, min(source.x, 1 - margin_x - 0.01))
+    y = max(margin_y, min(source.y, 1 - margin_y - 0.05))
+    width = min(source.width, 1 - margin_x - x)
+    height = min(source.height, 1 - margin_y - y)
+    gap = max(margin_x, margin_y)
+    current = NormalizedBox(x=x, y=y, width=max(width, 0.05), height=max(height, 0.05))
+    for text_box in text_boxes:
+        if not _box_intersects(current, text_box, gap):
+            continue
+        below = text_box.y + text_box.height + gap
+        if below < 1 - margin_y - 0.08:
+            current = NormalizedBox(
+                x=current.x,
+                y=max(current.y, below),
+                width=current.width,
+                height=max(0.08, min(current.height, 1 - margin_y - below)),
+            )
+        else:
+            available_height = max(0.08, text_box.y - gap - current.y)
+            current = NormalizedBox(
+                x=current.x,
+                y=current.y,
+                width=current.width,
+                height=min(current.height, available_height),
+            )
+    return current
 
 
 def _panel_price_bounds(panel: KlinePanel) -> tuple[float, float]:
@@ -383,27 +467,52 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         BACKGROUND + (255,),
     )
 
-    for index, panel in enumerate(request.panels):
-        panel_top = outer_y + index * (panel_height + panel_gap)
+    text_boxes = [
+        NormalizedBox(x=item.x, y=item.y, width=item.width, height=item.height)
+        for item in request.text_overlays
+    ]
+    fallback_boxes = [
+        NormalizedBox(
+            x=outer_x / canvas_width,
+            y=(outer_y + index * (panel_height + panel_gap)) / canvas_height,
+            width=panel_width / canvas_width,
+            height=panel_height / canvas_height,
+        )
+        for index in range(len(request.panels))
+    ]
+
+    panel_boxes = [
+        _panel_box(panel, fallback_boxes[index], text_boxes)
+        for index, panel in enumerate(request.panels)
+    ]
+
+    for panel, box in zip(request.panels, panel_boxes):
+        left = round(box.x * canvas_width * render_scale)
+        top = round(box.y * canvas_height * render_scale)
+        width = round(box.width * canvas_width * render_scale)
+        height = round(box.height * canvas_height * render_scale)
         image = _draw_zone_layers(
             image,
             panel,
-            outer_x * render_scale,
-            panel_top * render_scale,
-            panel_width * render_scale,
-            panel_height * render_scale,
+            left,
+            top,
+            width,
+            height,
         )
 
     draw = ImageDraw.Draw(image)
-    for index, panel in enumerate(request.panels):
-        panel_top = outer_y + index * (panel_height + panel_gap)
+    for panel, box in zip(request.panels, panel_boxes):
+        left = round(box.x * canvas_width * render_scale)
+        top = round(box.y * canvas_height * render_scale)
+        width = round(box.width * canvas_width * render_scale)
+        height = round(box.height * canvas_height * render_scale)
         _draw_panel(
             draw,
             panel,
-            outer_x * render_scale,
-            panel_top * render_scale,
-            panel_width * render_scale,
-            panel_height * render_scale,
+            left,
+            top,
+            width,
+            height,
             draw_zones=False,
             render_scale=render_scale,
         )

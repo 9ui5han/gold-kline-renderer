@@ -7,6 +7,7 @@ from PIL import Image, ImageDraw
 
 from app import main
 from app.kline_render import (
+    NormalizedBox,
     TEXT_RENDER_SCALE,
     ZONE_FILL,
     ZONE_FILL_PB,
@@ -14,6 +15,7 @@ from app.kline_render import (
     _body_width,
     _draw_panel,
     _zone_font,
+    _panel_box,
 )
 
 
@@ -107,6 +109,19 @@ class KlineRenderTests(unittest.TestCase):
         with Image.open(image_path) as image:
             self.assertEqual(image.size, (1024, 1024))
             self.assertIsNotNone(image.convert("RGB").getbbox())
+
+    def test_chart_box_is_moved_below_text_box_when_they_overlap(self):
+        from app.kline_render import KlinePanel
+
+        panel = KlinePanel.model_validate(kline_payload()["panels"][0] | {
+            "plot_box": {"x": 0.04, "y": 0.04, "width": 0.92, "height": 0.9},
+        })
+        chart_box = _panel_box(
+            panel,
+            NormalizedBox(x=0.04, y=0.04, width=0.92, height=0.9),
+            [NormalizedBox(x=0.05, y=0.05, width=0.9, height=0.18)],
+        )
+        self.assertGreaterEqual(chart_box.y, 0.18)
 
     def test_rejects_wrong_schema_version(self):
         payload = kline_payload()
