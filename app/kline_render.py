@@ -129,7 +129,7 @@ def _body_width(cell_width: float) -> int:
     # Target another 2x increase over the original candle width.  The layout
     # helper below clamps this target when the requested gap and canvas width
     # leave less room, while never allowing a sub-3px candle body.
-    return max(3, min(48, int(cell_width * 2.80)))
+    return max(3, min(96, int(cell_width * 5.60)))
 
 
 def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, float, float]:
@@ -403,6 +403,12 @@ def _draw_panel(
 
     for index, bar in enumerate(panel.bars):
         center_x = left + first_center + index * cell_width
+        body_left = center_x - body_width / 2
+        body_right = center_x + body_width / 2
+        # Do not draw clipped half-candles at the plot boundary.  The entire
+        # candle is omitted when its body cannot fit inside the safe edge.
+        if body_left < left or body_right > left + width:
+            continue
         high_y = _price_y(bar.h, price_min, price_max, top, height)
         low_y = _price_y(bar.l, price_min, price_max, top, height)
         open_y = _price_y(bar.o, price_min, price_max, top, height)
@@ -423,9 +429,9 @@ def _draw_panel(
             body_bottom = middle + half_min_height
         draw.rectangle(
             (
-                center_x - body_width / 2,
+                body_left,
                 body_top,
-                center_x + body_width / 2,
+                body_right,
                 body_bottom,
             ),
             fill=body_fill,
