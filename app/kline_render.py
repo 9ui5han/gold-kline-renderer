@@ -74,6 +74,8 @@ ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
 TEXT_RENDER_SCALE = 4
+CANVAS_WIDTH = 1024
+CANVAS_HEIGHT = 1024
 
 
 def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -298,8 +300,8 @@ def _draw_panel(
 
 def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     """Render all panels vertically without axes or grid lines."""
-    canvas_width = 1080
-    canvas_height = 720
+    canvas_width = CANVAS_WIDTH
+    canvas_height = CANVAS_HEIGHT
     outer_x = 36
     outer_y = 28
     panel_gap = 24

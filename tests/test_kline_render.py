@@ -71,7 +71,7 @@ class KlineRenderTests(unittest.TestCase):
         image_path = Path(main.MEDIA_DIR) / result["image_url"].rsplit("/", 1)[-1]
         self.addCleanup(image_path.unlink, missing_ok=True)
         with Image.open(image_path) as image:
-            self.assertEqual(image.size, (1080, 720))
+            self.assertEqual(image.size, (1024, 1024))
             self.assertEqual(image.format, "PNG")
             self.assertEqual(image.mode, "RGB")
 
