@@ -126,10 +126,10 @@ def _price_y(price: float, price_min: float, price_max: float, top: int, height:
 
 
 def _body_width(cell_width: float) -> int:
-    # Use roughly twice the previous body width so a 120-bar chart remains
-    # visually substantial at 1024px, while keeping a cap to avoid excessive
-    # overlap when a panel contains relatively few bars.
-    return max(2, min(24, int(cell_width * 1.40)))
+    # Target another 2x increase over the original candle width.  The layout
+    # helper below clamps this target when the requested gap and canvas width
+    # leave less room, while never allowing a sub-3px candle body.
+    return max(3, min(48, int(cell_width * 2.80)))
 
 
 def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, float, float]:
@@ -140,7 +140,7 @@ def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, f
     target_body = _body_width(nominal_cell / render_scale) * render_scale
     minimum_gap = 1.5 * render_scale
     max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
-    body_width = max(2.0 * render_scale, min(float(target_body), max_body))
+    body_width = max(3.0 * render_scale, min(float(target_body), max_body))
     step = body_width + minimum_gap
     data_width = body_width * bar_count + minimum_gap * max(0, bar_count - 1)
     first_center = (width - data_width) / 2 + body_width / 2
@@ -352,20 +352,9 @@ def _draw_panel(
         len(panel.bars),
         render_scale,
     )
-    # Center the horizontal span covered by the outermost OB/PB annotations.
-    # This keeps the teaching structure centered even when the generated
-    # candle series extends well beyond the marked regions.
-    valid_annotations = [
-        annotation
-        for annotation in panel.annotations
-        if panel.bars
-    ]
-    if valid_annotations:
-        first_index = min(max(0, annotation.start_index) for annotation in valid_annotations)
-        last_index = max(min(len(panel.bars) - 1, annotation.end_index) for annotation in valid_annotations)
-        marked_left = first_center + first_index * cell_width - cell_width / 2
-        marked_right = first_center + (last_index + 1) * cell_width - cell_width / 2
-        first_center += width / 2 - (marked_left + marked_right) / 2
+    # The complete generated candle sequence is the horizontal centering
+    # reference.  OB/PB zones use the same bar coordinates and therefore move
+    # with their corresponding candles instead of being centered separately.
     # Keep the complete candle span inside the plot's horizontal margins after
     # the annotation-centering shift.
     data_left = first_center - cell_width / 2
