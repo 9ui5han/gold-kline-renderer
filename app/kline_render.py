@@ -51,11 +51,27 @@ class KlinePanel(BaseModel):
     annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
 
 
+class TextOverlay(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    block_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    role: Literal["title", "body", "label", "list", "unknown"] = "body"
+    x: float = Field(ge=0, le=1)
+    y: float = Field(ge=0, le=1)
+    width: float = Field(gt=0, le=1)
+    height: float = Field(gt=0, le=1)
+    align: Literal["left", "center", "right", "unknown"] = "left"
+    font_size_ratio: float = Field(gt=0, le=0.2)
+    confidence: float = Field(ge=0, le=1)
+
+
 class KlineRenderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["generated-kline-v1"]
     panels: list[KlinePanel] = Field(min_length=1, max_length=4)
+    text_overlays: list[TextOverlay] = Field(default_factory=list, max_length=40)
 
 
 class KlineRenderResponse(BaseModel):
@@ -114,6 +130,52 @@ def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFo
         if Path(font_path).exists():
             return ImageFont.truetype(font_path, size=font_size)
     return ImageFont.load_default(size=font_size)
+
+
+def _text_font(overlay: TextOverlay, canvas_width: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_size = max(12, round(canvas_width * overlay.font_size_ratio))
+    bold = overlay.role in {"title", "label"}
+    paths = (
+        ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", True),
+        ("/System/Library/Fonts/Supplemental/Arial.ttf", False),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", True),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", False),
+    )
+    for path, is_bold in paths:
+        if Path(path).exists() and (not bold or is_bold):
+            return ImageFont.truetype(path, size=font_size)
+    return ImageFont.load_default(size=font_size)
+
+
+def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_scale: int) -> None:
+    if not overlays:
+        return
+    draw = ImageDraw.Draw(image)
+    width, height = image.size
+    for overlay in overlays:
+        left = overlay.x * width
+        top = overlay.y * height
+        box_width = overlay.width * width
+        box_height = overlay.height * height
+        font = _text_font(overlay, width)
+        text_box = draw.multiline_textbbox((0, 0), overlay.text, font=font, spacing=max(2, round(font.size * 0.22)))
+        text_width = text_box[2] - text_box[0]
+        text_height = text_box[3] - text_box[1]
+        if overlay.align == "center":
+            text_x = left + (box_width - text_width) / 2
+        elif overlay.align == "right":
+            text_x = left + box_width - text_width
+        else:
+            text_x = left
+        text_y = top + max(0, (box_height - text_height) / 2)
+        draw.multiline_text(
+            (text_x, text_y),
+            overlay.text,
+            font=font,
+            fill=OUTLINE,
+            spacing=max(2, round(font.size * 0.22)),
+            align=overlay.align if overlay.align != "unknown" else "left",
+        )
 
 
 def _panel_price_bounds(panel: KlinePanel) -> tuple[float, float]:
@@ -345,6 +407,8 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             draw_zones=False,
             render_scale=render_scale,
         )
+
+    _draw_text_overlays(image, request.text_overlays, render_scale)
 
     image = image.resize(
         (canvas_width, canvas_height),

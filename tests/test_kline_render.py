@@ -81,6 +81,33 @@ class KlineRenderTests(unittest.TestCase):
         self.assertEqual(media_response.status_code, 200, media_response.text)
         self.assertEqual(media_response.headers["content-type"], "image/png")
 
+    def test_renders_text_overlay_in_generated_png(self):
+        payload = kline_payload()
+        payload["text_overlays"] = [{
+            "block_id": "body_1",
+            "text": "A bearish rejection candle",
+            "role": "body",
+            "x": 0.05,
+            "y": 0.05,
+            "width": 0.9,
+            "height": 0.12,
+            "align": "center",
+            "font_size_ratio": 0.025,
+            "confidence": 1.0,
+        }]
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            json=payload,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        file_name = response.json()["image_url"].rsplit("/", 1)[-1]
+        image_path = Path(main.MEDIA_DIR) / file_name
+        self.addCleanup(image_path.unlink, missing_ok=True)
+        with Image.open(image_path) as image:
+            self.assertEqual(image.size, (1024, 1024))
+            self.assertIsNotNone(image.convert("RGB").getbbox())
+
     def test_rejects_wrong_schema_version(self):
         payload = kline_payload()
         payload["schema_version"] = "other-v1"
