@@ -15,6 +15,7 @@ from app.kline_render import (
     ZONE_LABEL,
     _body_width,
     _draw_panel,
+    _fit_title_font,
     _text_font,
     _text_overlay_box,
     _zone_font,
@@ -129,6 +130,25 @@ class KlineRenderTests(unittest.TestCase):
 
         self.assertEqual(getattr(_text_font(title, 1024), "size", 0), 59)
         self.assertEqual(_text_overlay_box(title), (0.025, 0.068, 0.95, 0.07))
+
+    def test_long_title_is_reduced_until_it_fits_on_one_line(self):
+        title = TextOverlay.model_validate({
+            "block_id": "long_title",
+            "text": "BEARISH PROPULSION BLOCK WITH EXTENDED MARKET STRUCTURE EXPLANATION",
+            "role": "title",
+            "x": 0.1,
+            "y": 0.1,
+            "width": 0.8,
+            "height": 0.1,
+            "align": "center",
+            "font_size_ratio": 0.0575,
+            "confidence": 1.0,
+        })
+        draw = ImageDraw.Draw(Image.new("RGBA", (1024, 1024)))
+        font = _fit_title_font(draw, title, 1024, 1024 * 0.95)
+
+        self.assertLess(getattr(font, "size", 0), 59)
+        self.assertLessEqual(draw.textlength(title.text, font=font), 1024 * 0.95)
 
     def test_chart_box_is_moved_below_text_box_when_they_overlap(self):
         from app.kline_render import KlinePanel

@@ -162,8 +162,12 @@ def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFo
     return ImageFont.load_default(size=font_size)
 
 
-def _text_font(overlay: TextOverlay, canvas_width: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    font_size = max(12, round(canvas_width * overlay.font_size_ratio))
+def _text_font(
+    overlay: TextOverlay,
+    canvas_width: int,
+    minimum_size: int = 12,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    font_size = max(minimum_size, round(canvas_width * overlay.font_size_ratio))
     bold = overlay.role in {"title", "label"}
     paths = (
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -185,6 +189,34 @@ def _text_overlay_box(overlay: TextOverlay) -> tuple[float, float, float, float]
     return (overlay.x, overlay.y, overlay.width, overlay.height)
 
 
+def _fit_title_font(
+    draw: ImageDraw.ImageDraw,
+    overlay: TextOverlay,
+    canvas_width: int,
+    max_width: float,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """Shrink a title only when needed so its complete text stays on one line."""
+    font = _text_font(overlay, canvas_width)
+    text_width = draw.textlength(overlay.text, font=font)
+    if text_width <= max_width:
+        return font
+
+    target_size = max(1, int(font.size * max_width / max(text_width, 1)))
+    fitted = _text_font(
+        overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
+        canvas_width,
+        minimum_size=1,
+    )
+    while fitted.size > 1 and draw.textlength(overlay.text, font=fitted) > max_width:
+        target_size -= 1
+        fitted = _text_font(
+            overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
+            canvas_width,
+            minimum_size=1,
+        )
+    return fitted
+
+
 def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_scale: int) -> None:
     if not overlays:
         return
@@ -201,8 +233,16 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         top = box_y * height
         box_width = box_width_ratio * width
         box_height = box_height_ratio * height
-        font = _text_font(overlay, width)
-        lines = _wrap_text(draw, overlay.text, font, box_width)
+        font = (
+            _fit_title_font(draw, overlay, width, box_width)
+            if overlay.role == "title"
+            else _text_font(overlay, width)
+        )
+        lines = (
+            [overlay.text]
+            if overlay.role == "title"
+            else _wrap_text(draw, overlay.text, font, box_width)
+        )
         wrapped_text = "\n".join(lines)
         text_box = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=max(2, round(font.size * 0.22)))
         text_width = text_box[2] - text_box[0]
