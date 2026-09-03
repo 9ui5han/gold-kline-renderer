@@ -138,7 +138,7 @@ def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, f
         return float(width) / 2, float(width), 2.0
     nominal_cell = width / bar_count
     target_body = _body_width(nominal_cell / render_scale) * render_scale
-    minimum_gap = 1.5 * render_scale
+    minimum_gap = 2.5 * render_scale
     max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
     body_width = max(3.0 * render_scale, min(float(target_body), max_body))
     step = body_width + minimum_gap
