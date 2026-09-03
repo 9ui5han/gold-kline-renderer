@@ -143,6 +143,36 @@ class KlineRenderTests(unittest.TestCase):
             )
         )
 
+    def test_supersampled_geometry_scales_strokes_without_changing_layout(self):
+        draw = Mock()
+        from app.kline_render import KlinePanel
+
+        _draw_panel(
+            draw,
+            KlinePanel.model_validate(kline_payload()["panels"][0]),
+            36 * TEXT_RENDER_SCALE,
+            28 * TEXT_RENDER_SCALE,
+            1008 * TEXT_RENDER_SCALE,
+            664 * TEXT_RENDER_SCALE,
+            draw_zones=False,
+            render_scale=TEXT_RENDER_SCALE,
+        )
+
+        self.assertTrue(draw.line.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs["width"] == TEXT_RENDER_SCALE
+                for call in draw.line.call_args_list
+            )
+        )
+        self.assertTrue(draw.rectangle.call_args_list)
+        self.assertTrue(
+            all(
+                call.kwargs["width"] == TEXT_RENDER_SCALE
+                for call in draw.rectangle.call_args_list
+            )
+        )
+
     def test_zone_label_font_is_readable(self):
         self.assertEqual(getattr(_zone_font(), "size", 0), 19)
 

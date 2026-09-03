@@ -73,7 +73,8 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
-TEXT_RENDER_SCALE = 4
+RENDER_SCALE = 4
+TEXT_RENDER_SCALE = RENDER_SCALE
 CANVAS_WIDTH = 1024
 CANVAS_HEIGHT = 1024
 
@@ -173,12 +174,13 @@ def _draw_panel(
     height: int,
     draw_zones: bool = True,
     text_layer: Image.Image | None = None,
+    render_scale: int = 1,
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
     cell_width = width / len(panel.bars)
-    body_width = _body_width(cell_width)
-    wick_width = 1
+    body_width = _body_width(cell_width / render_scale) * render_scale
+    wick_width = max(1, round(render_scale))
 
     if draw_zones:
         for annotation in panel.annotations:
@@ -229,10 +231,11 @@ def _draw_panel(
         )
         body_top = min(open_y, close_y)
         body_bottom = max(open_y, close_y)
-        if body_bottom - body_top < 2:
+        if body_bottom - body_top < 2 * render_scale:
             middle = (body_top + body_bottom) / 2
-            body_top = middle - 1
-            body_bottom = middle + 1
+            half_min_height = render_scale
+            body_top = middle - half_min_height
+            body_bottom = middle + half_min_height
         draw.rectangle(
             (
                 center_x - body_width / 2,
@@ -242,7 +245,7 @@ def _draw_panel(
             ),
             fill=body_fill,
             outline=OUTLINE,
-            width=1,
+            width=wick_width,
         )
 
     # Draw labels after both zones and candles so OB/PB stays on the front
@@ -251,7 +254,8 @@ def _draw_panel(
     # resolution; candle geometry stays at its original size.
     text_draw = ImageDraw.Draw(text_layer) if text_layer is not None else draw
     coordinate_scale = TEXT_RENDER_SCALE if text_layer is not None else 1.0
-    font = _zone_font(coordinate_scale)
+    font_scale = TEXT_RENDER_SCALE if text_layer is not None else render_scale
+    font = _zone_font(font_scale)
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
@@ -302,6 +306,7 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     """Render all panels vertically without axes or grid lines."""
     canvas_width = CANVAS_WIDTH
     canvas_height = CANVAS_HEIGHT
+    render_scale = RENDER_SCALE
     outer_x = 36
     outer_y = 28
     panel_gap = 24
@@ -312,7 +317,7 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
 
     image = Image.new(
         "RGBA",
-        (canvas_width, canvas_height),
+        (canvas_width * render_scale, canvas_height * render_scale),
         BACKGROUND + (255,),
     )
 
@@ -321,36 +326,30 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         image = _draw_zone_layers(
             image,
             panel,
-            outer_x,
-            panel_top,
-            panel_width,
-            panel_height,
+            outer_x * render_scale,
+            panel_top * render_scale,
+            panel_width * render_scale,
+            panel_height * render_scale,
         )
 
     draw = ImageDraw.Draw(image)
-    text_layer = Image.new(
-        "RGBA",
-        (canvas_width * TEXT_RENDER_SCALE, canvas_height * TEXT_RENDER_SCALE),
-        (0, 0, 0, 0),
-    )
     for index, panel in enumerate(request.panels):
         panel_top = outer_y + index * (panel_height + panel_gap)
         _draw_panel(
             draw,
             panel,
-            outer_x,
-            panel_top,
-            panel_width,
-            panel_height,
+            outer_x * render_scale,
+            panel_top * render_scale,
+            panel_width * render_scale,
+            panel_height * render_scale,
             draw_zones=False,
-            text_layer=text_layer,
+            render_scale=render_scale,
         )
 
-    text_layer = text_layer.resize(
+    image = image.resize(
         (canvas_width, canvas_height),
         Image.Resampling.LANCZOS,
     )
-    image = Image.alpha_composite(image, text_layer)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     # Flatten the RGBA drawing onto the white canvas so the returned PNG stays
