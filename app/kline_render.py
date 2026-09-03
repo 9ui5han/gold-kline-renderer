@@ -99,6 +99,8 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
+TITLE_ACCENT = DOWN_FILL
+BODY_TEXT = (28, 31, 36)
 RENDER_SCALE = 4
 TEXT_RENDER_SCALE = RENDER_SCALE
 CANVAS_WIDTH = 1024
@@ -161,16 +163,18 @@ def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFo
 
 
 def _text_font(overlay: TextOverlay, canvas_width: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    font_size = max(12, round(canvas_width * overlay.font_size_ratio))
+    ratio = min(overlay.font_size_ratio, 0.032) if overlay.role == "title" else overlay.font_size_ratio
+    font_size = max(12, round(canvas_width * ratio))
     bold = overlay.role in {"title", "label"}
     paths = (
-        ("/System/Library/Fonts/Supplemental/Arial Bold.ttf", True),
-        ("/System/Library/Fonts/Supplemental/Arial.ttf", False),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", True),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", False),
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ) if bold else (
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     )
-    for path, is_bold in paths:
-        if Path(path).exists() and (not bold or is_bold):
+    for path in paths:
+        if Path(path).exists():
             return ImageFont.truetype(path, size=font_size)
     return ImageFont.load_default(size=font_size)
 
@@ -203,14 +207,20 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         else:
             text_x = left
         text_y = top + max(0, (box_height - text_height) / 2)
-        draw.multiline_text(
-            (text_x, text_y),
-            wrapped_text,
-            font=font,
-            fill=OUTLINE,
-            spacing=max(2, round(font.size * 0.22)),
-            align=overlay.align if overlay.align != "unknown" else "left",
-        )
+        if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
+            prefix, accent = wrapped_text.split("PROPULSION BLOCK", 1)
+            prefix_width = draw.textlength(prefix, font=font)
+            draw.text((text_x, text_y), prefix, font=font, fill=BODY_TEXT)
+            draw.text((text_x + prefix_width, text_y), "PROPULSION BLOCK", font=font, fill=TITLE_ACCENT)
+        else:
+            draw.multiline_text(
+                (text_x, text_y),
+                wrapped_text,
+                font=font,
+                fill=BODY_TEXT,
+                spacing=max(2, round(font.size * 0.22)),
+                align=overlay.align if overlay.align != "unknown" else "left",
+            )
 
 
 def _wrap_text(
