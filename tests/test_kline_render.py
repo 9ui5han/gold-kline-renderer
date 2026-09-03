@@ -123,6 +123,20 @@ class KlineRenderTests(unittest.TestCase):
         )
         self.assertGreaterEqual(chart_box.y, 0.18)
 
+    def test_zone_labels_do_not_reserve_chart_space(self):
+        from app.kline_render import KlinePanel
+
+        panel = KlinePanel.model_validate(kline_payload()["panels"][0] | {
+            "plot_box": {"x": 0.0, "y": 0.414, "width": 0.933, "height": 0.586},
+        })
+        chart_box = _panel_box(
+            panel,
+            NormalizedBox(x=0.0, y=0.414, width=0.933, height=0.586),
+            [],  # role=label overlays are filtered before this helper is called
+        )
+        self.assertAlmostEqual(chart_box.y, 0.414)
+        self.assertAlmostEqual(chart_box.height, 0.55865625)
+
     def test_rejects_wrong_schema_version(self):
         payload = kline_payload()
         payload["schema_version"] = "other-v1"

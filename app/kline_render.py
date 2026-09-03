@@ -126,7 +126,10 @@ def _price_y(price: float, price_min: float, price_max: float, top: int, height:
 
 
 def _body_width(cell_width: float) -> int:
-    return max(2, min(12, int(cell_width * 0.70)))
+    # Use roughly twice the previous body width so a 120-bar chart remains
+    # visually substantial at 1024px, while keeping a cap to avoid excessive
+    # overlap when a panel contains relatively few bars.
+    return max(2, min(24, int(cell_width * 1.40)))
 
 
 def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -163,6 +166,11 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
     draw = ImageDraw.Draw(image)
     width, height = image.size
     for overlay in overlays:
+        # OB/PB labels are rendered from the generated K-line annotations.
+        # Drawing the reference labels again would duplicate them and could
+        # leave labels floating away from the newly generated zones.
+        if overlay.role == "label":
+            continue
         left = overlay.x * width
         top = overlay.y * height
         box_width = overlay.width * width
@@ -467,9 +475,12 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         BACKGROUND + (255,),
     )
 
+    # Only title/body/list text reserves space above the chart.  Labels such
+    # as OB and PB belong inside generated zones and must not shrink the chart.
     text_boxes = [
         NormalizedBox(x=item.x, y=item.y, width=item.width, height=item.height)
         for item in request.text_overlays
+        if item.role != "label"
     ]
     fallback_boxes = [
         NormalizedBox(
