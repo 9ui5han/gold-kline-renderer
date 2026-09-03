@@ -9,11 +9,14 @@ from app import main
 from app.kline_render import (
     NormalizedBox,
     TEXT_RENDER_SCALE,
+    TextOverlay,
     ZONE_FILL,
     ZONE_FILL_PB,
     ZONE_LABEL,
     _body_width,
     _draw_panel,
+    _text_font,
+    _text_overlay_box,
     _zone_font,
     _panel_box,
 )
@@ -109,6 +112,23 @@ class KlineRenderTests(unittest.TestCase):
         with Image.open(image_path) as image:
             self.assertEqual(image.size, (1024, 1024))
             self.assertIsNotNone(image.convert("RGB").getbbox())
+
+    def test_title_uses_requested_115_percent_size_and_single_line_box(self):
+        title = TextOverlay.model_validate({
+            "block_id": "title",
+            "text": "BEARISH PROPULSION BLOCK",
+            "role": "title",
+            "x": 0.196,
+            "y": 0.079,
+            "width": 0.493,
+            "height": 0.056,
+            "align": "center",
+            "font_size_ratio": 0.0575,
+            "confidence": 1.0,
+        })
+
+        self.assertEqual(getattr(_text_font(title, 1024), "size", 0), 59)
+        self.assertEqual(_text_overlay_box(title), (0.025, 0.068, 0.95, 0.07))
 
     def test_chart_box_is_moved_below_text_box_when_they_overlap(self):
         from app.kline_render import KlinePanel

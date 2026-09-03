@@ -163,8 +163,7 @@ def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFo
 
 
 def _text_font(overlay: TextOverlay, canvas_width: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    ratio = min(overlay.font_size_ratio, 0.032) if overlay.role == "title" else overlay.font_size_ratio
-    font_size = max(12, round(canvas_width * ratio))
+    font_size = max(12, round(canvas_width * overlay.font_size_ratio))
     bold = overlay.role in {"title", "label"}
     paths = (
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
@@ -179,6 +178,13 @@ def _text_font(overlay: TextOverlay, canvas_width: int) -> ImageFont.FreeTypeFon
     return ImageFont.load_default(size=font_size)
 
 
+def _text_overlay_box(overlay: TextOverlay) -> tuple[float, float, float, float]:
+    """Return the drawing box, reserving a full-width single line for titles."""
+    if overlay.role == "title":
+        return (0.025, 0.068, 0.95, 0.07)
+    return (overlay.x, overlay.y, overlay.width, overlay.height)
+
+
 def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_scale: int) -> None:
     if not overlays:
         return
@@ -190,10 +196,11 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         # leave labels floating away from the newly generated zones.
         if overlay.role == "label":
             continue
-        left = overlay.x * width
-        top = overlay.y * height
-        box_width = overlay.width * width
-        box_height = overlay.height * height
+        box_x, box_y, box_width_ratio, box_height_ratio = _text_overlay_box(overlay)
+        left = box_x * width
+        top = box_y * height
+        box_width = box_width_ratio * width
+        box_height = box_height_ratio * height
         font = _text_font(overlay, width)
         lines = _wrap_text(draw, overlay.text, font, box_width)
         wrapped_text = "\n".join(lines)
