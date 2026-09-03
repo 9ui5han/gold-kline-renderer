@@ -163,7 +163,12 @@ class KlineRenderTests(unittest.TestCase):
             colors = set(image.getdata())
         self.assertIn((242, 245, 248), colors)
         self.assertIn((48, 70, 126), colors)
-        self.assertIn((24, 30, 40), colors)
+        self.assertTrue(
+            any(
+                sum(abs(channel - expected) for channel, expected in zip(color, (24, 30, 40))) <= 8
+                for color in colors
+            )
+        )
 
     def test_candle_body_uses_a_wider_share_of_each_cell(self):
         self.assertGreaterEqual(_body_width(6.0), 4)

@@ -132,6 +132,21 @@ def _body_width(cell_width: float) -> int:
     return max(2, min(24, int(cell_width * 1.40)))
 
 
+def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, float, float]:
+    """Return (first_center, step, body_width) with a visible candle gap."""
+    if bar_count <= 0:
+        return float(width) / 2, float(width), 2.0
+    nominal_cell = width / bar_count
+    target_body = _body_width(nominal_cell / render_scale) * render_scale
+    minimum_gap = 1.5 * render_scale
+    max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
+    body_width = max(2.0 * render_scale, min(float(target_body), max_body))
+    step = body_width + minimum_gap
+    data_width = body_width * bar_count + minimum_gap * max(0, bar_count - 1)
+    first_center = (width - data_width) / 2 + body_width / 2
+    return first_center, step, body_width
+
+
 def _zone_font(scale: float = 1.0) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     font_size = max(1, round(19 * scale))
     bold_font_paths = (
@@ -332,8 +347,35 @@ def _draw_panel(
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
-    cell_width = width / len(panel.bars)
-    body_width = _body_width(cell_width / render_scale) * render_scale
+    first_center, cell_width, body_width = _bar_layout(
+        width,
+        len(panel.bars),
+        render_scale,
+    )
+    # Center the horizontal span covered by the outermost OB/PB annotations.
+    # This keeps the teaching structure centered even when the generated
+    # candle series extends well beyond the marked regions.
+    valid_annotations = [
+        annotation
+        for annotation in panel.annotations
+        if panel.bars
+    ]
+    if valid_annotations:
+        first_index = min(max(0, annotation.start_index) for annotation in valid_annotations)
+        last_index = max(min(len(panel.bars) - 1, annotation.end_index) for annotation in valid_annotations)
+        marked_left = first_center + first_index * cell_width - cell_width / 2
+        marked_right = first_center + (last_index + 1) * cell_width - cell_width / 2
+        first_center += width / 2 - (marked_left + marked_right) / 2
+    # Keep the complete candle span inside the plot's horizontal margins after
+    # the annotation-centering shift.
+    data_left = first_center - cell_width / 2
+    data_right = first_center + (len(panel.bars) - 1) * cell_width + cell_width / 2
+    min_edge = 0.02 * width
+    max_edge = 0.98 * width
+    if data_left < min_edge:
+        first_center += min_edge - data_left
+    if data_right > max_edge:
+        first_center -= data_right - max_edge
     wick_width = max(1, round(render_scale))
 
     if draw_zones:
@@ -343,8 +385,8 @@ def _draw_panel(
             if end_index < start_index:
                 continue
 
-            left_x = left + start_index * cell_width
-            right_x = left + (end_index + 1) * cell_width
+            left_x = left + max(0.0, first_center + start_index * cell_width - cell_width / 2)
+            right_x = left + min(width, first_center + (end_index + 1) * cell_width - cell_width / 2)
             top_y = _price_y(
                 annotation.price_high,
                 price_min,
@@ -371,7 +413,7 @@ def _draw_panel(
             )
 
     for index, bar in enumerate(panel.bars):
-        center_x = left + (index + 0.5) * cell_width
+        center_x = left + first_center + index * cell_width
         high_y = _price_y(bar.h, price_min, price_max, top, height)
         low_y = _price_y(bar.l, price_min, price_max, top, height)
         open_y = _price_y(bar.o, price_min, price_max, top, height)
