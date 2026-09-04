@@ -279,10 +279,19 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
-            prefix, accent = wrapped_text.split("PROPULSION BLOCK", 1)
+            prefix, suffix = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)
+            accent = "PROPULSION BLOCK"
+            accent_width = draw.textlength(accent, font=font)
             draw.text((text_x, text_y), prefix, font=font, fill=BODY_TEXT)
             draw.text((text_x + prefix_width, text_y), "PROPULSION BLOCK", font=font, fill=TITLE_ACCENT)
+            if suffix:
+                draw.text(
+                    (text_x + prefix_width + accent_width, text_y),
+                    suffix,
+                    font=font,
+                    fill=TITLE_ACCENT,
+                )
         else:
             draw.multiline_text(
                 (text_x, text_y),
