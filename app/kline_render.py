@@ -494,11 +494,6 @@ def _draw_panel(
         close_y = _price_y(bar.c, price_min, price_max, top, height)
         body_fill = UP_FILL if bar.c >= bar.o else DOWN_FILL
 
-        draw.line(
-            (center_x, high_y, center_x, low_y),
-            fill=OUTLINE,
-            width=wick_width,
-        )
         body_top = min(open_y, close_y)
         body_bottom = max(open_y, close_y)
         if body_bottom - body_top < 2 * render_scale:
@@ -506,6 +501,16 @@ def _draw_panel(
             half_min_height = render_scale
             body_top = middle - half_min_height
             body_bottom = middle + half_min_height
+        # Preserve a visible wick after downsampling to the final image.
+        # Ordinary wicks are at least 0.5% of the effective plot height.
+        min_wick = max(2.0 * render_scale, height * 0.005)
+        wick_top = min(high_y, body_top - min_wick)
+        wick_bottom = max(low_y, body_bottom + min_wick)
+        draw.line(
+            (center_x, wick_top, center_x, wick_bottom),
+            fill=OUTLINE,
+            width=wick_width,
+        )
         draw.rectangle(
             (
                 body_left,
