@@ -146,9 +146,15 @@ def _bar_layout(
         return float(width) / 2, float(width), 2.0
     nominal_cell = width / bar_count
     if candle_body_ratio is not None:
-        step = nominal_cell
-        body_width = max(3.0 * render_scale, step * float(candle_body_ratio))
-        first_center = step / 2
+        # Keep the final-image gap at 1.5px while preserving the requested
+        # body-to-cell ratio.  Coordinates are rendered at 4x resolution.
+        minimum_gap = 1.5 * render_scale
+        body_width = max(3.0 * render_scale, nominal_cell * float(candle_body_ratio))
+        max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
+        body_width = min(body_width, max_body)
+        step = body_width + minimum_gap
+        data_width = body_width * bar_count + minimum_gap * max(0, bar_count - 1)
+        first_center = (width - data_width) / 2 + body_width / 2
         return first_center, step, body_width
 
     target_body = (
