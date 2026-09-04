@@ -383,10 +383,17 @@ def _draw_zone_layers(
     top: int,
     width: int,
     height: int,
+    render_scale: int = 1,
+    candle_body_ratio: float | None = None,
 ) -> Image.Image:
     """Composite each zone separately so overlapping zones blend together."""
     price_min, price_max = _panel_price_bounds(panel)
-    cell_width = width / len(panel.bars)
+    first_center, cell_width, _ = _bar_layout(
+        width,
+        len(panel.bars),
+        render_scale,
+        candle_body_ratio,
+    )
 
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
@@ -394,8 +401,8 @@ def _draw_zone_layers(
         if end_index < start_index:
             continue
 
-        left_x = left + start_index * cell_width
-        right_x = left + (end_index + 1) * cell_width
+        left_x = left + first_center + start_index * cell_width - cell_width / 2
+        right_x = left + first_center + (end_index + 1) * cell_width - cell_width / 2
         top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
         bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
         zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
@@ -630,6 +637,8 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             top,
             width,
             height,
+            render_scale=render_scale,
+            candle_body_ratio=request.candle_body_ratio,
         )
 
     draw = ImageDraw.Draw(image)
