@@ -217,17 +217,17 @@ class KlineRenderTests(unittest.TestCase):
 
     def test_uses_candle_body_width_sent_by_dify(self):
         request = KlineRenderRequest.model_validate(
-            kline_payload() | {"candle_body_width": 6.0}
+            kline_payload() | {"candle_body_ratio": 0.55}
         )
 
         _, _, body_width = _bar_layout(
             width=1008 * TEXT_RENDER_SCALE,
             bar_count=len(request.panels[0].bars),
             render_scale=TEXT_RENDER_SCALE,
-            candle_body_width=request.candle_body_width,
+            candle_body_ratio=request.candle_body_ratio,
         )
 
-        self.assertEqual(body_width, 6.0 * TEXT_RENDER_SCALE)
+        self.assertAlmostEqual(body_width, (1008 * TEXT_RENDER_SCALE / 20) * 0.55)
 
     def test_candle_geometry_stays_at_original_canvas_resolution(self):
         draw = Mock()

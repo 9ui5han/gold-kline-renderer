@@ -82,7 +82,7 @@ class KlineRenderRequest(BaseModel):
     schema_version: Literal["generated-kline-v1"]
     panels: list[KlinePanel] = Field(min_length=1, max_length=4)
     text_overlays: list[TextOverlay] = Field(default_factory=list, max_length=40)
-    candle_body_width: float | None = Field(default=None, ge=2.0, le=48.0)
+    candle_body_ratio: float | None = Field(default=None, ge=0.10, le=0.90)
 
 
 class KlineRenderResponse(BaseModel):
@@ -139,15 +139,15 @@ def _bar_layout(
     width: int,
     bar_count: int,
     render_scale: int,
-    candle_body_width: float | None = None,
+    candle_body_ratio: float | None = None,
 ) -> tuple[float, float, float]:
     """Return (first_center, step, body_width) with a visible candle gap."""
     if bar_count <= 0:
         return float(width) / 2, float(width), 2.0
     nominal_cell = width / bar_count
     target_body = (
-        float(candle_body_width) * render_scale
-        if candle_body_width is not None
+        nominal_cell * float(candle_body_ratio)
+        if candle_body_ratio is not None
         else _body_width(nominal_cell / render_scale) * render_scale
     )
     minimum_gap = 2.5 * render_scale
@@ -411,7 +411,7 @@ def _draw_panel(
     draw_zones: bool = True,
     text_layer: Image.Image | None = None,
     render_scale: int = 1,
-    candle_body_width: float | None = None,
+    candle_body_ratio: float | None = None,
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
@@ -419,7 +419,7 @@ def _draw_panel(
         width,
         len(panel.bars),
         render_scale,
-        candle_body_width,
+        candle_body_ratio,
     )
     # The complete generated candle sequence is the horizontal centering
     # reference.  OB/PB zones use the same bar coordinates and therefore move
@@ -522,8 +522,8 @@ def _draw_panel(
         if end_index < start_index:
             continue
 
-        left_x = left + start_index * cell_width
-        right_x = left + (end_index + 1) * cell_width
+        left_x = left + first_center + start_index * cell_width - cell_width / 2
+        right_x = left + first_center + (end_index + 1) * cell_width - cell_width / 2
         top_y = _price_y(
             annotation.price_high,
             price_min,
@@ -632,7 +632,7 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             height,
             draw_zones=False,
             render_scale=render_scale,
-            candle_body_width=request.candle_body_width,
+            candle_body_ratio=request.candle_body_ratio,
         )
 
     _draw_text_overlays(image, request.text_overlays, render_scale)
