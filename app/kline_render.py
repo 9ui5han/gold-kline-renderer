@@ -273,6 +273,10 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             text_x = left + box_width - text_width
         else:
             text_x = left
+        if overlay.role == "title":
+            # Titles describe the whole canvas, so a slightly inaccurate
+            # detected bbox must not move the heading off the true center.
+            text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, accent = wrapped_text.split("PROPULSION BLOCK", 1)
@@ -623,6 +627,12 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     panel_boxes = [
         _panel_box(panel, fallback_boxes[index], text_boxes)
         for index, panel in enumerate(request.panels)
+    ]
+    # Keep the complete chart panel centered on the canvas.  Text collision
+    # avoidance may adjust the panel width, but must not leave it side-shifted.
+    panel_boxes = [
+        box.model_copy(update={"x": max(0.0, (1.0 - box.width) / 2)})
+        for box in panel_boxes
     ]
 
     for panel, box in zip(request.panels, panel_boxes):
