@@ -273,6 +273,8 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             text_x = left + box_width - text_width
         else:
             text_x = left
+        if overlay.role == "title":
+            text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, accent = wrapped_text.split("PROPULSION BLOCK", 1)
@@ -383,10 +385,14 @@ def _draw_zone_layers(
     top: int,
     width: int,
     height: int,
+    render_scale: int = 1,
+    candle_body_ratio: float | None = None,
 ) -> Image.Image:
     """Composite each zone separately so overlapping zones blend together."""
     price_min, price_max = _panel_price_bounds(panel)
-    cell_width = width / len(panel.bars)
+    first_center, cell_width, _ = _bar_layout(
+        width, len(panel.bars), render_scale, candle_body_ratio
+    )
 
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
@@ -394,8 +400,8 @@ def _draw_zone_layers(
         if end_index < start_index:
             continue
 
-        left_x = left + start_index * cell_width
-        right_x = left + (end_index + 1) * cell_width
+        left_x = left + first_center + start_index * cell_width - cell_width / 2
+        right_x = left + first_center + (end_index + 1) * cell_width - cell_width / 2
         top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
         bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
         zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
@@ -617,6 +623,10 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
         _panel_box(panel, fallback_boxes[index], text_boxes)
         for index, panel in enumerate(request.panels)
     ]
+    panel_boxes = [
+        box.model_copy(update={"x": max(0.0, (1.0 - box.width) / 2)})
+        for box in panel_boxes
+    ]
 
     for panel, box in zip(request.panels, panel_boxes):
         left = round(box.x * canvas_width * render_scale)
@@ -630,6 +640,8 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             top,
             width,
             height,
+            render_scale=render_scale,
+            candle_body_ratio=request.candle_body_ratio,
         )
 
     draw = ImageDraw.Draw(image)
