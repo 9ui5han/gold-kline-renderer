@@ -149,7 +149,7 @@ def _bar_layout(
         # Keep the final-image gap at 3.2px while preserving the requested
         # body-to-cell ratio.  Coordinates are rendered at 4x resolution.
         minimum_gap = 3.2 * render_scale
-        body_width = max(3.0 * render_scale, nominal_cell * float(candle_body_ratio) * 0.80)
+        body_width = max(3.0 * render_scale, nominal_cell * float(candle_body_ratio))
         max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
         body_width = min(body_width, max_body)
         step = body_width + minimum_gap
@@ -158,7 +158,7 @@ def _bar_layout(
         return first_center, step, body_width
 
     target_body = (
-        _body_width(nominal_cell / render_scale) * render_scale * 0.80
+        _body_width(nominal_cell / render_scale) * render_scale
     )
     minimum_gap = 3.2 * render_scale
     max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
