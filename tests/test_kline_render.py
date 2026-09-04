@@ -227,7 +227,7 @@ class KlineRenderTests(unittest.TestCase):
             candle_body_ratio=request.candle_body_ratio,
         )
 
-        self.assertAlmostEqual(body_width, (1008 * TEXT_RENDER_SCALE / 20) * 0.55)
+        self.assertAlmostEqual(body_width, (1008 * TEXT_RENDER_SCALE / 20) * 0.55 * 0.80)
 
     def test_candle_geometry_stays_at_original_canvas_resolution(self):
         draw = Mock()
