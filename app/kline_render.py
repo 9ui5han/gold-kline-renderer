@@ -56,7 +56,7 @@ class KlinePanel(BaseModel):
 
     panel_id: str = Field(min_length=1, max_length=64)
     visual_type: Literal["candlestick", "price_path", "mixed"]
-    bars: list[KlineBar] = Field(min_length=20, max_length=300)
+    bars: list[KlineBar] = Field(min_length=8, max_length=300)
     annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
     plot_box: NormalizedBox | None = None
 
@@ -82,6 +82,7 @@ class KlineRenderRequest(BaseModel):
     schema_version: Literal["generated-kline-v1"]
     panels: list[KlinePanel] = Field(min_length=1, max_length=4)
     text_overlays: list[TextOverlay] = Field(default_factory=list, max_length=40)
+    candle_body_width: float | None = Field(default=None, ge=2.0, le=48.0)
 
 
 class KlineRenderResponse(BaseModel):
@@ -134,12 +135,21 @@ def _body_width(cell_width: float) -> int:
     return max(3, min(96, int(cell_width * 5.60)))
 
 
-def _bar_layout(width: int, bar_count: int, render_scale: int) -> tuple[float, float, float]:
+def _bar_layout(
+    width: int,
+    bar_count: int,
+    render_scale: int,
+    candle_body_width: float | None = None,
+) -> tuple[float, float, float]:
     """Return (first_center, step, body_width) with a visible candle gap."""
     if bar_count <= 0:
         return float(width) / 2, float(width), 2.0
     nominal_cell = width / bar_count
-    target_body = _body_width(nominal_cell / render_scale) * render_scale
+    target_body = (
+        float(candle_body_width) * render_scale
+        if candle_body_width is not None
+        else _body_width(nominal_cell / render_scale) * render_scale
+    )
     minimum_gap = 2.5 * render_scale
     max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
     body_width = max(3.0 * render_scale, min(float(target_body), max_body))
@@ -401,6 +411,7 @@ def _draw_panel(
     draw_zones: bool = True,
     text_layer: Image.Image | None = None,
     render_scale: int = 1,
+    candle_body_width: float | None = None,
 ) -> None:
     price_min, price_max = _panel_price_bounds(panel)
 
@@ -408,6 +419,7 @@ def _draw_panel(
         width,
         len(panel.bars),
         render_scale,
+        candle_body_width,
     )
     # The complete generated candle sequence is the horizontal centering
     # reference.  OB/PB zones use the same bar coordinates and therefore move
@@ -620,6 +632,7 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
             height,
             draw_zones=False,
             render_scale=render_scale,
+            candle_body_width=request.candle_body_width,
         )
 
     _draw_text_overlays(image, request.text_overlays, render_scale)
