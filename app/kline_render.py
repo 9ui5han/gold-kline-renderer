@@ -145,10 +145,14 @@ def _bar_layout(
     if bar_count <= 0:
         return float(width) / 2, float(width), 2.0
     nominal_cell = width / bar_count
+    if candle_body_ratio is not None:
+        step = nominal_cell
+        body_width = max(3.0 * render_scale, step * float(candle_body_ratio))
+        first_center = step / 2
+        return first_center, step, body_width
+
     target_body = (
-        nominal_cell * float(candle_body_ratio)
-        if candle_body_ratio is not None
-        else _body_width(nominal_cell / render_scale) * render_scale
+        _body_width(nominal_cell / render_scale) * render_scale
     )
     minimum_gap = 2.5 * render_scale
     max_body = (width - minimum_gap * max(0, bar_count - 1)) / bar_count
