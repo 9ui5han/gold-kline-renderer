@@ -34,9 +34,9 @@ class KlineAnnotation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     annotation_id: str = Field(min_length=1, max_length=64)
-    type: Literal["ob", "pb"]
+    type: Literal["ob", "pb", "premium_zone", "discount_zone", "structure_line", "liquidity_sweep"]
     label: str = Field(min_length=1, max_length=32)
-    direction: Literal["bullish", "bearish", "neutral"]
+    direction: Literal["bullish", "bearish", "neutral"] = "neutral"
     start_index: int = Field(ge=0)
     end_index: int = Field(ge=0)
     price_low: float
@@ -57,7 +57,7 @@ class KlinePanel(BaseModel):
     panel_id: str = Field(min_length=1, max_length=64)
     visual_type: Literal["candlestick", "price_path", "mixed"]
     bars: list[KlineBar] = Field(min_length=8, max_length=300)
-    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
+    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=60)
     plot_box: NormalizedBox | None = None
 
 
@@ -100,6 +100,10 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
+ZONE_PREMIUM_COLOR = (220, 90, 90, 48)
+ZONE_DISCOUNT_COLOR = (60, 150, 210, 48)
+STRUCTURE_COLOR = (55, 55, 65)
+SWEEP_COLOR = (190, 70, 50)
 TITLE_ACCENT = DOWN_FILL
 BODY_TEXT = (28, 31, 36)
 RENDER_SCALE = 4
@@ -511,15 +515,25 @@ def _draw_panel(
                 height,
             )
 
-            zone_color = (
-                ZONE_OB_COLOR
-                if annotation.type == "ob"
-                else ZONE_PB_COLOR
-            )
-            draw.rectangle(
-                (left_x, top_y, right_x, bottom_y),
-            fill=zone_color,
-            )
+            if annotation.type in {"structure_line", "liquidity_sweep"}:
+                continue
+            zone_color = {"ob": ZONE_OB_COLOR, "pb": ZONE_PB_COLOR,
+                          "premium_zone": ZONE_PREMIUM_COLOR,
+                          "discount_zone": ZONE_DISCOUNT_COLOR}[annotation.type]
+            draw.rectangle((left_x, top_y, right_x, bottom_y), fill=zone_color)
+
+        # Structure lines and liquidity sweeps are calculated annotations;
+        # they are drawn after zones and before candles.
+        for annotation in panel.annotations:
+            if annotation.type == "structure_line":
+                y = _price_y(annotation.price_low, price_min, price_max, top, height)
+                draw.line((left_x if False else left, y, left + width, y), fill=STRUCTURE_COLOR, width=max(1, render_scale))
+            elif annotation.type == "liquidity_sweep":
+                i = max(0, min(len(panel.bars) - 1, annotation.start_index))
+                x = left + first_center + i * cell_width
+                y1 = _price_y(annotation.price_low, price_min, price_max, top, height)
+                y2 = _price_y(annotation.price_high, price_min, price_max, top, height)
+                draw.line((x, y1, x, y2), fill=SWEEP_COLOR, width=max(1, render_scale))
 
     for index, bar in enumerate(panel.bars):
         center_x = left + first_center + index * cell_width
@@ -594,6 +608,8 @@ def _draw_panel(
             top,
             height,
         )
+        if annotation.type in {"structure_line", "liquidity_sweep"}:
+            continue
         label_box = text_draw.textbbox(
             (0, 0),
             annotation.label,
@@ -608,11 +624,7 @@ def _draw_panel(
                 ((top_y + bottom_y) * coordinate_scale - label_height) / 2,
             ),
             annotation.label,
-            fill=(
-                ZONE_LABEL
-                if annotation.type == "ob"
-                else ZONE_LABEL_PB
-            ),
+            fill=(ZONE_LABEL if annotation.type == "ob" else ZONE_LABEL_PB),
             font=font,
             stroke_width=0,
         )
