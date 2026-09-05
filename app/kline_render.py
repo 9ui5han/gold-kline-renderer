@@ -34,9 +34,9 @@ class KlineAnnotation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     annotation_id: str = Field(min_length=1, max_length=64)
-    type: Literal["ob", "pb"]
+    type: Literal["ob", "pb", "premium_zone", "discount_zone", "structure_line", "liquidity_sweep"]
     label: str = Field(min_length=1, max_length=32)
-    direction: Literal["bullish", "bearish", "neutral"]
+    direction: Literal["bullish", "bearish", "neutral"] = "neutral"
     start_index: int = Field(ge=0)
     end_index: int = Field(ge=0)
     price_low: float
@@ -57,7 +57,7 @@ class KlinePanel(BaseModel):
     panel_id: str = Field(min_length=1, max_length=64)
     visual_type: Literal["candlestick", "price_path", "mixed"]
     bars: list[KlineBar] = Field(min_length=8, max_length=300)
-    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=20)
+    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=60)
     plot_box: NormalizedBox | None = None
 
 
@@ -100,6 +100,10 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
+ZONE_PREMIUM_COLOR = (220, 70, 80, 42)
+ZONE_DISCOUNT_COLOR = (40, 130, 210, 42)
+ZONE_LABEL_PREMIUM = (170, 35, 45)
+ZONE_LABEL_DISCOUNT = (25, 85, 150)
 TITLE_ACCENT = DOWN_FILL
 BODY_TEXT = (28, 31, 36)
 RENDER_SCALE = 4
@@ -242,6 +246,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         return
     draw = ImageDraw.Draw(image)
     width, height = image.size
+    body_cursor = 0.0
     for overlay in overlays:
         # OB/PB labels are rendered from the generated K-line annotations.
         # Drawing the reference labels again would duplicate them and could
@@ -276,6 +281,9 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         if overlay.role == "title":
             text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
+        if overlay.role != "title":
+            text_y = max(text_y, body_cursor)
+            body_cursor = text_y + text_height + max(8, font.size * 0.28)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, accent = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)
@@ -404,7 +412,11 @@ def _draw_zone_layers(
         right_x = left + first_center + (end_index + 1) * cell_width - cell_width / 2
         top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
         bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
-        zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
+        zone_color = {"ob": ZONE_OB_COLOR, "pb": ZONE_PB_COLOR,
+                      "premium_zone": ZONE_PREMIUM_COLOR,
+                      "discount_zone": ZONE_DISCOUNT_COLOR}.get(annotation.type)
+        if zone_color is None:
+            continue
 
         layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
         layer_draw = ImageDraw.Draw(layer)
@@ -476,11 +488,11 @@ def _draw_panel(
                 height,
             )
 
-            zone_color = (
-                ZONE_OB_COLOR
-                if annotation.type == "ob"
-                else ZONE_PB_COLOR
-            )
+            zone_color = {"ob": ZONE_OB_COLOR, "pb": ZONE_PB_COLOR,
+                          "premium_zone": ZONE_PREMIUM_COLOR,
+                          "discount_zone": ZONE_DISCOUNT_COLOR}.get(annotation.type)
+            if zone_color is None:
+                continue
             draw.rectangle(
                 (left_x, top_y, right_x, bottom_y),
             fill=zone_color,
@@ -573,11 +585,9 @@ def _draw_panel(
                 ((top_y + bottom_y) * coordinate_scale - label_height) / 2,
             ),
             annotation.label,
-            fill=(
-                ZONE_LABEL
-                if annotation.type == "ob"
-                else ZONE_LABEL_PB
-            ),
+            fill={"ob": ZONE_LABEL, "pb": ZONE_LABEL_PB,
+                  "premium_zone": ZONE_LABEL_PREMIUM,
+                  "discount_zone": ZONE_LABEL_DISCOUNT}.get(annotation.type, ZONE_LABEL_PB),
             font=font,
             stroke_width=0,
         )
