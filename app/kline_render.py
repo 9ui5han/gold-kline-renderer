@@ -100,8 +100,10 @@ BACKGROUND = (255, 255, 255)
 ZONE_OB_COLOR = (112, 163, 201, 105)
 ZONE_PB_COLOR = (232, 173, 88, 105)
 ZONE_LABEL_PB = (173, 103, 20)
-ZONE_PREMIUM_COLOR = (220, 90, 90, 48)
-ZONE_DISCOUNT_COLOR = (60, 150, 210, 48)
+ZONE_PREMIUM_COLOR = (220, 70, 80, 42)
+ZONE_DISCOUNT_COLOR = (40, 130, 210, 42)
+ZONE_LABEL_PREMIUM = (170, 35, 45)
+ZONE_LABEL_DISCOUNT = (25, 85, 150)
 STRUCTURE_COLOR = (55, 55, 65)
 SWEEP_COLOR = (190, 70, 50)
 TITLE_ACCENT = DOWN_FILL
@@ -265,6 +267,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         return
     draw = ImageDraw.Draw(image)
     width, height = image.size
+    body_cursor = 0.0
     for overlay in overlays:
         # OB/PB labels are rendered from the generated K-line annotations.
         # Drawing the reference labels again would duplicate them and could
@@ -301,6 +304,9 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             # detected bbox must not move the heading off the true center.
             text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
+        if overlay.role != "title":
+            text_y = max(text_y, body_cursor)
+            body_cursor = text_y + text_height + max(8, font.size * 0.28)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, suffix = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)
@@ -442,7 +448,11 @@ def _draw_zone_layers(
         right_x = left + first_center + (end_index + 1) * cell_width - cell_width / 2
         top_y = _price_y(annotation.price_high, price_min, price_max, top, height)
         bottom_y = _price_y(annotation.price_low, price_min, price_max, top, height)
-        zone_color = ZONE_OB_COLOR if annotation.type == "ob" else ZONE_PB_COLOR
+        zone_color = {"ob": ZONE_OB_COLOR, "pb": ZONE_PB_COLOR,
+                      "premium_zone": ZONE_PREMIUM_COLOR,
+                      "discount_zone": ZONE_DISCOUNT_COLOR}.get(annotation.type)
+        if zone_color is None:
+            continue
 
         layer = Image.new("RGBA", image.size, (0, 0, 0, 0))
         layer_draw = ImageDraw.Draw(layer)
@@ -519,15 +529,15 @@ def _draw_panel(
                 continue
             zone_color = {"ob": ZONE_OB_COLOR, "pb": ZONE_PB_COLOR,
                           "premium_zone": ZONE_PREMIUM_COLOR,
-                          "discount_zone": ZONE_DISCOUNT_COLOR}[annotation.type]
+                          "discount_zone": ZONE_DISCOUNT_COLOR}.get(annotation.type)
+            if zone_color is None:
+                continue
             draw.rectangle((left_x, top_y, right_x, bottom_y), fill=zone_color)
 
-        # Structure lines and liquidity sweeps are calculated annotations;
-        # they are drawn after zones and before candles.
         for annotation in panel.annotations:
             if annotation.type == "structure_line":
                 y = _price_y(annotation.price_low, price_min, price_max, top, height)
-                draw.line((left_x if False else left, y, left + width, y), fill=STRUCTURE_COLOR, width=max(1, render_scale))
+                draw.line((left, y, left + width, y), fill=STRUCTURE_COLOR, width=max(1, render_scale))
             elif annotation.type == "liquidity_sweep":
                 i = max(0, min(len(panel.bars) - 1, annotation.start_index))
                 x = left + first_center + i * cell_width
@@ -624,7 +634,9 @@ def _draw_panel(
                 ((top_y + bottom_y) * coordinate_scale - label_height) / 2,
             ),
             annotation.label,
-            fill=(ZONE_LABEL if annotation.type == "ob" else ZONE_LABEL_PB),
+            fill={"ob": ZONE_LABEL, "pb": ZONE_LABEL_PB,
+                  "premium_zone": ZONE_LABEL_PREMIUM,
+                  "discount_zone": ZONE_LABEL_DISCOUNT}.get(annotation.type, ZONE_LABEL_PB),
             font=font,
             stroke_width=0,
         )
