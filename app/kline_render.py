@@ -438,7 +438,6 @@ def _draw_zone_layers(
         height,
     )
 
-    occupied_labels: list[tuple[float, float, float, float]] = []
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
@@ -597,6 +596,7 @@ def _draw_panel(
     coordinate_scale = TEXT_RENDER_SCALE if text_layer is not None else 1.0
     font_scale = TEXT_RENDER_SCALE if text_layer is not None else render_scale
     font = _zone_font(font_scale)
+    occupied_labels: list[tuple[float, float, float, float]] = []
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
