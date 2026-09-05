@@ -140,10 +140,29 @@ def _bar_layout(
     bar_count: int,
     render_scale: int,
     candle_body_ratio: float | None = None,
+    height: int | None = None,
 ) -> tuple[float, float, float]:
-    """Return (first_center, step, body_width) with a visible candle gap."""
+    """Return one uniformly scaled layout; never stretch x independently.
+
+    A 1000x700 canonical chart is scaled from its height first, then capped by
+    the available width. This keeps candle pitch/body/gap proportions fixed.
+    """
     if bar_count <= 0:
         return float(width) / 2, float(width), 2.0
+    ratio = float(candle_body_ratio) if candle_body_ratio is not None else 0.62
+    canonical_pitch = 1000.0 / bar_count
+    canonical_body = canonical_pitch * ratio
+    canonical_gap = canonical_pitch - canonical_body
+    height_scale = (float(height) / 700.0) if height else 1.0
+    width_scale = float(width) / 1000.0
+    uniform_scale = min(height_scale, width_scale)
+    body_width = max(3.0 * render_scale, canonical_body * uniform_scale)
+    step = max(body_width, (canonical_pitch * uniform_scale))
+    gap = max(0.0, step - body_width)
+    data_width = body_width * bar_count + gap * max(0, bar_count - 1)
+    first_center = (width - data_width) / 2 + body_width / 2
+    return first_center, step, body_width
+
     nominal_cell = width / bar_count
     if candle_body_ratio is not None:
         # Keep the final-image gap at 3.2px while preserving the requested
@@ -406,6 +425,7 @@ def _draw_zone_layers(
         len(panel.bars),
         render_scale,
         candle_body_ratio,
+        height,
     )
 
     for annotation in panel.annotations:
@@ -450,6 +470,7 @@ def _draw_panel(
         len(panel.bars),
         render_scale,
         candle_body_ratio,
+        height,
     )
     # The complete generated candle sequence is the horizontal centering
     # reference.  OB/PB zones use the same bar coordinates and therefore move
