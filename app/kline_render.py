@@ -162,7 +162,9 @@ def _bar_layout(
     height_scale = (float(height) / 700.0) if height else 1.0
     width_scale = float(width) / 1000.0
     uniform_scale = min(height_scale, width_scale)
-    body_width = max(3.0 * render_scale, canonical_body * uniform_scale)
+    # Keep bodies readable after downsampling; the gap/pitch still scales by
+    # the same factor, so this does not spread candles independently.
+    body_width = max(6.0 * render_scale, canonical_body * uniform_scale)
     step = max(body_width, (canonical_pitch * uniform_scale))
     gap = max(0.0, step - body_width)
     data_width = body_width * bar_count + gap * max(0, bar_count - 1)
@@ -277,7 +279,9 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         box_x, box_y, box_width_ratio, box_height_ratio = _text_overlay_box(overlay)
         left = box_x * width
         top = box_y * height
-        box_width = box_width_ratio * width
+        # OCR boxes are often too narrow for list/body copy. Expand them to
+        # the available canvas width while keeping the font size unchanged.
+        box_width = max(box_width_ratio * width, width - left - 2 * render_scale)
         box_height = box_height_ratio * height
         font = (
             _fit_title_font(draw, overlay, width, box_width)
