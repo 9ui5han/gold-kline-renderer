@@ -438,6 +438,7 @@ def _draw_zone_layers(
         height,
     )
 
+    occupied_labels: list[tuple[float, float, float, float]] = []
     for annotation in panel.annotations:
         start_index = max(0, min(len(panel.bars) - 1, annotation.start_index))
         end_index = max(0, min(len(panel.bars) - 1, annotation.end_index))
@@ -628,10 +629,23 @@ def _draw_panel(
         )
         label_width = label_box[2] - label_box[0]
         label_height = label_box[3] - label_box[1]
+        label_center_x = (left_x + right_x) / 2
+        label_center_y = (top_y + bottom_y) / 2
+        if annotation.type in {"premium_zone", "discount_zone"}:
+            # Keep structural OB/PB labels readable when their zones overlap.
+            for old_left, old_top, old_right, old_bottom in occupied_labels:
+                if (label_center_x - label_width / 2 < old_right
+                        and label_center_x + label_width / 2 > old_left
+                        and label_center_y - label_height / 2 < old_bottom
+                        and label_center_y + label_height / 2 > old_top):
+                    label_center_y = old_bottom + label_height * 0.9
+        label_left = label_center_x - label_width / 2
+        label_top = label_center_y - label_height / 2
+        occupied_labels.append((label_left, label_top, label_left + label_width, label_top + label_height))
         text_draw.text(
             (
-                ((left_x + right_x) * coordinate_scale - label_width) / 2,
-                ((top_y + bottom_y) * coordinate_scale - label_height) / 2,
+                label_left * coordinate_scale,
+                label_top * coordinate_scale,
             ),
             annotation.label,
             fill={"ob": ZONE_LABEL, "pb": ZONE_LABEL_PB,
