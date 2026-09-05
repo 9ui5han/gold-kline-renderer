@@ -57,7 +57,7 @@ class KlinePanel(BaseModel):
     panel_id: str = Field(min_length=1, max_length=64)
     visual_type: Literal["candlestick", "price_path", "mixed"]
     bars: list[KlineBar] = Field(min_length=8, max_length=300)
-    annotations: list[KlineAnnotation] = Field(default_factory=list, max_length=60)
+    annotations: list[KlineAnnotation] = Field(default_factory=list)
     plot_box: NormalizedBox | None = None
 
 
