@@ -165,6 +165,36 @@ def test_step_requests_narration_repair_before_paid_tts():
     assert "PERSONALIZED_TRADE_DIRECTIVE" in repair["validator_errors"]
 
 
+def test_step_repairs_short_segment_with_too_many_short_words_before_tts():
+    item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold is up now but risk remains near key levels.",
+    }
+    performance = _performance(narration["text"])
+    performance["segment_id"] = "seg_01_intro"
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert result["action"] == "repair_narration"
+    assert result["done"] is False
+    assert "PRE_TTS_WORD_DURATION_OUT_OF_RANGE" in json.loads(
+        result["repair_prompt_json"]
+    )["validator_errors"]
+
+
 def test_confirm_reads_await_wrapper_job_and_packages_media():
     step = process_step(
         _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
@@ -292,6 +322,7 @@ def load_tests(loader, tests, pattern):
         test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_requests_narration_repair_before_paid_tts,
+        test_step_repairs_short_segment_with_too_many_short_words_before_tts,
         test_second_invalid_candidate_fails_after_one_repair,
         test_confirm_reads_await_wrapper_job_and_packages_media,
         test_confirm_duration_outside_budget_fails_after_one_repair_policy,

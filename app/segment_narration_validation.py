@@ -20,6 +20,11 @@ NARRATION_SCHEMA_VERSION = "segment-narration-v2"
 PERFORMANCE_SCHEMA_VERSION = "tts-performance-v1"
 CONTEXT_SCHEMA_VERSION = "segment-narration-context-v1"
 NUMBER_PATTERN = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
+ENGLISH_WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['-][A-Za-z]+)?")
+# Minimax can take materially longer on short, word-dense English than a
+# character-only model predicts.  This is a conservative lower-bound rate
+# used before creating a paid TTS job.
+MIN_ENGLISH_WORDS_PER_SECOND = 2.2
 TRADE_DIRECTIVE_PATTERNS = (
     re.compile(r"\b(?:buy|sell)\s+(?:now|gold|xauusd)\b", re.I),
     re.compile(r"\b(?:you\s+should|i\s+recommend(?:\s+you)?(?:\s+to)?)\s+(?:buy|sell|go\s+long|go\s+short)\b", re.I),
@@ -207,6 +212,26 @@ def _punctuation_seconds(text: str, pause_model: dict[str, Any]) -> float:
     ) / 1000.0
 
 
+def _estimated_spoken_seconds(
+    text: str,
+    chars_per_second: float,
+    speed: float,
+    pause_model: dict[str, Any],
+    pause_after_ms: int,
+) -> tuple[float, float]:
+    """Return conservative total and word-based duration estimates."""
+    pause_seconds = (
+        _punctuation_seconds(text, pause_model)
+        + float(pause_after_ms) / 1000.0
+    )
+    character_speech_seconds = len(re.sub(r"\s+", "", text)) / (chars_per_second * speed)
+    word_speech_seconds = len(ENGLISH_WORD_PATTERN.findall(text)) / MIN_ENGLISH_WORDS_PER_SECOND
+    return (
+        max(character_speech_seconds, word_speech_seconds) + pause_seconds,
+        word_speech_seconds + pause_seconds,
+    )
+
+
 def _validate_candidate(
     item: dict[str, Any],
     narration: dict[str, Any],
@@ -264,16 +289,21 @@ def _validate_candidate(
     cps = _as_float(profile.get("base_chars_per_second"))
     if speed is None or cps is None or speed <= 0 or cps <= 0:
         estimated = 0.0
+        word_estimated = 0.0
         errors.append("DURATION_MODEL_INVALID")
     else:
-        estimated = (
-            len(re.sub(r"\s+", "", text)) / (cps * speed)
-            + _punctuation_seconds(text, profile.get("pause_model") or {})
-            + float(normalized_performance.get("pause_after_ms", 0)) / 1000.0
+        estimated, word_estimated = _estimated_spoken_seconds(
+            text,
+            cps,
+            speed,
+            profile.get("pause_model") or {},
+            int(normalized_performance.get("pause_after_ms", 0)),
         )
     duration_ok = budget["duration_min_sec"] <= estimated <= budget["duration_max_sec"]
     if not duration_ok:
         errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
+    if word_estimated > budget["duration_max_sec"]:
+        errors.append("PRE_TTS_WORD_DURATION_OUT_OF_RANGE")
     errors = list(dict.fromkeys(errors))
     return {
         "errors": errors,
@@ -383,7 +413,11 @@ def process_step(
             "step_error": "",
         }
 
-    kind = "narration" if result["narration_violation"] else "performance"
+    narration_repair_required = result["narration_violation"] or any(
+        error in {"PRE_TTS_DURATION_OUT_OF_RANGE", "PRE_TTS_WORD_DURATION_OUT_OF_RANGE"}
+        for error in errors
+    )
+    kind = "narration" if narration_repair_required else "performance"
     # Dify keeps exactly one repair LLM node.  A second failed candidate is a
     # deterministic failure, rather than a second front-end repair loop.
     if repairs >= 1:
