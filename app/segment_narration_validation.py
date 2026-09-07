@@ -293,6 +293,202 @@ def _estimated_spoken_seconds(
     )
 
 
+def _as_candidate_object(value: Any, field_name: str) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return copy.deepcopy(value)
+    if isinstance(value, str):
+        return _as_object_json(value, field_name)
+    raise ValueError(f"{field_name}_OBJECT_REQUIRED")
+
+
+def _reschedule_item(item: dict[str, Any], target_sec: float, tolerance_sec: float) -> dict[str, Any]:
+    """Update a segment's time budget and keep its visual timeline proportional."""
+    result = copy.deepcopy(item)
+    old_target = _as_float(result.get("duration_target_sec"), 0.0) or 0.0
+    ratio = target_sec / old_target if old_target > 0 else 1.0
+    result["duration_target_sec"] = round(target_sec, 3)
+    result["duration_min_sec"] = round(max(0.5, target_sec - tolerance_sec), 3)
+    result["duration_max_sec"] = round(target_sec + tolerance_sec, 3)
+    scenes = result.get("scenes")
+    if not isinstance(scenes, list):
+        return result
+    cursor = 0.0
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        original_duration = _as_float(scene.get("duration_sec"), 0.0) or 0.0
+        duration = original_duration * ratio
+        scene["start_sec"] = round(cursor, 3)
+        scene["duration_sec"] = round(duration, 3)
+        cursor += duration
+        events = scene.get("overlay_events")
+        if not isinstance(events, list):
+            continue
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            event_start = _as_float(event.get("start_sec"), 0.0) or 0.0
+            event_duration = _as_float(event.get("duration_sec"), 0.0) or 0.0
+            event["start_sec"] = round(event_start * ratio, 3)
+            event["duration_sec"] = round(event_duration * ratio, 3)
+    return result
+
+
+def rebalance_tool08(
+    candidates: list[Any],
+    voice_duration_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Reallocate one video's fixed total duration after all drafts are known.
+
+    The resulting item budgets always sum to the original plan total.  Each
+    candidate receives a target within its estimated spoken-duration tolerance;
+    an infeasible total is returned as a gate failure before any paid TTS call.
+    """
+    profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
+    cps = _as_float(profile.get("base_chars_per_second"))
+    if cps is None or cps <= 0:
+        return {
+            "schema_version": "segment-narration-schedule-v1",
+            "schedule_valid": False,
+            "schedule_error": "DURATION_MODEL_INVALID",
+            "scheduled_items": [],
+            "scheduled_total_sec": 0.0,
+        }
+    prepared: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    try:
+        for raw in candidates or []:
+            candidate = _as_candidate_object(raw, "SCHEDULE_CANDIDATE")
+            item = _as_candidate_object(candidate.get("item"), "SCHEDULE_ITEM")
+            narration = _as_candidate_object(
+                candidate.get("segment_narration"), "SCHEDULE_NARRATION"
+            )
+            performance = _as_candidate_object(
+                candidate.get("segment_performance"), "SCHEDULE_PERFORMANCE"
+            )
+            budget, budget_errors = _duration_budget(item)
+            if budget_errors:
+                raise ValueError(";".join(budget_errors))
+            segment_id = budget["segment_id"]
+            if segment_id in seen_ids:
+                raise ValueError("SCHEDULE_SEGMENT_ID_DUPLICATE")
+            seen_ids.add(segment_id)
+            if str(narration.get("segment_id") or "") != segment_id:
+                raise ValueError("SCHEDULE_NARRATION_ID_MISMATCH")
+            if narration.get("planning_role") != item.get("planning_role"):
+                raise ValueError("SCHEDULE_NARRATION_ROLE_MISMATCH")
+            if narration.get("fact_anchor_ids") != item.get("fact_anchor_ids"):
+                raise ValueError("SCHEDULE_NARRATION_FACT_ANCHORS_MISMATCH")
+            display_text = str(narration.get("text") or "")
+            display_performance = validate_performance_plan(display_text, performance)
+            spoken_text = _spoken_price_text(display_text)
+            spoken_performance = validate_performance_plan(
+                spoken_text,
+                _spoken_performance(display_performance, spoken_text),
+            )
+            speed = _as_float(spoken_performance.get("speed"))
+            if speed is None or speed <= 0:
+                raise ValueError("SCHEDULE_SPEED_INVALID")
+            estimated, _ = _estimated_spoken_seconds(
+                spoken_text,
+                cps,
+                speed,
+                profile.get("pause_model") or {},
+                int(spoken_performance.get("pause_after_ms", 0)),
+            )
+            tolerance = max(0.5, float(budget["duration_tolerance_sec"]))
+            prepared.append({
+                "item": item,
+                "segment_narration": narration,
+                "segment_performance": display_performance,
+                "display_text": display_text,
+                "spoken_text": spoken_text,
+                "estimated_spoken_sec": estimated,
+                "tolerance_sec": tolerance,
+                "original_target_sec": budget["target_duration_sec"],
+                "lower_target_sec": max(0.5, estimated - tolerance),
+                "upper_target_sec": estimated + tolerance,
+            })
+    except (ValueError, ProfileError) as exc:
+        return {
+            "schema_version": "segment-narration-schedule-v1",
+            "schedule_valid": False,
+            "schedule_error": str(exc),
+            "scheduled_items": [],
+            "scheduled_total_sec": 0.0,
+        }
+
+    if not prepared:
+        return {
+            "schema_version": "segment-narration-schedule-v1",
+            "schedule_valid": False,
+            "schedule_error": "SCHEDULE_CANDIDATES_EMPTY",
+            "scheduled_items": [],
+            "scheduled_total_sec": 0.0,
+        }
+
+    total_target = sum(entry["original_target_sec"] for entry in prepared)
+    lower_total = sum(entry["lower_target_sec"] for entry in prepared)
+    upper_total = sum(entry["upper_target_sec"] for entry in prepared)
+    if lower_total > total_target + 0.001:
+        error = "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+    elif upper_total < total_target - 0.001:
+        error = "TOTAL_SPOKEN_DURATION_TOO_SHORT_FOR_VIDEO_BUDGET"
+    else:
+        error = ""
+    if error:
+        return {
+            "schema_version": "segment-narration-schedule-v1",
+            "schedule_valid": False,
+            "schedule_error": error,
+            "scheduled_items": [],
+            "scheduled_total_sec": round(total_target, 3),
+        }
+
+    remaining = total_target - lower_total
+    active = list(prepared)
+    for entry in prepared:
+        entry["scheduled_target_sec"] = entry["lower_target_sec"]
+    while remaining > 0.0001 and active:
+        weight_total = sum(max(entry["original_target_sec"], 0.1) for entry in active)
+        next_active: list[dict[str, Any]] = []
+        consumed = 0.0
+        for entry in active:
+            capacity = entry["upper_target_sec"] - entry["scheduled_target_sec"]
+            share = remaining * max(entry["original_target_sec"], 0.1) / weight_total
+            grant = min(capacity, share)
+            entry["scheduled_target_sec"] += grant
+            consumed += grant
+            if capacity - grant > 0.0001:
+                next_active.append(entry)
+        if consumed <= 0.0001:
+            break
+        remaining -= consumed
+        active = next_active
+
+    scheduled_items: list[dict[str, Any]] = []
+    for entry in prepared:
+        target = entry["scheduled_target_sec"]
+        scheduled_items.append({
+            "item": _reschedule_item(entry["item"], target, entry["tolerance_sec"]),
+            "segment_narration": entry["segment_narration"],
+            "segment_performance": entry["segment_performance"],
+            "display_text": entry["display_text"],
+            "spoken_text": entry["spoken_text"],
+            "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
+            "original_target_sec": round(entry["original_target_sec"], 3),
+        })
+    return {
+        "schema_version": "segment-narration-schedule-v1",
+        "schedule_valid": True,
+        "schedule_error": "",
+        "scheduled_items": scheduled_items,
+        "scheduled_total_sec": round(sum(
+            entry["item"]["duration_target_sec"] for entry in scheduled_items
+        ), 3),
+    }
+
+
 def _validate_candidate(
     item: dict[str, Any],
     narration: dict[str, Any],

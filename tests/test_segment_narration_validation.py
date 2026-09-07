@@ -14,6 +14,7 @@ from app.segment_narration_validation import (
     finalize_tool08,
     initialize_tool08,
     process_step,
+    rebalance_tool08,
     resolve_render_step,
     segment_render_success,
 )
@@ -229,6 +230,81 @@ def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_
     )["validator_errors"]
 
 
+def test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment():
+    short_item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    long_item = {
+        "segment_id": "seg_02_analysis",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.context"],
+        "duration_target_sec": 10,
+        "duration_min_sec": 8.5,
+        "duration_max_sec": 11.5,
+    }
+    short_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Which side gains confirmation as price action develops?",
+    }
+    long_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_02_analysis",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.context"],
+        "text": "Gold remains within a mixed structure while price action needs clearer confirmation before direction becomes established.",
+    }
+    short_performance = _performance(short_narration["text"])
+    short_performance.update(segment_id="seg_01_intro", speed=1.05, pause_after_ms=0)
+    long_performance = _performance(long_narration["text"])
+    long_performance.update(segment_id="seg_02_analysis", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": short_item, "segment_narration": short_narration, "segment_performance": short_performance},
+        {"item": long_item, "segment_narration": long_narration, "segment_performance": long_performance},
+    ], _profile())
+
+    assert result["schedule_valid"] is True
+    scheduled = result["scheduled_items"]
+    assert round(sum(item["item"]["duration_target_sec"] for item in scheduled), 3) == 13.0
+    assert scheduled[0]["item"]["duration_target_sec"] > 3.0
+    assert scheduled[0]["estimated_spoken_sec"] <= scheduled[0]["item"]["duration_max_sec"]
+
+
+def test_rebalance_rejects_when_total_budget_cannot_cover_spoken_text():
+    item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold holds near 4434.88 while 4452.44 and 4417.32 remain the next important conditions.",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_01_intro", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": item, "segment_narration": narration, "segment_performance": performance},
+    ], _profile())
+
+    assert result["schedule_valid"] is False
+    assert result["schedule_error"] == "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+
+
 def test_step_requests_narration_repair_before_paid_tts():
     narration = _narration("You should buy gold now.")
     result = process_step(
@@ -402,6 +478,8 @@ def load_tests(loader, tests, pattern):
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_expands_four_digit_prices_for_tts_but_preserves_display_text,
         test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
+        test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment,
+        test_rebalance_rejects_when_total_budget_cannot_cover_spoken_text,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_repairs_short_segment_with_too_many_short_words_before_tts,
         test_second_invalid_candidate_fails_after_one_repair,

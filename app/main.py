@@ -36,6 +36,7 @@ from .segment_narration_validation import (
     finalize_tool08,
     initialize_tool08,
     process_step as process_segment_narration_step,
+    rebalance_tool08,
     resolve_render_step,
     segment_render_failure,
     segment_render_success,
@@ -861,6 +862,15 @@ class SegmentNarrationStepRequest(BaseModel):
     narration_revision: int = Field(default=0, ge=0, le=1)
 
 
+class SegmentNarrationRebalanceRequest(BaseModel):
+    """All draft candidates required before TOOL-08 can share time globally."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidates: list[Any] = Field(min_length=1, max_length=12)
+    voice_duration_profile: dict[str, Any]
+
+
 class SegmentNarrationConfirmRequest(BaseModel):
     """Validate the actual duration returned by /v1/tts-jobs/await."""
 
@@ -958,6 +968,15 @@ def segment_narration_init(payload: SegmentNarrationInitRequest) -> dict[str, An
 def segment_narration_step(payload: SegmentNarrationStepRequest) -> dict[str, Any]:
     """Validate a current segment candidate and return pass, repair, or fail."""
     return process_segment_narration_step(**payload.model_dump())
+
+
+@app.post(
+    "/v1/segment-narration/rebalance",
+    dependencies=[Depends(require_token)],
+)
+def segment_narration_rebalance(payload: SegmentNarrationRebalanceRequest) -> dict[str, Any]:
+    """Share one video's fixed duration only after every draft is available."""
+    return rebalance_tool08(**payload.model_dump())
 
 
 @app.post(
