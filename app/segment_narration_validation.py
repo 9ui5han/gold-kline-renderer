@@ -34,6 +34,7 @@ SPOKEN_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?(?!
 # character-only model predicts.  This is a conservative lower-bound rate
 # used before creating a paid TTS job.
 MIN_ENGLISH_WORDS_PER_SECOND = 2.2
+MINIMAX_MIN_PAUSE_AFTER_MS = 180
 TRADE_DIRECTIVE_PATTERNS = (
     re.compile(r"\b(?:buy|sell)\s+(?:now|gold|xauusd)\b", re.I),
     re.compile(r"\b(?:you\s+should|i\s+recommend(?:\s+you)?(?:\s+to)?)\s+(?:buy|sell|go\s+long|go\s+short)\b", re.I),
@@ -176,6 +177,23 @@ def _spoken_performance(display_performance: dict[str, Any], spoken_text: str) -
         for cue in cues:
             if isinstance(cue, dict):
                 cue["text"] = _spoken_tts_text(str(cue.get("text") or ""))
+    return performance
+
+
+def _effective_tts_performance(
+    display_performance: dict[str, Any],
+    spoken_text: str,
+    voice_duration_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Use the provider's actual pause floor for both estimates and paid TTS."""
+    performance = _spoken_performance(display_performance, spoken_text)
+    if str(voice_duration_profile.get("provider") or "").lower() == "minimax":
+        pause_after_ms = performance.get("pause_after_ms")
+        if isinstance(pause_after_ms, int) and not isinstance(pause_after_ms, bool):
+            performance["pause_after_ms"] = max(
+                MINIMAX_MIN_PAUSE_AFTER_MS,
+                pause_after_ms,
+            )
     return performance
 
 
@@ -445,7 +463,11 @@ def rebalance_tool08(
             spoken_text = _spoken_tts_text(display_text)
             spoken_performance = validate_performance_plan(
                 spoken_text,
-                _spoken_performance(display_performance, spoken_text),
+                _effective_tts_performance(
+                    display_performance,
+                    spoken_text,
+                    profile,
+                ),
             )
             speed = _as_float(spoken_performance.get("speed"))
             if speed is None or speed <= 0:
@@ -622,7 +644,11 @@ def _validate_candidate(
     try:
         spoken_performance = validate_performance_plan(
             spoken_text,
-            _spoken_performance(display_performance, spoken_text),
+            _effective_tts_performance(
+                display_performance,
+                spoken_text,
+                profile,
+            ),
         )
     except ProfileError as exc:
         errors.append(str(exc))

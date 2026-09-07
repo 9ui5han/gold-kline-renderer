@@ -61,6 +61,7 @@ def _profile() -> dict:
     return {
         "schema_version": "voice-duration-profile-v1",
         "narrator_profile_id": "mm_finance_male_02",
+        "provider": "minimax",
         "base_chars_per_second": 14.0,
         "safe_speed_min": 0.9,
         "safe_speed_max": 1.05,
@@ -201,6 +202,21 @@ def test_step_expands_four_digit_prices_for_tts_but_preserves_display_text():
     assert request["narration_json"]["segments"][0]["performance_plan"]["cues"][0]["text"] == (
         "four thousand four hundred thirty-four point eight eight"
     )
+
+
+def test_step_uses_minimax_minimum_pause_for_estimation_and_tts_request():
+    narration = _narration("Gold holds near 2400.")
+    performance = _performance(narration["text"])
+    performance["pause_after_ms"] = 0
+    item = {**_item(), "duration_target_sec": 5, "duration_min_sec": 1, "duration_max_sec": 8}
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+    parsed = json.loads(result["result_json"])
+
+    assert result["action"] == "pass"
+    assert parsed["tts_request"]["narration_json"]["segments"][0]["performance_plan"]["pause_after_ms"] == 180
 
 
 def test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels():
@@ -514,6 +530,7 @@ def load_tests(loader, tests, pattern):
         test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_expands_four_digit_prices_for_tts_but_preserves_display_text,
+        test_step_uses_minimax_minimum_pause_for_estimation_and_tts_request,
         test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
         test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
         test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment,

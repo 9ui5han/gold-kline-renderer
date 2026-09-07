@@ -49,6 +49,16 @@ class MiniMaxSentenceContractTests(unittest.TestCase):
         self.assertEqual([unit["pause_after_ms"] for unit in units], [300])
         self.assertEqual(len(units), 1)
 
+    def test_parser_normalizes_short_pause_to_minimax_minimum(self):
+        units = main.parse_minimax_sentence_units(payload_for([{
+            "order": 1,
+            "segment_id": "closing",
+            "text": "Which signal matters next?",
+            "speed": 1.05,
+            "pause_after_ms": 0,
+        }]))
+        self.assertEqual([unit["pause_after_ms"] for unit in units], [180])
+
     def test_parser_combines_global_and_segment_speed(self):
         payload = payload_for([{
             "order": 1,
