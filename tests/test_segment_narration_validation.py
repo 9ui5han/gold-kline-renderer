@@ -92,6 +92,8 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["init_valid"] is True
     assert result["init_error"] == ""
     assert result["voice_duration_profile"]["narrator_profile_id"] == "mm_finance_male_02"
+    assert result["voice_duration_profile"]["base_chars_per_second"] == 20.0
+    assert result["voice_duration_profile"]["base_words_per_second"] == 2.6
     assert result["segments"][0]["segment_id"] == "seg_01"
     assert isinstance(result["segments"][0]["narration_prompt_json"], str)
     assert result["master_request_id"].startswith("master_01")
@@ -115,6 +117,7 @@ def test_init_exposes_two_decimal_kline_values_to_narration_llm():
 
     result = initialize_tool08(**contracts)
     prompt = json.loads(result["segments"][0]["narration_prompt_json"])
+    assert prompt["voice_duration_profile"]["base_words_per_second"] == 2.6
 
     assert prompt["technical"]["technical_facts"]["last_close"] == 4434.88
     assert prompt["technical"]["technical_facts"]["timeframes"]["1h"]["ema20"] == 4444.04

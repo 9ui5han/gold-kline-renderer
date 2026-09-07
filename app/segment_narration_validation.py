@@ -35,6 +35,14 @@ SPOKEN_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?(?!
 # character-only model predicts.  This is a conservative lower-bound rate
 # used before creating a paid TTS job.
 MIN_ENGLISH_WORDS_PER_SECOND = 2.2
+# Calibrated against completed MiniMax segment audio.  Unknown voices retain
+# the conservative fallback until they have their own measured profile.
+VOICE_DURATION_CALIBRATIONS = {
+    "mm_finance_male_02": {
+        "base_chars_per_second": 20.0,
+        "base_words_per_second": 2.6,
+    },
+}
 TRADE_DIRECTIVE_PATTERNS = (
     re.compile(r"\b(?:buy|sell)\s+(?:now|gold|xauusd)\b", re.I),
     re.compile(r"\b(?:you\s+should|i\s+recommend(?:\s+you)?(?:\s+to)?)\s+(?:buy|sell|go\s+long|go\s+short)\b", re.I),
@@ -201,11 +209,15 @@ def _duration_budget(item: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
 
 def _voice_duration_profile(narrator_profile_id: str) -> dict[str, Any]:
     profile = resolve_profile(narrator_profile_id, allow_documented=False)
+    calibration = VOICE_DURATION_CALIBRATIONS.get(profile["profile_id"], {})
     return {
         "schema_version": "voice-duration-profile-v1",
         "narrator_profile_id": profile["profile_id"],
         "provider": profile["provider"],
-        "base_chars_per_second": 14.0,
+        "base_chars_per_second": float(calibration.get("base_chars_per_second", 14.0)),
+        "base_words_per_second": float(
+            calibration.get("base_words_per_second", MIN_ENGLISH_WORDS_PER_SECOND)
+        ),
         "safe_speed_min": float(profile.get("speed_min") or 0.90),
         "safe_speed_max": float(profile.get("speed_max") or 1.05),
         "pause_model": {
@@ -289,6 +301,7 @@ def initialize_tool08(
             item["narration_prompt_json"] = _compact_json({
                 "item": item,
                 "segment_duration_budget": budget,
+                "voice_duration_profile": profile,
                 "technical": technical,
                 "market_analysis": analysis,
                 "levels": levels,
@@ -337,6 +350,7 @@ def _estimated_spoken_seconds(
     speed: float,
     pause_model: dict[str, Any],
     pause_after_ms: int,
+    words_per_second: float = MIN_ENGLISH_WORDS_PER_SECOND,
 ) -> tuple[float, float]:
     """Return conservative total and word-based duration estimates."""
     pause_seconds = (
@@ -344,11 +358,17 @@ def _estimated_spoken_seconds(
         + float(pause_after_ms) / 1000.0
     )
     character_speech_seconds = len(re.sub(r"\s+", "", text)) / (chars_per_second * speed)
-    word_speech_seconds = len(ENGLISH_WORD_PATTERN.findall(text)) / MIN_ENGLISH_WORDS_PER_SECOND
+    word_rate = words_per_second if words_per_second > 0 else MIN_ENGLISH_WORDS_PER_SECOND
+    word_speech_seconds = len(ENGLISH_WORD_PATTERN.findall(text)) / word_rate
     return (
         max(character_speech_seconds, word_speech_seconds) + pause_seconds,
         word_speech_seconds + pause_seconds,
     )
+
+
+def _profile_words_per_second(profile: dict[str, Any]) -> float:
+    value = _as_float(profile.get("base_words_per_second"))
+    return value if value is not None and value > 0 else MIN_ENGLISH_WORDS_PER_SECOND
 
 
 def _as_candidate_object(value: Any, field_name: str) -> dict[str, Any]:
@@ -456,6 +476,7 @@ def rebalance_tool08(
                 speed,
                 profile.get("pause_model") or {},
                 int(spoken_performance.get("pause_after_ms", 0)),
+                _profile_words_per_second(profile),
             )
             tolerance = max(0.5, float(budget["duration_tolerance_sec"]))
             prepared.append({
@@ -611,6 +632,7 @@ def _validate_candidate(
             speed,
             profile.get("pause_model") or {},
             int(spoken_performance.get("pause_after_ms", 0)),
+            _profile_words_per_second(profile),
         )
     duration_ok = budget["duration_min_sec"] <= estimated <= budget["duration_max_sec"]
     if not duration_ok:
@@ -765,19 +787,21 @@ def process_step(
     repair_budget["estimated_spoken_sec"] = estimated_spoken_sec
     repair_budget["duration_fit_direction"] = duration_fit_direction
     if duration_fit_direction == "too_short":
+        words_per_second = _profile_words_per_second(voice_duration_profile)
         spoken_word_target = max(
             4,
-            int(round(repair_budget["target_duration_sec"] * MIN_ENGLISH_WORDS_PER_SECOND)),
+            int(round(repair_budget["target_duration_sec"] * words_per_second)),
         )
         repair_budget["spoken_word_target"] = spoken_word_target
         repair_budget["spoken_word_min"] = max(4, spoken_word_target - 2)
         repair_budget["spoken_word_max"] = spoken_word_target + 2
     elif duration_fit_direction == "too_long":
+        words_per_second = _profile_words_per_second(voice_duration_profile)
         spoken_word_max = max(
             4,
             int(math.floor(
                 max(0.0, repair_budget["duration_max_sec"] - 0.6)
-                * MIN_ENGLISH_WORDS_PER_SECOND
+                * words_per_second
             )),
         )
         repair_budget["spoken_word_target"] = spoken_word_max
