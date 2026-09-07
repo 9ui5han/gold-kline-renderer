@@ -22,7 +22,14 @@ PERFORMANCE_SCHEMA_VERSION = "tts-performance-v1"
 CONTEXT_SCHEMA_VERSION = "segment-narration-context-v1"
 NUMBER_PATTERN = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
 ENGLISH_WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['-][A-Za-z]+)?")
-FOUR_DIGIT_PRICE_PATTERN = re.compile(r"(?<!\d)(\d{4})\.(\d{2})(?!\d)")
+TIME_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9])(\d{1,2}):(\d{2})\s*([AaPp])\.?[Mm]\.?(?![A-Za-z])"
+)
+TIMEFRAME_PATTERN = re.compile(r"(?<![A-Za-z0-9])(\d+)([mhdw])\b", re.I)
+PERCENT_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?%(?![A-Za-z])")
+LEVEL_PATTERN = re.compile(r"\b([RrSs])(\d+)\b")
+NUMBER_RANGE_PATTERN = re.compile(r"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)[–—-](\d+(?:\.\d+)?)(?![A-Za-z0-9])")
+SPOKEN_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?(?![A-Za-z0-9])")
 # Minimax can take materially longer on short, word-dense English than a
 # character-only model predicts.  This is a conservative lower-bound rate
 # used before creating a paid TTS job.
@@ -81,13 +88,21 @@ def _safe_id(value: Any, fallback: str = "segment") -> str:
 
 
 def _integer_to_english(value: int) -> str:
-    """Render a four-digit price integer in the pronunciation used by TTS."""
-    if not 0 <= value <= 9999:
-        raise ValueError("PRICE_INTEGER_OUT_OF_RANGE")
+    """Render a non-negative integer in the pronunciation used by TTS."""
+    if not 0 <= value <= 999_999_999:
+        raise ValueError("SPOKEN_INTEGER_OUT_OF_RANGE")
+
+    if value >= 1_000_000:
+        millions, remainder = divmod(value, 1_000_000)
+        prefix = f"{_integer_to_english(millions)} million"
+        return prefix if not remainder else f"{prefix} {_integer_to_english(remainder)}"
+
+    if value >= 1_000:
+        thousands, remainder = divmod(value, 1_000)
+        prefix = f"{_integer_to_english(thousands)} thousand"
+        return prefix if not remainder else f"{prefix} {_integer_to_english(remainder)}"
+
     parts: list[str] = []
-    if value >= 1000:
-        parts.extend([_ONES[value // 1000], "thousand"])
-        value %= 1000
     if value >= 100:
         parts.extend([_ONES[value // 100], "hundred"])
         value %= 100
@@ -100,25 +115,67 @@ def _integer_to_english(value: int) -> str:
     return " ".join(parts) or "zero"
 
 
-def _spoken_price_text(display_text: str) -> str:
-    """Keep the displayed price unchanged but make its TTS pronunciation explicit."""
-    def replace(match: re.Match[str]) -> str:
-        whole = _integer_to_english(int(match.group(1)))
-        decimals = " ".join(_ONES[int(digit)] for digit in match.group(2))
-        return f"{whole} point {decimals}"
+def _spoken_number(sign: str, whole: str, fraction: str | None = None) -> str:
+    number = _integer_to_english(int(whole))
+    if fraction:
+        number = f"{number} point {' '.join(_ONES[int(digit)] for digit in fraction)}"
+    if sign == "+":
+        return f"plus {number}"
+    if sign == "-":
+        return f"minus {number}"
+    return number
 
-    return FOUR_DIGIT_PRICE_PATTERN.sub(replace, str(display_text or ""))
+
+def _spoken_tts_text(display_text: str) -> str:
+    """Keep subtitle text intact while making common market tokens explicit for TTS."""
+    text = str(display_text or "")
+
+    def replace_time(match: re.Match[str]) -> str:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+        if hour > 12 or minute > 59:
+            return match.group(0)
+        minute_text = "o " + _integer_to_english(minute) if minute < 10 else _integer_to_english(minute)
+        return f"{_integer_to_english(hour)} {minute_text} {match.group(3).lower()} m"
+
+    def replace_timeframe(match: re.Match[str]) -> str:
+        number = _integer_to_english(int(match.group(1)))
+        unit = match.group(2).lower()
+        names = {"m": "minute", "h": "hour", "d": "day", "w": "week"}
+        label = names[unit]
+        return f"{number} {label if match.group(1) == '1' else label + 's'}"
+
+    def replace_percent(match: re.Match[str]) -> str:
+        return f"{_spoken_number(match.group(1), match.group(2), match.group(3))} percent"
+
+    def replace_level(match: re.Match[str]) -> str:
+        return f"{match.group(1).upper()} {_integer_to_english(int(match.group(2)))}"
+
+    def replace_range(match: re.Match[str]) -> str:
+        left = match.group(1).split(".", 1)
+        right = match.group(2).split(".", 1)
+        return f"{_spoken_number('', left[0], left[1] if len(left) == 2 else None)} to {_spoken_number('', right[0], right[1] if len(right) == 2 else None)}"
+
+    def replace_number(match: re.Match[str]) -> str:
+        return _spoken_number(match.group(1), match.group(2), match.group(3))
+
+    text = TIME_PATTERN.sub(replace_time, text)
+    text = TIMEFRAME_PATTERN.sub(replace_timeframe, text)
+    text = PERCENT_PATTERN.sub(replace_percent, text)
+    text = LEVEL_PATTERN.sub(replace_level, text)
+    text = NUMBER_RANGE_PATTERN.sub(replace_range, text)
+    return SPOKEN_NUMBER_PATTERN.sub(replace_number, text)
 
 
 def _spoken_performance(display_performance: dict[str, Any], spoken_text: str) -> dict[str, Any]:
-    """Translate only price-bearing cue text for the provider's spoken payload."""
+    """Translate spoken cue text for the provider's payload."""
     performance = copy.deepcopy(display_performance)
     performance["text"] = spoken_text
     cues = performance.get("cues")
     if isinstance(cues, list):
         for cue in cues:
             if isinstance(cue, dict):
-                cue["text"] = _spoken_price_text(str(cue.get("text") or ""))
+                cue["text"] = _spoken_tts_text(str(cue.get("text") or ""))
     return performance
 
 
@@ -340,9 +397,11 @@ def rebalance_tool08(
 ) -> dict[str, Any]:
     """Reallocate one video's fixed total duration after all drafts are known.
 
-    The resulting item budgets always sum to the original plan total.  Each
-    candidate receives a target within its estimated spoken-duration tolerance;
-    an infeasible total is returned as a gate failure before any paid TTS call.
+    The resulting item budgets always sum to the original plan total. Each
+    candidate receives a target within its estimated spoken-duration tolerance.
+    A text-fit failure is not a scheduling failure: keep the original video
+    budget so the existing per-segment repair gate can shorten the draft before
+    any paid TTS call.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -351,6 +410,8 @@ def rebalance_tool08(
             "schema_version": "segment-narration-schedule-v1",
             "schedule_valid": False,
             "schedule_error": "DURATION_MODEL_INVALID",
+            "content_fit_valid": False,
+            "content_fit_error": "DURATION_MODEL_INVALID",
             "scheduled_items": [],
             "scheduled_total_sec": 0.0,
         }
@@ -381,7 +442,7 @@ def rebalance_tool08(
                 raise ValueError("SCHEDULE_NARRATION_FACT_ANCHORS_MISMATCH")
             display_text = str(narration.get("text") or "")
             display_performance = validate_performance_plan(display_text, performance)
-            spoken_text = _spoken_price_text(display_text)
+            spoken_text = _spoken_tts_text(display_text)
             spoken_performance = validate_performance_plan(
                 spoken_text,
                 _spoken_performance(display_performance, spoken_text),
@@ -414,6 +475,8 @@ def rebalance_tool08(
             "schema_version": "segment-narration-schedule-v1",
             "schedule_valid": False,
             "schedule_error": str(exc),
+            "content_fit_valid": False,
+            "content_fit_error": str(exc),
             "scheduled_items": [],
             "scheduled_total_sec": 0.0,
         }
@@ -423,6 +486,8 @@ def rebalance_tool08(
             "schema_version": "segment-narration-schedule-v1",
             "schedule_valid": False,
             "schedule_error": "SCHEDULE_CANDIDATES_EMPTY",
+            "content_fit_valid": False,
+            "content_fit_error": "SCHEDULE_CANDIDATES_EMPTY",
             "scheduled_items": [],
             "scheduled_total_sec": 0.0,
         }
@@ -437,11 +502,26 @@ def rebalance_tool08(
     else:
         error = ""
     if error:
+        scheduled_items = []
+        for entry in prepared:
+            scheduled_items.append({
+                "item": copy.deepcopy(entry["item"]),
+                "segment_narration": entry["segment_narration"],
+                "segment_performance": entry["segment_performance"],
+                "display_text": entry["display_text"],
+                "spoken_text": entry["spoken_text"],
+                "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
+                "original_target_sec": round(entry["original_target_sec"], 3),
+                "needs_narration_repair": True,
+                "content_fit_error": error,
+            })
         return {
             "schema_version": "segment-narration-schedule-v1",
-            "schedule_valid": False,
-            "schedule_error": error,
-            "scheduled_items": [],
+            "schedule_valid": True,
+            "schedule_error": "",
+            "content_fit_valid": False,
+            "content_fit_error": error,
+            "scheduled_items": scheduled_items,
             "scheduled_total_sec": round(total_target, 3),
         }
 
@@ -477,11 +557,15 @@ def rebalance_tool08(
             "spoken_text": entry["spoken_text"],
             "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
+            "needs_narration_repair": False,
+            "content_fit_error": "",
         })
     return {
         "schema_version": "segment-narration-schedule-v1",
         "schedule_valid": True,
         "schedule_error": "",
+        "content_fit_valid": True,
+        "content_fit_error": "",
         "scheduled_items": scheduled_items,
         "scheduled_total_sec": round(sum(
             entry["item"]["duration_target_sec"] for entry in scheduled_items
@@ -534,7 +618,7 @@ def _validate_candidate(
     # Prices stay numeric in the display/subtitle contract, while the paid
     # TTS request uses an explicit English pronunciation.  Estimating the
     # spoken form prevents ``4434.88`` being treated as a few characters.
-    spoken_text = _spoken_price_text(text)
+    spoken_text = _spoken_tts_text(text)
     try:
         spoken_performance = validate_performance_plan(
             spoken_text,

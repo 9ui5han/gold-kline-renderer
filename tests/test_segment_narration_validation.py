@@ -174,7 +174,9 @@ def test_step_pass_builds_exact_six_field_tts_request():
         "request_id", "narrator_profile_id", "text", "narration_json",
         "target_duration_sec", "duration_tolerance_sec",
     }
-    assert parsed["tts_request"]["narration_json"]["segments"][0]["performance_plan"]["text"] == _narration()["text"]
+    assert parsed["tts_request"]["narration_json"]["segments"][0]["performance_plan"]["text"] == (
+        "Gold holds near two thousand four hundred while confirmation remains important."
+    )
 
 
 def test_step_expands_four_digit_prices_for_tts_but_preserves_display_text():
@@ -199,6 +201,34 @@ def test_step_expands_four_digit_prices_for_tts_but_preserves_display_text():
     assert request["narration_json"]["segments"][0]["performance_plan"]["cues"][0]["text"] == (
         "four thousand four hundred thirty-four point eight eight"
     )
+
+
+def test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels():
+    narration = _narration(
+        "Gold held near 4434.88, up +0.65%, at 2:30 PM on 15m below R1."
+    )
+    performance = _performance(narration["text"])
+    performance["cues"] = [
+        {"text": "+0.65%", "action": "emphasize"},
+        {"text": "2:30 PM", "action": "emphasize"},
+    ]
+    item = {**_item(), "duration_target_sec": 12, "duration_min_sec": 8, "duration_max_sec": 16}
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+    parsed = json.loads(result["result_json"])
+    request = parsed["tts_request"]
+
+    assert parsed["display_text"] == narration["text"]
+    assert parsed["spoken_text"] == (
+        "Gold held near four thousand four hundred thirty-four point eight eight, "
+        "up plus zero point six five percent, at two thirty p m on fifteen minutes below R one."
+    )
+    assert request["narration_json"]["segments"][0]["performance_plan"]["cues"] == [
+        {"text": "plus zero point six five percent", "action": "emphasize"},
+        {"text": "two thirty p m", "action": "emphasize"},
+    ]
 
 
 def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment():
@@ -278,7 +308,7 @@ def test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment()
     assert scheduled[0]["estimated_spoken_sec"] <= scheduled[0]["item"]["duration_max_sec"]
 
 
-def test_rebalance_rejects_when_total_budget_cannot_cover_spoken_text():
+def test_rebalance_keeps_original_budget_when_spoken_text_requires_repair():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -301,8 +331,13 @@ def test_rebalance_rejects_when_total_budget_cannot_cover_spoken_text():
         {"item": item, "segment_narration": narration, "segment_performance": performance},
     ], _profile())
 
-    assert result["schedule_valid"] is False
-    assert result["schedule_error"] == "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+    assert result["schedule_valid"] is True
+    assert result["schedule_error"] == ""
+    assert result["content_fit_valid"] is False
+    assert result["content_fit_error"] == "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+    assert len(result["scheduled_items"]) == 1
+    assert result["scheduled_items"][0]["needs_narration_repair"] is True
+    assert result["scheduled_total_sec"] == 3.0
 
 
 def test_step_requests_narration_repair_before_paid_tts():
@@ -362,7 +397,9 @@ def test_confirm_reads_await_wrapper_job_and_packages_media():
     assert confirmed["action"] == "pass"
     assert packed["segment_media_input"]["audio"]["duration_sec"] == 4.2
     assert packed["segment_media_input"]["narration"]["display_text"] == _narration()["text"]
-    assert packed["segment_media_input"]["narration"]["spoken_text"] == _narration()["text"]
+    assert packed["segment_media_input"]["narration"]["spoken_text"] == (
+        "Gold holds near two thousand four hundred while confirmation remains important."
+    )
 
 
 def test_second_invalid_candidate_fails_after_one_repair():
@@ -477,9 +514,10 @@ def load_tests(loader, tests, pattern):
         test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_exact_six_field_tts_request,
         test_step_expands_four_digit_prices_for_tts_but_preserves_display_text,
+        test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
         test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
         test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment,
-        test_rebalance_rejects_when_total_budget_cannot_cover_spoken_text,
+        test_rebalance_keeps_original_budget_when_spoken_text_requires_repair,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_repairs_short_segment_with_too_many_short_words_before_tts,
         test_second_invalid_candidate_fails_after_one_repair,
