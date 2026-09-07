@@ -165,7 +165,7 @@ def test_render_step_validates_the_single_repair_candidate():
     assert json.loads(resolved["next_state_json"])["repair_count"] == 1
 
 
-def test_step_pass_builds_exact_six_field_tts_request():
+def test_step_pass_builds_tts_request_without_a_per_segment_duration_target():
     result = process_step(
         _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
     )
@@ -175,7 +175,6 @@ def test_step_pass_builds_exact_six_field_tts_request():
     assert result["done"] is True
     assert set(parsed["tts_request"]) == {
         "request_id", "narrator_profile_id", "text", "narration_json",
-        "target_duration_sec", "duration_tolerance_sec",
     }
     assert parsed["tts_request"]["narration_json"]["segments"][0]["performance_plan"]["text"] == (
         "Gold holds near two thousand four hundred while confirmation remains important."
@@ -249,7 +248,7 @@ def test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_leve
     ]
 
 
-def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment():
+def test_price_spoken_duration_does_not_trigger_repair_when_two_prices_exceed_visual_budget():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -272,10 +271,8 @@ def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_
         item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
     )
 
-    assert result["action"] == "repair_narration"
-    assert "PRE_TTS_WORD_DURATION_OUT_OF_RANGE" in json.loads(
-        result["repair_prompt_json"]
-    )["validator_errors"]
+    assert result["action"] == "pass"
+    assert result["done"] is True
 
 
 def test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio():
@@ -328,7 +325,7 @@ def test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audi
     assert scheduled[1]["original_target_sec"] == 10.0
 
 
-def test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget():
+def test_rebalance_keeps_out_of_range_estimate_as_advisory_without_repair():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -353,10 +350,10 @@ def test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget()
 
     assert result["schedule_valid"] is True
     assert result["schedule_error"] == ""
-    assert result["content_fit_valid"] is False
-    assert result["content_fit_error"] == "PRE_TTS_DURATION_OUT_OF_RANGE:seg_01_intro"
+    assert result["content_fit_valid"] is True
+    assert result["content_fit_error"] == ""
     assert len(result["scheduled_items"]) == 1
-    assert result["scheduled_items"][0]["needs_narration_repair"] is True
+    assert result["scheduled_items"][0]["needs_narration_repair"] is False
     assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 3
     assert result["scheduled_total_sec"] == 3.0
 
@@ -374,7 +371,7 @@ def test_step_requests_narration_repair_before_paid_tts():
     assert "PERSONALIZED_TRADE_DIRECTIVE" in repair["validator_errors"]
 
 
-def test_step_repairs_short_segment_with_too_many_short_words_before_tts():
+def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -397,14 +394,11 @@ def test_step_repairs_short_segment_with_too_many_short_words_before_tts():
         item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
     )
 
-    assert result["action"] == "repair_narration"
-    assert result["done"] is False
-    assert "PRE_TTS_WORD_DURATION_OUT_OF_RANGE" in json.loads(
-        result["repair_prompt_json"]
-    )["validator_errors"]
+    assert result["action"] == "pass"
+    assert result["done"] is True
 
 
-def test_repair_prompt_explicitly_marks_a_too_short_draft():
+def test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget():
     item = {
         "segment_id": "seg_03_primary",
         "planning_role": "primary_forecast",
@@ -427,14 +421,8 @@ def test_repair_prompt_explicitly_marks_a_too_short_draft():
         item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
     )
 
-    repair = json.loads(result["repair_prompt_json"])
-    budget = repair["segment_duration_budget"]
-    assert result["action"] == "repair_narration"
-    assert budget["duration_fit_direction"] == "too_short"
-    assert budget["estimated_spoken_sec"] < budget["duration_min_sec"]
-    assert budget["spoken_word_target"] == 48
-    assert budget["spoken_word_min"] == 46
-    assert budget["spoken_word_max"] == 50
+    assert result["action"] == "pass"
+    assert result["done"] is True
 
 
 def test_confirm_reads_await_wrapper_job_and_packages_media():
@@ -468,7 +456,7 @@ def test_second_invalid_candidate_fails_after_one_repair():
     assert result["step_error"] == "REPAIR_LIMIT_EXCEEDED"
 
 
-def test_confirm_duration_outside_budget_fails_after_one_repair_policy():
+def test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget():
     step = process_step(
         _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01",
         repair_count=1, narration_revision=1,
@@ -479,9 +467,34 @@ def test_confirm_duration_outside_budget_fails_after_one_repair_policy():
         {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/audio.mp3", "duration_sec": 20}},
         state_json=step["next_state_json"],
     )
-    assert confirmed["action"] == "fail"
+    assert confirmed["action"] == "pass"
     assert confirmed["done"] is True
-    assert confirmed["confirm_error"] == "ACTUAL_DURATION_OUT_OF_RANGE"
+    assert confirmed["confirm_error"] == ""
+    media = json.loads(confirmed["result_json"])["segment_media_input"]
+    assert media["audio"]["duration_sec"] == 20
+    assert media["duration_validation"]["valid"] is True
+    assert media["duration_validation"]["mode"] == "actual_audio_authoritative"
+
+
+def test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget():
+    item = {
+        **_item(),
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    narration = _narration(
+        "Gold holds near 4434.88 while 4452.44 and 4417.32 remain important conditions."
+    )
+    performance = _performance(narration["text"])
+    performance["pause_after_ms"] = 0
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert result["action"] == "pass"
+    assert result["done"] is True
 
 
 def test_complete_rejects_missing_iteration_media_and_returns_external_contract():
@@ -566,19 +579,20 @@ def load_tests(loader, tests, pattern):
         test_init_rejects_missing_master_request_id,
         test_render_step_accepts_initial_pass_without_repair,
         test_render_step_validates_the_single_repair_candidate,
-        test_step_pass_builds_exact_six_field_tts_request,
+        test_step_pass_builds_tts_request_without_a_per_segment_duration_target,
         test_step_expands_four_digit_prices_for_tts_but_preserves_display_text,
         test_step_preserves_requested_pause_for_estimation_and_tts_request,
         test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
-        test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
+        test_price_spoken_duration_does_not_trigger_repair_when_two_prices_exceed_visual_budget,
         test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio,
-        test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget,
+        test_rebalance_keeps_out_of_range_estimate_as_advisory_without_repair,
         test_step_requests_narration_repair_before_paid_tts,
-        test_step_repairs_short_segment_with_too_many_short_words_before_tts,
-        test_repair_prompt_explicitly_marks_a_too_short_draft,
+        test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
+        test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,
         test_confirm_reads_await_wrapper_job_and_packages_media,
-        test_confirm_duration_outside_budget_fails_after_one_repair_policy,
+        test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget,
+        test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget,
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
         test_init_rejects_invalid_upstream_contract_version,
         test_complete_rejects_duplicate_iteration_output_ids,

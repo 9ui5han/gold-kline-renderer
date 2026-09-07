@@ -416,12 +416,10 @@ def rebalance_tool08(
     candidates: list[Any],
     voice_duration_profile: dict[str, Any],
 ) -> dict[str, Any]:
-    """Prepare drafts against their authored video budgets.
+    """Prepare drafts while keeping authored visual budgets as metadata.
 
-    An estimate is suitable for deciding whether narration needs repair, but it
-    cannot safely manufacture audio duration.  Keep every authored segment
-    budget and visual timeline intact; the later per-segment preflight routes a
-    too-short or too-long draft through narration repair before paid TTS.
+    A text estimate is advisory only.  Paid TTS creates the authoritative
+    audio duration, which TOOL-09 uses to size the segment visual timeline.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -513,16 +511,9 @@ def rebalance_tool08(
             "scheduled_total_sec": 0.0,
         }
 
-    content_errors: list[str] = []
     scheduled_items: list[dict[str, Any]] = []
     for entry in prepared:
         estimated = entry["estimated_spoken_sec"]
-        target = entry["original_target_sec"]
-        minimum = max(0.5, target - entry["tolerance_sec"])
-        maximum = target + entry["tolerance_sec"]
-        needs_repair = not minimum <= estimated <= maximum
-        if needs_repair:
-            content_errors.append(entry["item"]["segment_id"])
         scheduled_items.append({
             "item": copy.deepcopy(entry["item"]),
             "segment_narration": entry["segment_narration"],
@@ -531,21 +522,15 @@ def rebalance_tool08(
             "spoken_text": entry["spoken_text"],
             "estimated_spoken_sec": round(estimated, 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
-            "needs_narration_repair": needs_repair,
-            "content_fit_error": (
-                "PRE_TTS_DURATION_OUT_OF_RANGE" if needs_repair else ""
-            ),
+            "needs_narration_repair": False,
+            "content_fit_error": "",
         })
-    content_fit_valid = not content_errors
     return {
         "schema_version": "segment-narration-schedule-v1",
         "schedule_valid": True,
         "schedule_error": "",
-        "content_fit_valid": content_fit_valid,
-        "content_fit_error": (
-            "PRE_TTS_DURATION_OUT_OF_RANGE:" + ",".join(content_errors)
-            if content_errors else ""
-        ),
+        "content_fit_valid": True,
+        "content_fit_error": "",
         "scheduled_items": scheduled_items,
         "scheduled_total_sec": round(sum(
             entry["item"]["duration_target_sec"] for entry in scheduled_items
@@ -634,11 +619,6 @@ def _validate_candidate(
             int(spoken_performance.get("pause_after_ms", 0)),
             _profile_words_per_second(profile),
         )
-    duration_ok = budget["duration_min_sec"] <= estimated <= budget["duration_max_sec"]
-    if not duration_ok:
-        errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
-    if word_estimated > budget["duration_max_sec"]:
-        errors.append("PRE_TTS_WORD_DURATION_OUT_OF_RANGE")
     errors = list(dict.fromkeys(errors))
     return {
         "errors": errors,
@@ -661,7 +641,6 @@ def _tts_request(
     narrator_profile_id: str,
     narration: dict[str, Any],
     performance: dict[str, Any],
-    budget: dict[str, Any],
     revision: int,
 ) -> dict[str, Any]:
     segment_id = _safe_id(narration.get("segment_id"))
@@ -682,8 +661,6 @@ def _tts_request(
                 "performance_plan": performance,
             }],
         },
-        "target_duration_sec": budget["target_duration_sec"],
-        "duration_tolerance_sec": budget["duration_tolerance_sec"],
     }
 
 
@@ -742,7 +719,6 @@ def process_step(
                 narrator_profile_id,
                 result["tts_narration"],
                 result["tts_performance"],
-                result["budget"],
                 revision,
             )
         except Exception as exc:  # defensive: malformed user identifiers are non-retryable
@@ -758,10 +734,7 @@ def process_step(
             "step_error": "",
         }
 
-    narration_repair_required = result["narration_violation"] or any(
-        error in {"PRE_TTS_DURATION_OUT_OF_RANGE", "PRE_TTS_WORD_DURATION_OUT_OF_RANGE"}
-        for error in errors
-    )
+    narration_repair_required = result["narration_violation"]
     kind = "narration" if narration_repair_required else "performance"
     # Dify keeps exactly one repair LLM node.  A second failed candidate is a
     # deterministic failure, rather than a second front-end repair loop.
@@ -776,37 +749,6 @@ def process_step(
             "step_error": "REPAIR_LIMIT_EXCEEDED",
         }
     next_state = {"repair_count": repairs + 1, "narration_revision": revision + 1}
-    repair_budget = copy.deepcopy(result["budget"])
-    estimated_spoken_sec = float(result["estimated_total_sec"])
-    if estimated_spoken_sec < repair_budget["duration_min_sec"]:
-        duration_fit_direction = "too_short"
-    elif estimated_spoken_sec > repair_budget["duration_max_sec"]:
-        duration_fit_direction = "too_long"
-    else:
-        duration_fit_direction = "within_range"
-    repair_budget["estimated_spoken_sec"] = estimated_spoken_sec
-    repair_budget["duration_fit_direction"] = duration_fit_direction
-    if duration_fit_direction == "too_short":
-        words_per_second = _profile_words_per_second(voice_duration_profile)
-        spoken_word_target = max(
-            4,
-            int(round(repair_budget["target_duration_sec"] * words_per_second)),
-        )
-        repair_budget["spoken_word_target"] = spoken_word_target
-        repair_budget["spoken_word_min"] = max(4, spoken_word_target - 2)
-        repair_budget["spoken_word_max"] = spoken_word_target + 2
-    elif duration_fit_direction == "too_long":
-        words_per_second = _profile_words_per_second(voice_duration_profile)
-        spoken_word_max = max(
-            4,
-            int(math.floor(
-                max(0.0, repair_budget["duration_max_sec"] - 0.6)
-                * words_per_second
-            )),
-        )
-        repair_budget["spoken_word_target"] = spoken_word_max
-        repair_budget["spoken_word_min"] = 4
-        repair_budget["spoken_word_max"] = spoken_word_max
     repair_prompt = {
         "repair_kind": kind,
         "validator_errors": errors,
@@ -815,7 +757,7 @@ def process_step(
             if kind == "narration" else ["segment_performance"]
         ),
         "item": item,
-        "segment_duration_budget": repair_budget,
+        "segment_duration_budget": result["budget"],
         "voice_duration_profile": voice_duration_profile,
         "segment_narration": segment_narration,
         "segment_performance": segment_performance,
@@ -875,42 +817,39 @@ def confirm_tts_result(
     budget, budget_errors = _duration_budget(item if isinstance(item, dict) else {})
     if budget_errors or not audio_url or duration <= 0:
         return _confirm_fail("TTS_MEDIA_RESULT_INVALID")
-    if budget["duration_min_sec"] <= duration <= budget["duration_max_sec"]:
-        result = _as_object_json(step_result_json, "STEP_RESULT")
-        narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
-        performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
-        spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
-        media = {
-            "segment_id": budget["segment_id"],
-            "audio": {"url": audio_url, "duration_sec": duration},
-            "narration": {
-                "schema_version": narration.get("schema_version"),
-                "segment_id": narration.get("segment_id"),
-                "text": narration.get("text"),
-                "display_text": narration.get("text"),
-                "spoken_text": spoken_text,
-            },
-            "performance_plan": performance,
-            "duration_validation": {
-                "target_duration_sec": budget["target_duration_sec"],
-                "duration_min_sec": budget["duration_min_sec"],
-                "duration_max_sec": budget["duration_max_sec"],
-                "actual_duration_sec": duration,
-                "valid": True,
-            },
-        }
-        return {
-            "schema_version": "segment-narration-confirm-result-v1",
-            "action": "pass",
-            "done": True,
-            "result_json": _compact_json({"segment_media_input": media, "actual_duration_sec": duration, "actual_duration_valid": True, "actual_duration_error": ""}),
-            "repair_prompt_json": "{}",
-            "next_state_json": _compact_json({"repair_count": int(repair_count), "narration_revision": int(narration_revision)}),
-            "confirm_error": "",
-        }
-    # Retrying real TTS duration from Dify would require a second dynamic LLM
-    # branch.  Keep the public workflow compact and fail safely instead.
-    return _confirm_fail("ACTUAL_DURATION_OUT_OF_RANGE")
+    result = _as_object_json(step_result_json, "STEP_RESULT")
+    narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
+    performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
+    spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
+    media = {
+        "segment_id": budget["segment_id"],
+        "audio": {"url": audio_url, "duration_sec": duration},
+        "narration": {
+            "schema_version": narration.get("schema_version"),
+            "segment_id": narration.get("segment_id"),
+            "text": narration.get("text"),
+            "display_text": narration.get("text"),
+            "spoken_text": spoken_text,
+        },
+        "performance_plan": performance,
+        "duration_validation": {
+            "target_duration_sec": budget["target_duration_sec"],
+            "duration_min_sec": budget["duration_min_sec"],
+            "duration_max_sec": budget["duration_max_sec"],
+            "actual_duration_sec": duration,
+            "mode": "actual_audio_authoritative",
+            "valid": True,
+        },
+    }
+    return {
+        "schema_version": "segment-narration-confirm-result-v1",
+        "action": "pass",
+        "done": True,
+        "result_json": _compact_json({"segment_media_input": media, "actual_duration_sec": duration, "actual_duration_valid": True, "actual_duration_error": ""}),
+        "repair_prompt_json": "{}",
+        "next_state_json": _compact_json({"repair_count": int(repair_count), "narration_revision": int(narration_revision)}),
+        "confirm_error": "",
+    }
 
 
 def _confirm_fail(error: str) -> dict[str, Any]:

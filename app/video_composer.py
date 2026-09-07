@@ -90,6 +90,11 @@ class ComposeRequest(BaseModel):
     segments: list[ComposeSegment] = Field(min_length=1, max_length=100)
     expected_final_duration_sec: float = Field(gt=0, le=3600)
     narration_timeline_sec: float = Field(gt=0, le=3600)
+    video_target_duration_sec: float = Field(gt=0, le=3600)
+    preferred_duration_min_sec: float = Field(gt=0, le=3600)
+    preferred_duration_max_sec: float = Field(gt=0, le=3600)
+    hard_duration_min_sec: float = Field(gt=0, le=3600)
+    hard_duration_max_sec: float = Field(gt=0, le=3600)
     duration_tolerance_sec: float = Field(default=10.0, ge=0, le=60)
     fallback_policy: dict[str, Any]
     video: ComposeVideoConfig
@@ -514,6 +519,11 @@ def run_compose_job(job_id: str, payload: dict[str, Any]) -> None:
             "expected_narration_tail_sec": expected_narration_tail_sec,
             "actual_narration_tail_sec": actual_narration_tail_sec,
             "narration_tail_diff_sec": narration_tail_diff_sec,
+            "video_target_duration_sec": request.video_target_duration_sec,
+            "preferred_duration_min_sec": request.preferred_duration_min_sec,
+            "preferred_duration_max_sec": request.preferred_duration_max_sec,
+            "hard_duration_min_sec": request.hard_duration_min_sec,
+            "hard_duration_max_sec": request.hard_duration_max_sec,
             "kline_main_visual_present": any(item.kline_main_visual_present for item in segments),
             "requested_transitions": requested_ledger,
             "applied_transitions": applied_ledger,
@@ -628,11 +638,24 @@ def _compose_request_from_tool10(payload: FinalComposeStartRequest) -> ComposeRe
         video_value = job_config.get("video")
         if not isinstance(video_value, dict):
             video_value = market.get("video") if isinstance(market.get("video"), dict) else {}
+    narration_timeline = round(narration_timeline, 3)
+    configured_target = float(video_value.get("target_duration_sec") or narration_timeline)
+    preferred_min = float(video_value.get("preferred_min_sec") or configured_target - 3.0)
+    preferred_max = float(video_value.get("preferred_max_sec") or configured_target + 3.0)
+    hard_min = float(video_value.get("hard_min_sec") or configured_target - 10.0)
+    hard_max = float(video_value.get("hard_max_sec") or configured_target + 10.0)
+    if not (0 < hard_min <= preferred_min <= preferred_max <= hard_max):
+        raise HTTPException(422, "VIDEO_DURATION_RANGE_INVALID")
     return ComposeRequest.model_validate({
         "request_id": f"{payload.master_request_id}-final-compose",
         "segments": ordered,
         "expected_final_duration_sec": round(expected, 3),
-        "narration_timeline_sec": round(narration_timeline, 3),
+        "narration_timeline_sec": narration_timeline,
+        "video_target_duration_sec": configured_target,
+        "preferred_duration_min_sec": preferred_min,
+        "preferred_duration_max_sec": preferred_max,
+        "hard_duration_min_sec": hard_min,
+        "hard_duration_max_sec": hard_max,
         "duration_tolerance_sec": 10.0,
         "fallback_policy": {"transition_failure": ["fade", "hard_cut"]},
         "video": video_value or {},
@@ -643,12 +666,21 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
     status = str(job.get("status") or "")
     result = job.get("result") if isinstance(job.get("result"), dict) else {}
     error = job.get("error") if isinstance(job.get("error"), dict) else {}
-    valid = status == "completed"
+    composed = status == "completed"
     error_code = str(error.get("code") or "FINAL_COMPOSE_FAILED")
-    errors = [] if valid else [error_code]
+    errors = [] if composed else [error_code]
     duration = float(result.get("duration_sec") or 0)
-    target = float(result.get("narration_timeline_sec") or 0)
+    target = float(result.get("video_target_duration_sec") or result.get("narration_timeline_sec") or 0)
     difference = round(duration - target, 3)
+    preferred_min = float(result.get("preferred_duration_min_sec") or target - 3.0)
+    preferred_max = float(result.get("preferred_duration_max_sec") or target + 3.0)
+    hard_min = float(result.get("hard_duration_min_sec") or target - 10.0)
+    hard_max = float(result.get("hard_duration_max_sec") or target + 10.0)
+    duration_in_preferred = composed and preferred_min <= duration <= preferred_max
+    duration_in_hard = composed and hard_min <= duration <= hard_max
+    if composed and not duration_in_hard:
+        errors = ["FINAL_DURATION_HARD_LIMIT_EXCEEDED"]
+    valid = composed and duration_in_hard
     contract = {
         "schema_version": "final-result-contract-v1",
         "master_request_id": master_request_id,
@@ -667,8 +699,8 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
         "final_duration_sec": duration,
         "target_duration_sec": target,
         "duration_diff_sec": difference,
-        "duration_in_preferred": valid and abs(difference) <= 3.0,
-        "duration_in_hard": valid and abs(difference) <= 10.0,
+        "duration_in_preferred": duration_in_preferred,
+        "duration_in_hard": duration_in_hard,
         "final_degraded": bool(result.get("degradation_records")),
         "degradation_records": result.get("degradation_records") or [],
         "rebuild_segment_ids": result.get("rebuild_segment_ids") or [],

@@ -1137,11 +1137,12 @@ class TTSJobV72Request(BaseModel):
     narrator_profile_id: str = Field(min_length=1, max_length=50)
     text: str = Field(min_length=1, max_length=5000)
     narration_json: dict[str, Any] | str
-    target_duration_sec: float = Field(
+    target_duration_sec: float | None = Field(
+        default=None,
         ge=MIN_TTS_AUDIO_SECONDS,
         le=MAX_TTS_AUDIO_SECONDS,
     )
-    duration_tolerance_sec: float = Field(ge=0.0, le=30.0)
+    duration_tolerance_sec: float | None = Field(default=None, ge=0.0, le=30.0)
 
     @model_validator(mode="after")
     def validate_nested_performance_contract(self) -> "TTSJobV72Request":

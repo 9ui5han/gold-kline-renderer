@@ -7,6 +7,15 @@ def _start_payload(master_request_id="gold-contract-01"):
     market = {
         "schema_version": "market-input-contract-v1",
         "symbol": "XAUUSD",
+        "job_config": {
+            "video": {
+                "target_duration_sec": 60,
+                "preferred_min_sec": 57,
+                "preferred_max_sec": 63,
+                "hard_min_sec": 50,
+                "hard_max_sec": 70,
+            },
+        },
     }
     rendered = {
         "schema_version": "rendered-segments-contract-v1",
@@ -80,6 +89,33 @@ class FinalComposeContractTests(unittest.TestCase):
         self.assertEqual(request.request_id, "gold-contract-01-final-compose")
         self.assertEqual(request.segments[0].segment_id, "seg_01")
         self.assertEqual(request.narration_timeline_sec, 4.0)
+        self.assertEqual(request.video_target_duration_sec, 60.0)
+        self.assertEqual(request.preferred_duration_min_sec, 57.0)
+        self.assertEqual(request.preferred_duration_max_sec, 63.0)
+        self.assertEqual(request.hard_duration_min_sec, 50.0)
+        self.assertEqual(request.hard_duration_max_sec, 70.0)
+
+    def test_final_result_compares_the_video_to_configured_hard_range_not_audio_timeline(self):
+        from app.video_composer import _final_result
+
+        result = _final_result({
+            "status": "completed",
+            "result": {
+                "video_url": "https://example.invalid/final.mp4",
+                "duration_sec": 48.0,
+                "narration_timeline_sec": 48.0,
+                "video_target_duration_sec": 60.0,
+                "preferred_duration_min_sec": 57.0,
+                "preferred_duration_max_sec": 63.0,
+                "hard_duration_min_sec": 50.0,
+                "hard_duration_max_sec": 70.0,
+            },
+        }, "gold-contract-01")
+
+        self.assertFalse(result["final_valid"])
+        self.assertFalse(result["duration_in_preferred"])
+        self.assertFalse(result["duration_in_hard"])
+        self.assertEqual(json.loads(result["final_errors_json"]), ["FINAL_DURATION_HARD_LIMIT_EXCEEDED"])
 
     def test_start_and_step_preserve_master_request_id(self):
         from app import video_composer
