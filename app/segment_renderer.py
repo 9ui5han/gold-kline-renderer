@@ -31,6 +31,11 @@ STORE = JobStore(DATA_DIR / "segment_jobs")
 TOOL09_BATCH_STORE = JobStore(DATA_DIR / "tool09_batch_jobs", job_prefix="t9bj_")
 _ACTIVE_RENDER_JOBS: set[str] = set()
 _ACTIVE_RENDER_LOCK = threading.RLock()
+SEGMENT_RENDER_CONCURRENCY = max(
+    1,
+    min(4, int(os.environ.get("SEGMENT_RENDER_CONCURRENCY", "2"))),
+)
+_RENDER_SLOTS = threading.BoundedSemaphore(SEGMENT_RENDER_CONCURRENCY)
 router = APIRouter(tags=["segment-render"])
 SEGMENT_RENDER_AWAIT_TIMEOUT_SEC = max(
     1.0,
@@ -660,7 +665,11 @@ def _start_render_worker(job_id: str) -> bool:
 
     def run() -> None:
         try:
-            _render(job_id)
+            # Submissions return immediately, but the expensive renderer is
+            # deliberately capped so a batch cannot exhaust Railway memory
+            # by starting every segment at once. Jobs wait here in the queue.
+            with _RENDER_SLOTS:
+                _render(job_id)
         finally:
             with _ACTIVE_RENDER_LOCK:
                 _ACTIVE_RENDER_JOBS.discard(job_id)
