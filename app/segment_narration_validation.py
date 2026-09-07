@@ -22,6 +22,7 @@ PERFORMANCE_SCHEMA_VERSION = "tts-performance-v1"
 CONTEXT_SCHEMA_VERSION = "segment-narration-context-v1"
 NUMBER_PATTERN = re.compile(r"(?<![A-Za-z])\d+(?:\.\d+)?")
 ENGLISH_WORD_PATTERN = re.compile(r"[A-Za-z]+(?:['-][A-Za-z]+)?")
+FOUR_DIGIT_PRICE_PATTERN = re.compile(r"(?<!\d)(\d{4})\.(\d{2})(?!\d)")
 # Minimax can take materially longer on short, word-dense English than a
 # character-only model predicts.  This is a conservative lower-bound rate
 # used before creating a paid TTS job.
@@ -31,6 +32,17 @@ TRADE_DIRECTIVE_PATTERNS = (
     re.compile(r"\b(?:you\s+should|i\s+recommend(?:\s+you)?(?:\s+to)?)\s+(?:buy|sell|go\s+long|go\s+short)\b", re.I),
     re.compile(r"\b(?:enter|open)\s+(?:a\s+)?(?:long|short)\b", re.I),
     re.compile(r"买入|卖出|做多|做空"),
+)
+
+
+_ONES = (
+    "zero", "one", "two", "three", "four", "five", "six", "seven",
+    "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+    "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
+)
+_TENS = (
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+    "eighty", "ninety",
 )
 
 
@@ -66,6 +78,48 @@ def _safe_id(value: Any, fallback: str = "segment") -> str:
     cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", str(value or "").strip())
     cleaned = cleaned.strip("-")
     return (cleaned or fallback)[:60]
+
+
+def _integer_to_english(value: int) -> str:
+    """Render a four-digit price integer in the pronunciation used by TTS."""
+    if not 0 <= value <= 9999:
+        raise ValueError("PRICE_INTEGER_OUT_OF_RANGE")
+    parts: list[str] = []
+    if value >= 1000:
+        parts.extend([_ONES[value // 1000], "thousand"])
+        value %= 1000
+    if value >= 100:
+        parts.extend([_ONES[value // 100], "hundred"])
+        value %= 100
+    if value >= 20:
+        tens = _TENS[value // 10]
+        ones = value % 10
+        parts.append(f"{tens}-{_ONES[ones]}" if ones else tens)
+    elif value:
+        parts.append(_ONES[value])
+    return " ".join(parts) or "zero"
+
+
+def _spoken_price_text(display_text: str) -> str:
+    """Keep the displayed price unchanged but make its TTS pronunciation explicit."""
+    def replace(match: re.Match[str]) -> str:
+        whole = _integer_to_english(int(match.group(1)))
+        decimals = " ".join(_ONES[int(digit)] for digit in match.group(2))
+        return f"{whole} point {decimals}"
+
+    return FOUR_DIGIT_PRICE_PATTERN.sub(replace, str(display_text or ""))
+
+
+def _spoken_performance(display_performance: dict[str, Any], spoken_text: str) -> dict[str, Any]:
+    """Translate only price-bearing cue text for the provider's spoken payload."""
+    performance = copy.deepcopy(display_performance)
+    performance["text"] = spoken_text
+    cues = performance.get("cues")
+    if isinstance(cues, list):
+        for cue in cues:
+            if isinstance(cue, dict):
+                cue["text"] = _spoken_price_text(str(cue.get("text") or ""))
+    return performance
 
 
 def _duration_budget(item: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
@@ -276,14 +330,27 @@ def _validate_candidate(
     if NUMBER_PATTERN.findall(str(performance.get("text") or "")) != NUMBER_PATTERN.findall(text):
         errors.append("NUMBER_TOKENS_CHANGED")
     try:
-        normalized_performance = validate_performance_plan(text, performance)
+        display_performance = validate_performance_plan(text, performance)
     except ProfileError as exc:
         errors.append(str(exc))
-        normalized_performance = {}
+        display_performance = {}
+
+    # Prices stay numeric in the display/subtitle contract, while the paid
+    # TTS request uses an explicit English pronunciation.  Estimating the
+    # spoken form prevents ``4434.88`` being treated as a few characters.
+    spoken_text = _spoken_price_text(text)
+    try:
+        spoken_performance = validate_performance_plan(
+            spoken_text,
+            _spoken_performance(display_performance, spoken_text),
+        )
+    except ProfileError as exc:
+        errors.append(str(exc))
+        spoken_performance = {}
 
     speed_min = _as_float(profile.get("safe_speed_min"), 0.90)
     speed_max = _as_float(profile.get("safe_speed_max"), 1.05)
-    actual_speed = _as_float(normalized_performance.get("speed"))
+    actual_speed = _as_float(spoken_performance.get("speed"))
     if (
         actual_speed is None
         or speed_min is None
@@ -292,7 +359,7 @@ def _validate_candidate(
     ):
         errors.append("SPEED_OUT_OF_PROFILE_RANGE")
 
-    speed = _as_float(normalized_performance.get("speed"))
+    speed = _as_float(spoken_performance.get("speed"))
     cps = _as_float(profile.get("base_chars_per_second"))
     if speed is None or cps is None or speed <= 0 or cps <= 0:
         estimated = 0.0
@@ -300,11 +367,11 @@ def _validate_candidate(
         errors.append("DURATION_MODEL_INVALID")
     else:
         estimated, word_estimated = _estimated_spoken_seconds(
-            text,
+            spoken_text,
             cps,
             speed,
             profile.get("pause_model") or {},
-            int(normalized_performance.get("pause_after_ms", 0)),
+            int(spoken_performance.get("pause_after_ms", 0)),
         )
     duration_ok = budget["duration_min_sec"] <= estimated <= budget["duration_max_sec"]
     if not duration_ok:
@@ -316,9 +383,15 @@ def _validate_candidate(
         "errors": errors,
         "narration_violation": narration_violation,
         "estimated_total_sec": round(estimated, 3),
+        "display_text": text,
+        "spoken_text": spoken_text,
         "budget": budget,
         "validated_narration": narration if not errors else {},
-        "validated_performance": normalized_performance if not errors else {},
+        "validated_performance": display_performance if not errors else {},
+        "tts_narration": (
+            {**narration, "text": spoken_text} if not errors else {}
+        ),
+        "tts_performance": spoken_performance if not errors else {},
     }
 
 
@@ -394,16 +467,20 @@ def process_step(
         "performance_error": ";".join(errors),
         "pre_tts_duration_valid": not errors,
         "estimated_total_sec": result["estimated_total_sec"],
+        "display_text": result["display_text"],
+        "spoken_text": result["spoken_text"],
         "validated_narration": result["validated_narration"],
         "validated_performance": result["validated_performance"],
+        "tts_narration": result["tts_narration"],
+        "tts_performance": result["tts_performance"],
     }
     if not errors:
         try:
             tts_request = _tts_request(
                 master_request_id,
                 narrator_profile_id,
-                result["validated_narration"],
-                result["validated_performance"],
+                result["tts_narration"],
+                result["tts_performance"],
                 result["budget"],
                 revision,
             )
@@ -510,6 +587,7 @@ def confirm_tts_result(
         result = _as_object_json(step_result_json, "STEP_RESULT")
         narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
         performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
+        spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
         media = {
             "segment_id": budget["segment_id"],
             "audio": {"url": audio_url, "duration_sec": duration},
@@ -517,6 +595,8 @@ def confirm_tts_result(
                 "schema_version": narration.get("schema_version"),
                 "segment_id": narration.get("segment_id"),
                 "text": narration.get("text"),
+                "display_text": narration.get("text"),
+                "spoken_text": spoken_text,
             },
             "performance_plan": performance,
             "duration_validation": {

@@ -176,6 +176,59 @@ def test_step_pass_builds_exact_six_field_tts_request():
     assert parsed["tts_request"]["narration_json"]["segments"][0]["performance_plan"]["text"] == _narration()["text"]
 
 
+def test_step_expands_four_digit_prices_for_tts_but_preserves_display_text():
+    narration = _narration("Gold held near 4434.88 while 4452.44 remained unconfirmed.")
+    performance = _performance(narration["text"])
+    performance["cues"] = [{"text": "4434.88", "action": "emphasize"}]
+    item = {**_item(), "duration_target_sec": 8, "duration_min_sec": 2, "duration_max_sec": 12}
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+    parsed = json.loads(result["result_json"])
+    request = parsed["tts_request"]
+
+    assert result["action"] == "pass"
+    assert parsed["display_text"] == narration["text"]
+    assert parsed["spoken_text"] == (
+        "Gold held near four thousand four hundred thirty-four point eight eight "
+        "while four thousand four hundred fifty-two point four four remained unconfirmed."
+    )
+    assert request["narration_json"]["segments"][0]["text"] == parsed["spoken_text"]
+    assert request["narration_json"]["segments"][0]["performance_plan"]["cues"][0]["text"] == (
+        "four thousand four hundred thirty-four point eight eight"
+    )
+
+
+def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment():
+    item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "4434.88 faces 4452.44?",
+    }
+    performance = _performance(narration["text"])
+    performance["segment_id"] = "seg_01_intro"
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert result["action"] == "repair_narration"
+    assert "PRE_TTS_WORD_DURATION_OUT_OF_RANGE" in json.loads(
+        result["repair_prompt_json"]
+    )["validator_errors"]
+
+
 def test_step_requests_narration_repair_before_paid_tts():
     narration = _narration("You should buy gold now.")
     result = process_step(
@@ -232,6 +285,8 @@ def test_confirm_reads_await_wrapper_job_and_packages_media():
 
     assert confirmed["action"] == "pass"
     assert packed["segment_media_input"]["audio"]["duration_sec"] == 4.2
+    assert packed["segment_media_input"]["narration"]["display_text"] == _narration()["text"]
+    assert packed["segment_media_input"]["narration"]["spoken_text"] == _narration()["text"]
 
 
 def test_second_invalid_candidate_fails_after_one_repair():
@@ -345,6 +400,8 @@ def load_tests(loader, tests, pattern):
         test_render_step_accepts_initial_pass_without_repair,
         test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_exact_six_field_tts_request,
+        test_step_expands_four_digit_prices_for_tts_but_preserves_display_text,
+        test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_repairs_short_segment_with_too_many_short_words_before_tts,
         test_second_invalid_candidate_fails_after_one_repair,
