@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .kline_precision import normalize_kline_numbers
+
 
 def validate_structure_paths(
     structure_paths: dict[str, Any],
@@ -211,6 +213,10 @@ def process_scenario_step(
     *,
     max_repairs: int = 2,
 ) -> dict[str, Any]:
+    candidate = normalize_kline_numbers(candidate)
+    active_levels = normalize_kline_numbers(active_levels)
+    forecast_framework = normalize_kline_numbers(forecast_framework)
+    market_analysis = normalize_kline_numbers(market_analysis)
     count = int(repair_count)
     if count < 0:
         raise ValueError("REPAIR_COUNT_INVALID")

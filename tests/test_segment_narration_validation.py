@@ -96,6 +96,30 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["master_request_id"].startswith("master_01")
 
 
+def test_init_exposes_two_decimal_kline_values_to_narration_llm():
+    contracts = _init_contracts()
+    contracts["technical_v1_json"] = json.dumps({
+        "schema_version": "technical-contract-v1",
+        "technical_facts": {
+            "last_close": 4434.876,
+            "timeframes": {"1h": {"ema20": 4444.0351, "closed_count": 199}},
+        },
+    })
+    contracts["forecast_v1_json"] = json.dumps({
+        "schema_version": "forecast-contract-v1",
+        "active_levels": {
+            "authoritative_price_map": {"OPEN_UPSIDE": 4452.4382686525},
+        },
+    })
+
+    result = initialize_tool08(**contracts)
+    prompt = json.loads(result["segments"][0]["narration_prompt_json"])
+
+    assert prompt["technical"]["technical_facts"]["last_close"] == 4434.88
+    assert prompt["technical"]["technical_facts"]["timeframes"]["1h"]["ema20"] == 4444.04
+    assert prompt["forecast"]["active_levels"]["authoritative_price_map"]["OPEN_UPSIDE"] == 4452.44
+
+
 def test_init_rejects_missing_master_request_id():
     contracts = _init_contracts()
     contracts["master_request_id"] = ""

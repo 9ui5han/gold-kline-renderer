@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.job_store import IdempotencyConflict, JobStore
+from app.kline_precision import normalize_kline_numbers
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/tmp/gold-video"))
@@ -149,7 +150,7 @@ def _tool09_candles(market_input: dict[str, Any], timeframe: str) -> list[dict[s
 
 
 def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderRequest:
-    market = payload.market_input
+    market = normalize_kline_numbers(payload.market_input)
     if market.get("schema_version") != "market-input-contract-v1":
         raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
     item = payload.segment_item

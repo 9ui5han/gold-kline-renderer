@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any
 
+from .kline_precision import normalize_kline_numbers
 from .tts_profiles import ProfileError, resolve_profile, validate_performance_plan
 
 
@@ -124,6 +125,12 @@ def initialize_tool08(
         analysis = _load_contract(market_analysis_v1_json, "MARKET_ANALYSIS", "market-analysis-contract-v1")
         forecast = _load_contract(forecast_v1_json, "FORECAST", "forecast-contract-v1")
         segment_plan_contract = _load_contract(segment_plan_v1_json, "SEGMENT_PLAN", "segment-plan-contract-v1")
+        market_input = normalize_kline_numbers(market_input)
+        levels = normalize_kline_numbers(levels)
+        technical = normalize_kline_numbers(technical)
+        analysis = normalize_kline_numbers(analysis)
+        forecast = normalize_kline_numbers(forecast)
+        segment_plan_contract = normalize_kline_numbers(segment_plan_contract)
         if segment_plan_contract.get("segment_plan_valid") is not True:
             raise ValueError("SEGMENT_PLAN_NOT_VALID")
         segment_plan = segment_plan_contract.get("segment_plan")

@@ -6,6 +6,8 @@ import json
 from math import isclose
 from typing import Any
 
+from .kline_precision import normalize_kline_numbers
+
 
 EPSILON = 0.001
 ALLOWED_TRANSITIONS = {
@@ -437,6 +439,12 @@ def process_segment_plan_step(
     *,
     max_repairs: int = 2,
 ) -> dict[str, Any]:
+    candidate = normalize_kline_numbers(candidate)
+    technical_facts = normalize_kline_numbers(technical_facts)
+    market_analysis = normalize_kline_numbers(market_analysis)
+    validated_levels = normalize_kline_numbers(validated_levels)
+    structure_paths = normalize_kline_numbers(structure_paths)
+    forecast_framework = normalize_kline_numbers(forecast_framework)
     count = int(repair_count)
     if count < 0:
         raise ValueError("REPAIR_COUNT_INVALID")
