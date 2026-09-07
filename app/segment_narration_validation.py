@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 from typing import Any
 
@@ -753,6 +754,35 @@ def process_step(
             "step_error": "REPAIR_LIMIT_EXCEEDED",
         }
     next_state = {"repair_count": repairs + 1, "narration_revision": revision + 1}
+    repair_budget = copy.deepcopy(result["budget"])
+    estimated_spoken_sec = float(result["estimated_total_sec"])
+    if estimated_spoken_sec < repair_budget["duration_min_sec"]:
+        duration_fit_direction = "too_short"
+    elif estimated_spoken_sec > repair_budget["duration_max_sec"]:
+        duration_fit_direction = "too_long"
+    else:
+        duration_fit_direction = "within_range"
+    repair_budget["estimated_spoken_sec"] = estimated_spoken_sec
+    repair_budget["duration_fit_direction"] = duration_fit_direction
+    if duration_fit_direction == "too_short":
+        spoken_word_target = max(
+            4,
+            int(round(repair_budget["target_duration_sec"] * MIN_ENGLISH_WORDS_PER_SECOND)),
+        )
+        repair_budget["spoken_word_target"] = spoken_word_target
+        repair_budget["spoken_word_min"] = max(4, spoken_word_target - 2)
+        repair_budget["spoken_word_max"] = spoken_word_target + 2
+    elif duration_fit_direction == "too_long":
+        spoken_word_max = max(
+            4,
+            int(math.floor(
+                max(0.0, repair_budget["duration_max_sec"] - 0.6)
+                * MIN_ENGLISH_WORDS_PER_SECOND
+            )),
+        )
+        repair_budget["spoken_word_target"] = spoken_word_max
+        repair_budget["spoken_word_min"] = 4
+        repair_budget["spoken_word_max"] = spoken_word_max
     repair_prompt = {
         "repair_kind": kind,
         "validator_errors": errors,
@@ -761,7 +791,7 @@ def process_step(
             if kind == "narration" else ["segment_performance"]
         ),
         "item": item,
-        "segment_duration_budget": result["budget"],
+        "segment_duration_budget": repair_budget,
         "voice_duration_profile": voice_duration_profile,
         "segment_narration": segment_narration,
         "segment_performance": segment_performance,

@@ -401,6 +401,39 @@ def test_step_repairs_short_segment_with_too_many_short_words_before_tts():
     )["validator_errors"]
 
 
+def test_repair_prompt_explicitly_marks_a_too_short_draft():
+    item = {
+        "segment_id": "seg_03_primary",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "duration_target_sec": 22,
+        "duration_min_sec": 20.5,
+        "duration_max_sec": 23.5,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_03_primary",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "text": "If price breaks above 4452.44 and holds, the bullish continuation scenario remains valid.",
+    }
+    performance = _performance(narration["text"])
+    performance["segment_id"] = "seg_03_primary"
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    repair = json.loads(result["repair_prompt_json"])
+    budget = repair["segment_duration_budget"]
+    assert result["action"] == "repair_narration"
+    assert budget["duration_fit_direction"] == "too_short"
+    assert budget["estimated_spoken_sec"] < budget["duration_min_sec"]
+    assert budget["spoken_word_target"] == 48
+    assert budget["spoken_word_min"] == 46
+    assert budget["spoken_word_max"] == 50
+
+
 def test_confirm_reads_await_wrapper_job_and_packages_media():
     step = process_step(
         _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
@@ -539,6 +572,7 @@ def load_tests(loader, tests, pattern):
         test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_repairs_short_segment_with_too_many_short_words_before_tts,
+        test_repair_prompt_explicitly_marks_a_too_short_draft,
         test_second_invalid_candidate_fails_after_one_repair,
         test_confirm_reads_await_wrapper_job_and_packages_media,
         test_confirm_duration_outside_budget_fails_after_one_repair_policy,
