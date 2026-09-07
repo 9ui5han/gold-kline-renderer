@@ -1604,10 +1604,6 @@ def parse_minimax_sentence_units(
             raise ValueError(
                 f"MiniMax分段{segment_index}的pause_after_ms超出0至650毫秒范围"
             )
-        # The Dify contract permits 0 as a request for no extra pause, while
-        # the MiniMax segmented synthesis path requires at least 180ms.
-        pause_value = max(180, pause_value)
-
         segment_id = str(
             item.get("segment_id") or f"segment_{segment_index}"
         ).strip()
