@@ -395,13 +395,12 @@ def rebalance_tool08(
     candidates: list[Any],
     voice_duration_profile: dict[str, Any],
 ) -> dict[str, Any]:
-    """Reallocate one video's fixed total duration after all drafts are known.
+    """Prepare drafts against their authored video budgets.
 
-    The resulting item budgets always sum to the original plan total. Each
-    candidate receives a target within its estimated spoken-duration tolerance.
-    A text-fit failure is not a scheduling failure: keep the original video
-    budget so the existing per-segment repair gate can shorten the draft before
-    any paid TTS call.
+    An estimate is suitable for deciding whether narration needs repair, but it
+    cannot safely manufacture audio duration.  Keep every authored segment
+    budget and visual timeline intact; the later per-segment preflight routes a
+    too-short or too-long draft through narration repair before paid TTS.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -492,80 +491,39 @@ def rebalance_tool08(
             "scheduled_total_sec": 0.0,
         }
 
-    total_target = sum(entry["original_target_sec"] for entry in prepared)
-    lower_total = sum(entry["lower_target_sec"] for entry in prepared)
-    upper_total = sum(entry["upper_target_sec"] for entry in prepared)
-    if lower_total > total_target + 0.001:
-        error = "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
-    elif upper_total < total_target - 0.001:
-        error = "TOTAL_SPOKEN_DURATION_TOO_SHORT_FOR_VIDEO_BUDGET"
-    else:
-        error = ""
-    if error:
-        scheduled_items = []
-        for entry in prepared:
-            scheduled_items.append({
-                "item": copy.deepcopy(entry["item"]),
-                "segment_narration": entry["segment_narration"],
-                "segment_performance": entry["segment_performance"],
-                "display_text": entry["display_text"],
-                "spoken_text": entry["spoken_text"],
-                "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
-                "original_target_sec": round(entry["original_target_sec"], 3),
-                "needs_narration_repair": True,
-                "content_fit_error": error,
-            })
-        return {
-            "schema_version": "segment-narration-schedule-v1",
-            "schedule_valid": True,
-            "schedule_error": "",
-            "content_fit_valid": False,
-            "content_fit_error": error,
-            "scheduled_items": scheduled_items,
-            "scheduled_total_sec": round(total_target, 3),
-        }
-
-    remaining = total_target - lower_total
-    active = list(prepared)
-    for entry in prepared:
-        entry["scheduled_target_sec"] = entry["lower_target_sec"]
-    while remaining > 0.0001 and active:
-        weight_total = sum(max(entry["original_target_sec"], 0.1) for entry in active)
-        next_active: list[dict[str, Any]] = []
-        consumed = 0.0
-        for entry in active:
-            capacity = entry["upper_target_sec"] - entry["scheduled_target_sec"]
-            share = remaining * max(entry["original_target_sec"], 0.1) / weight_total
-            grant = min(capacity, share)
-            entry["scheduled_target_sec"] += grant
-            consumed += grant
-            if capacity - grant > 0.0001:
-                next_active.append(entry)
-        if consumed <= 0.0001:
-            break
-        remaining -= consumed
-        active = next_active
-
+    content_errors: list[str] = []
     scheduled_items: list[dict[str, Any]] = []
     for entry in prepared:
-        target = entry["scheduled_target_sec"]
+        estimated = entry["estimated_spoken_sec"]
+        target = entry["original_target_sec"]
+        minimum = max(0.5, target - entry["tolerance_sec"])
+        maximum = target + entry["tolerance_sec"]
+        needs_repair = not minimum <= estimated <= maximum
+        if needs_repair:
+            content_errors.append(entry["item"]["segment_id"])
         scheduled_items.append({
-            "item": _reschedule_item(entry["item"], target, entry["tolerance_sec"]),
+            "item": copy.deepcopy(entry["item"]),
             "segment_narration": entry["segment_narration"],
             "segment_performance": entry["segment_performance"],
             "display_text": entry["display_text"],
             "spoken_text": entry["spoken_text"],
-            "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
+            "estimated_spoken_sec": round(estimated, 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
-            "needs_narration_repair": False,
-            "content_fit_error": "",
+            "needs_narration_repair": needs_repair,
+            "content_fit_error": (
+                "PRE_TTS_DURATION_OUT_OF_RANGE" if needs_repair else ""
+            ),
         })
+    content_fit_valid = not content_errors
     return {
         "schema_version": "segment-narration-schedule-v1",
         "schedule_valid": True,
         "schedule_error": "",
-        "content_fit_valid": True,
-        "content_fit_error": "",
+        "content_fit_valid": content_fit_valid,
+        "content_fit_error": (
+            "PRE_TTS_DURATION_OUT_OF_RANGE:" + ",".join(content_errors)
+            if content_errors else ""
+        ),
         "scheduled_items": scheduled_items,
         "scheduled_total_sec": round(sum(
             entry["item"]["duration_target_sec"] for entry in scheduled_items

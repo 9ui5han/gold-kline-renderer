@@ -275,7 +275,7 @@ def test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_
     )["validator_errors"]
 
 
-def test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment():
+def test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio():
     short_item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -319,11 +319,13 @@ def test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment()
     assert result["schedule_valid"] is True
     scheduled = result["scheduled_items"]
     assert round(sum(item["item"]["duration_target_sec"] for item in scheduled), 3) == 13.0
-    assert scheduled[0]["item"]["duration_target_sec"] > 3.0
-    assert scheduled[0]["estimated_spoken_sec"] <= scheduled[0]["item"]["duration_max_sec"]
+    assert scheduled[0]["item"]["duration_target_sec"] == 3.0
+    assert scheduled[1]["item"]["duration_target_sec"] == 10.0
+    assert scheduled[0]["original_target_sec"] == 3.0
+    assert scheduled[1]["original_target_sec"] == 10.0
 
 
-def test_rebalance_keeps_original_budget_when_spoken_text_requires_repair():
+def test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -349,9 +351,10 @@ def test_rebalance_keeps_original_budget_when_spoken_text_requires_repair():
     assert result["schedule_valid"] is True
     assert result["schedule_error"] == ""
     assert result["content_fit_valid"] is False
-    assert result["content_fit_error"] == "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+    assert result["content_fit_error"] == "PRE_TTS_DURATION_OUT_OF_RANGE:seg_01_intro"
     assert len(result["scheduled_items"]) == 1
     assert result["scheduled_items"][0]["needs_narration_repair"] is True
+    assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 3
     assert result["scheduled_total_sec"] == 3.0
 
 
@@ -532,8 +535,8 @@ def load_tests(loader, tests, pattern):
         test_step_preserves_requested_pause_for_estimation_and_tts_request,
         test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
         test_price_spoken_duration_triggers_repair_when_two_prices_do_not_fit_short_segment,
-        test_rebalance_keeps_total_duration_and_lends_time_to_spoken_price_segment,
-        test_rebalance_keeps_original_budget_when_spoken_text_requires_repair,
+        test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio,
+        test_rebalance_marks_out_of_range_draft_for_repair_without_changing_budget,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_repairs_short_segment_with_too_many_short_words_before_tts,
         test_second_invalid_candidate_fails_after_one_repair,
