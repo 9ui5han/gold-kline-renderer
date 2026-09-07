@@ -25,8 +25,9 @@ def _fingerprint(payload: dict[str, Any]) -> str:
 
 
 class JobStore:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, job_prefix: str = "srj_") -> None:
         self.root = Path(root)
+        self.job_prefix = str(job_prefix or "srj_")
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._request_index: dict[str, str] = {}
@@ -67,7 +68,7 @@ class JobStore:
                 return existing, False
             now = utc_now()
             job = {
-                "job_id": "srj_" + uuid.uuid4().hex,
+                "job_id": self.job_prefix + uuid.uuid4().hex,
                 "request_id": request_id,
                 "payload_hash": payload_hash,
                 "payload": deepcopy(payload),

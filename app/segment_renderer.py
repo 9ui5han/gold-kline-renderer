@@ -28,6 +28,9 @@ MEDIA_DIR = DATA_DIR / "media"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 STORE = JobStore(DATA_DIR / "segment_jobs")
+TOOL09_BATCH_STORE = JobStore(DATA_DIR / "tool09_batch_jobs", job_prefix="t9bj_")
+_ACTIVE_RENDER_JOBS: set[str] = set()
+_ACTIVE_RENDER_LOCK = threading.RLock()
 router = APIRouter(tags=["segment-render"])
 SEGMENT_RENDER_AWAIT_TIMEOUT_SEC = max(
     1.0,
@@ -63,6 +66,7 @@ class SegmentRenderRequest(BaseModel):
     visual_timeline: dict[str, Any]
     video: VideoSpec
     fallback_policy: dict[str, Any]
+    transition_out: dict[str, Any] = Field(default_factory=dict)
 
 
 class Tool09SegmentRequest(BaseModel):
@@ -101,6 +105,34 @@ class Tool09FinalizeRequest(BaseModel):
         normalized = str(value or "").strip()
         if not normalized:
             raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
+
+
+class Tool09BatchRequest(BaseModel):
+    """One TOOL-09 batch that references already submitted segment jobs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: str = Field(pattern=r"^tool09-batch-request-v1$")
+    master_request_id: str = Field(min_length=1, max_length=100)
+    segment_job_ids: list[str] = Field(min_length=1, max_length=20)
+    market_input: dict[str, Any]
+    segment_media: dict[str, Any]
+
+    @field_validator("master_request_id")
+    @classmethod
+    def validate_master_request_id(cls, value: str) -> str:
+        normalized = str(value or "").strip()
+        if not normalized:
+            raise ValueError("MASTER_REQUEST_ID_EMPTY")
+        return normalized
+
+    @field_validator("segment_job_ids")
+    @classmethod
+    def validate_segment_job_ids(cls, values: list[str]) -> list[str]:
+        normalized = [str(value or "").strip() for value in values]
+        if not all(normalized) or len(normalized) != len(set(normalized)):
+            raise ValueError("SEGMENT_JOB_IDS_INVALID")
         return normalized
 
 
@@ -223,6 +255,7 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
             "unsupported_effect": "degrade_to_static_hold",
             "retry_current_segment": 1,
         },
+        "transition_out": transition,
     }
     return SegmentRenderRequest.model_validate(request_data)
 
@@ -244,8 +277,77 @@ def _tool09_failed_segment(payload: Tool09SegmentRequest, code: str, message: st
         "degraded": False,
         "degradation_code": "",
         "degradation_records": [],
-        "transition_out": {"type": "hard_cut", "duration_ms": 0},
+        "transition_out": payload.segment_item.get("transition_out") if isinstance(payload.segment_item.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
     }
+
+
+def _tool09_rendered_from_job(
+    master_request_id: str,
+    job: dict[str, Any],
+) -> dict[str, Any]:
+    """Convert one stored renderer job into TOOL-09's stable segment contract."""
+    request = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    status = str(job.get("status") or "failed")
+    segment_id = str(request.get("segment_id") or "")
+    order = int(request.get("order") or 0)
+    if status != "completed":
+        error = job.get("error") if isinstance(job.get("error"), dict) else {}
+        code = str(error.get("code") or "SEGMENT_RENDER_FAILED")
+        message = str(error.get("message") or code)
+        return {
+            "master_request_id": master_request_id,
+            "segment_id": segment_id,
+            "order": order,
+            "status": "failed",
+            "render_error": {"code": code, "message": message, "retryable": bool(error.get("retryable"))},
+            "video_url": "",
+            "base_duration_sec": 0.0,
+            "head_handle_sec": 0.0,
+            "tail_handle_sec": 0.0,
+            "actual_render_duration_sec": 0.0,
+            "probe_valid": False,
+            "kline_main_visual_present": False,
+            "degraded": False,
+            "degradation_code": "",
+            "degradation_records": [],
+            "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
+        }
+
+    rendered = {
+        "master_request_id": master_request_id,
+        "segment_id": segment_id,
+        "order": order,
+        "status": "completed",
+        "render_error": {},
+        "video_url": str(result.get("video_url") or ""),
+        "thumbnail_url": str(result.get("thumbnail_url") or ""),
+        "base_duration_sec": float(result.get("base_duration_sec") or 0.0),
+        "head_handle_sec": float(result.get("head_handle_sec") or 0.0),
+        "tail_handle_sec": float(result.get("tail_handle_sec") or 0.0),
+        "actual_render_duration_sec": float(result.get("render_duration_sec") or 0.0),
+        "probe_valid": bool(result.get("probe_valid")),
+        "kline_main_visual_present": bool(result.get("kline_main_visual_present")),
+        "degraded": bool(result.get("degraded")),
+        "degradation_code": str(result.get("degradation_code") or ""),
+        "degradation_records": result.get("degradation_records") if isinstance(result.get("degradation_records"), list) else [],
+        "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
+    }
+    if not (rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"]):
+        rendered["status"] = "failed"
+        rendered["render_error"] = {
+            "code": "SEGMENT_RENDER_RESULT_INVALID",
+            "message": "SEGMENT_RENDER_RESULT_INVALID",
+            "retryable": False,
+        }
+    return rendered
+
+
+def _tool09_batch_request_id(payload: Tool09BatchRequest) -> str:
+    digest = hashlib.sha256(
+        f"{payload.master_request_id}|{'|'.join(payload.segment_job_ids)}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"tool09-batch-{digest}"
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
@@ -549,6 +651,24 @@ def _render(job_id: str) -> None:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _start_render_worker(job_id: str) -> bool:
+    """Start a local worker once; a later poll can resume jobs after a restart."""
+    with _ACTIVE_RENDER_LOCK:
+        if job_id in _ACTIVE_RENDER_JOBS:
+            return False
+        _ACTIVE_RENDER_JOBS.add(job_id)
+
+    def run() -> None:
+        try:
+            _render(job_id)
+        finally:
+            with _ACTIVE_RENDER_LOCK:
+                _ACTIVE_RENDER_JOBS.discard(job_id)
+
+    threading.Thread(target=run, daemon=True).start()
+    return True
+
+
 @router.post("/v1/segment-render-jobs")
 def _create_or_reuse_segment_render_job(request: SegmentRenderRequest) -> tuple[dict[str, Any], bool]:
     payload = _dump(request)
@@ -560,8 +680,8 @@ def _create_or_reuse_segment_render_job(request: SegmentRenderRequest) -> tuple[
             "code": "IDEMPOTENCY_CONFLICT",
             "message": f"request_id already exists with different payload: {exc}",
         }) from exc
-    if created:
-        threading.Thread(target=_render, args=(job["job_id"],), daemon=True).start()
+    if str(job.get("status") or "") in {"queued", "rendering"}:
+        _start_render_worker(str(job["job_id"]))
     return job, created
 
 
@@ -623,6 +743,141 @@ def create_and_await_segment_render_job(
     """
     job, _created = _create_or_reuse_segment_render_job(request)
     return wait_for_segment_render_job(str(job["job_id"]))
+
+
+@router.post("/v1/tool-09/segments/submit")
+def tool09_submit(payload: Tool09SegmentRequest) -> dict[str, Any]:
+    """Submit one TOOL-09 segment and return immediately without waiting for MP4."""
+    request = _tool09_render_request(payload)
+    job, created = _create_or_reuse_segment_render_job(request)
+    return {
+        "schema_version": "tool09-submit-result-v1",
+        "master_request_id": payload.master_request_id,
+        "job_id": str(job["job_id"]),
+        "request_id": str(job["request_id"]),
+        "segment_id": str(payload.segment_item.get("segment_id") or ""),
+        "order": int(payload.segment_item.get("order") or 0),
+        "status": str(job["status"]),
+        "done": str(job["status"]) in {"completed", "failed"},
+        "created": created,
+    }
+
+
+@router.post("/v1/tool-09/render-batches")
+def tool09_create_batch(payload: Tool09BatchRequest) -> dict[str, Any]:
+    """Create or reuse one batch tracker for submitted TOOL-09 segment jobs."""
+    if payload.market_input.get("schema_version") != "market-input-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
+    if payload.segment_media.get("schema_version") != "segment-media-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "SEGMENT_MEDIA_VERSION_INVALID"})
+
+    for job_id in payload.segment_job_ids:
+        try:
+            job = STORE.get(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=422, detail={"code": "SEGMENT_JOB_NOT_FOUND", "job_id": job_id}) from exc
+        request = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        if str(request.get("master_request_id") or "") != payload.master_request_id:
+            raise HTTPException(status_code=422, detail={"code": "SEGMENT_JOB_MASTER_ID_MISMATCH", "job_id": job_id})
+
+    batch, created = TOOL09_BATCH_STORE.create_or_get(
+        _tool09_batch_request_id(payload),
+        payload.model_dump(),
+    )
+    return {
+        "schema_version": "tool09-batch-submit-result-v1",
+        "master_request_id": payload.master_request_id,
+        "batch_job_id": str(batch["job_id"]),
+        "status": str(batch["status"]),
+        "done": str(batch["status"]) in {"completed", "failed"},
+        "created": created,
+    }
+
+
+def tool09_batch_status(batch_job_id: str) -> dict[str, Any]:
+    """Return fast batch progress; only package the final contract after all jobs stop."""
+    try:
+        batch = TOOL09_BATCH_STORE.get(batch_job_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail={"code": "TOOL09_BATCH_NOT_FOUND"}) from exc
+    payload = Tool09BatchRequest.model_validate(batch.get("payload") or {})
+    cached_result = batch.get("result")
+    if str(batch.get("status")) in {"completed", "failed"} and isinstance(cached_result, dict):
+        return cached_result
+
+    jobs: list[dict[str, Any]] = []
+    completed_count = 0
+    failed_count = 0
+    running_count = 0
+    for job_id in payload.segment_job_ids:
+        try:
+            job = STORE.get(job_id)
+        except KeyError:
+            job = {
+                "job_id": job_id,
+                "status": "failed",
+                "payload": {"segment_id": "", "order": 0},
+                "error": {"code": "SEGMENT_JOB_NOT_FOUND", "message": job_id, "retryable": False},
+            }
+        jobs.append(job)
+        status = str(job.get("status") or "queued")
+        if status == "completed":
+            completed_count += 1
+        elif status == "failed":
+            failed_count += 1
+        else:
+            running_count += 1
+            _start_render_worker(str(job["job_id"]))
+
+    total_count = len(jobs)
+    if running_count:
+        TOOL09_BATCH_STORE.update(batch_job_id, status="rendering", error=None)
+        return {
+            "schema_version": "tool09-batch-status-v1",
+            "master_request_id": payload.master_request_id,
+            "batch_job_id": batch_job_id,
+            "status": "rendering",
+            "done": False,
+            "total_count": total_count,
+            "completed_count": completed_count,
+            "failed_count": failed_count,
+        }
+
+    rendered_segments = [
+        _tool09_rendered_from_job(payload.master_request_id, job)
+        for job in jobs
+    ]
+    final = tool09_finalize(Tool09FinalizeRequest.model_validate({
+        "schema_version": "tool09-collection-request-v1",
+        "master_request_id": payload.master_request_id,
+        "rendered_segments": rendered_segments,
+        "market_input": payload.market_input,
+        "segment_media": payload.segment_media,
+    }))
+    final_status = "completed" if final["segment_render_valid"] else "failed"
+    result = {
+        "master_request_id": payload.master_request_id,
+        "batch_job_id": batch_job_id,
+        "status": final_status,
+        "done": True,
+        "total_count": total_count,
+        "completed_count": completed_count,
+        "failed_count": failed_count,
+        **final,
+        "schema_version": "tool09-batch-status-v1",
+    }
+    TOOL09_BATCH_STORE.update(
+        batch_job_id,
+        status=final_status,
+        result=result,
+        error=None if final_status == "completed" else {"code": "TOOL09_BATCH_FAILED"},
+    )
+    return result
+
+
+@router.get("/v1/tool-09/render-batches/{batch_job_id}")
+def get_tool09_batch_status(batch_job_id: str) -> dict[str, Any]:
+    return tool09_batch_status(batch_job_id)
 
 
 @router.post("/v1/tool-09/segments/render-await")

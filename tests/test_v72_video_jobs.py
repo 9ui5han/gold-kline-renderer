@@ -14,6 +14,9 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertIn("/v1/segment-render-jobs/await", paths)
         self.assertIn("/v1/segment-render-jobs/{job_id}", paths)
         self.assertIn("/v1/tool-09/segments/render-await", paths)
+        self.assertIn("/v1/tool-09/segments/submit", paths)
+        self.assertIn("/v1/tool-09/render-batches", paths)
+        self.assertIn("/v1/tool-09/render-batches/{batch_job_id}", paths)
         self.assertIn("/v1/tool-09/segments/finalize", paths)
         self.assertIn("/v1/compose-jobs", paths)
         self.assertIn("/v1/compose-jobs/{job_id}", paths)
@@ -30,6 +33,16 @@ class V72VideoJobsTests(unittest.TestCase):
             self.assertEqual(first["job_id"], again["job_id"])
             with self.assertRaises(IdempotencyConflict):
                 store.create_or_get("request-1", {"value": 2})
+
+    def test_job_store_uses_configured_job_prefix(self):
+        from app.job_store import JobStore
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(Path(directory), job_prefix="t9bj_")
+            job, created = store.create_or_get("batch-request-1", {"value": 1})
+
+        self.assertTrue(created)
+        self.assertTrue(job["job_id"].startswith("t9bj_"))
 
     def test_compose_audio_trim_skips_head_handle(self):
         from app.video_composer import _audio_trim_bounds
@@ -165,6 +178,183 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertTrue(result["segment_result_valid"])
         self.assertEqual(result["master_request_id"], "gold-master-01")
         self.assertEqual(result["rendered_segment"]["master_request_id"], "gold-master-01")
+
+    def test_tool09_submit_returns_job_ticket_without_waiting(self):
+        from app import segment_renderer
+
+        payload = segment_renderer.Tool09SegmentRequest.model_validate({
+            "schema_version": "tool09-segment-request-v1",
+            "master_request_id": "gold-master-async-01",
+            "market_input": {},
+            "segment_item": {"segment_id": "seg_01", "order": 1},
+        })
+        request = segment_renderer.SegmentRenderRequest.model_construct(
+            request_id="gold-master-async-01-seg-01",
+        )
+        created = {
+            "job_id": "srj_async_01",
+            "request_id": "gold-master-async-01-seg-01",
+            "status": "queued",
+        }
+        with (
+            patch.object(segment_renderer, "_tool09_render_request", return_value=request),
+            patch.object(
+                segment_renderer,
+                "_create_or_reuse_segment_render_job",
+                return_value=(created, True),
+            ),
+        ):
+            result = segment_renderer.tool09_submit(payload)
+
+        self.assertEqual(result["schema_version"], "tool09-submit-result-v1")
+        self.assertEqual(result["job_id"], "srj_async_01")
+        self.assertEqual(result["status"], "queued")
+        self.assertFalse(result["done"])
+
+    def test_tool09_batch_status_reports_pending_without_waiting(self):
+        from app import segment_renderer
+
+        payload = segment_renderer.Tool09BatchRequest.model_validate({
+            "schema_version": "tool09-batch-request-v1",
+            "master_request_id": "gold-master-batch-01",
+            "segment_job_ids": ["srj_01", "srj_02"],
+            "market_input": {"schema_version": "market-input-contract-v1"},
+            "segment_media": {
+                "schema_version": "segment-media-contract-v1",
+                "segment_media_inputs": [
+                    {"segment_id": "seg_01"},
+                    {"segment_id": "seg_02"},
+                ],
+            },
+        })
+        batch = {
+            "job_id": "t9bj_pending_01",
+            "request_id": "tool09-batch-gold-master-batch-01",
+            "status": "queued",
+            "payload": payload.model_dump(),
+        }
+        pending = {
+            "job_id": "srj_01",
+            "request_id": "request-01",
+            "status": "rendering",
+            "created_at": "2026-09-07T00:00:00Z",
+            "updated_at": "2026-09-07T00:00:01Z",
+            "payload": {"segment_id": "seg_01", "order": 1},
+            "result": None,
+            "error": None,
+        }
+        completed = {
+            **pending,
+            "job_id": "srj_02",
+            "status": "completed",
+            "payload": {"segment_id": "seg_02", "order": 2},
+            "result": {"video_url": "https://example.invalid/seg_02.mp4"},
+        }
+        with (
+            patch.object(segment_renderer.TOOL09_BATCH_STORE, "get", return_value=batch),
+            patch.object(segment_renderer.STORE, "get", side_effect=[pending, completed]),
+            patch.object(segment_renderer, "_start_render_worker"),
+        ):
+            result = segment_renderer.tool09_batch_status("t9bj_pending_01")
+
+        self.assertEqual(result["batch_job_id"], "t9bj_pending_01")
+        self.assertEqual(result["status"], "rendering")
+        self.assertFalse(result["done"])
+        self.assertEqual(result["completed_count"], 1)
+        self.assertEqual(result["total_count"], 2)
+
+    def test_existing_incomplete_render_job_is_restarted(self):
+        from app import segment_renderer
+
+        request = segment_renderer.SegmentRenderRequest.model_construct(
+            request_id="request-restart-01",
+        )
+        existing = {"job_id": "srj_restart_01", "status": "rendering"}
+        with (
+            patch.object(segment_renderer, "_validate_payload"),
+            patch.object(
+                segment_renderer.STORE,
+                "create_or_get",
+                return_value=(existing, False),
+            ),
+            patch.object(segment_renderer, "_start_render_worker") as start_worker,
+        ):
+            job, created = segment_renderer._create_or_reuse_segment_render_job(request)
+
+        self.assertFalse(created)
+        self.assertEqual(job["job_id"], "srj_restart_01")
+        start_worker.assert_called_once_with("srj_restart_01")
+
+    def test_tool09_batch_status_packages_final_contract_after_all_jobs_finish(self):
+        import json
+        from app import segment_renderer
+
+        payload = segment_renderer.Tool09BatchRequest.model_validate({
+            "schema_version": "tool09-batch-request-v1",
+            "master_request_id": "gold-master-batch-final-01",
+            "segment_job_ids": ["srj_final_01"],
+            "market_input": {"schema_version": "market-input-contract-v1"},
+            "segment_media": {
+                "schema_version": "segment-media-contract-v1",
+                "segment_media_inputs": [{"segment_id": "seg_01"}],
+            },
+        })
+        batch = {
+            "job_id": "t9bj_final_01",
+            "status": "rendering",
+            "payload": payload.model_dump(),
+            "result": None,
+        }
+        completed = {
+            "job_id": "srj_final_01",
+            "status": "completed",
+            "payload": {"segment_id": "seg_01", "order": 1},
+            "result": {
+                "video_url": "https://example.invalid/seg_01.mp4",
+                "base_duration_sec": 5,
+                "head_handle_sec": 0,
+                "tail_handle_sec": 0,
+                "render_duration_sec": 5,
+                "probe_valid": True,
+                "kline_main_visual_present": True,
+                "degraded": False,
+            },
+            "error": None,
+        }
+        with (
+            patch.object(segment_renderer.TOOL09_BATCH_STORE, "get", return_value=batch),
+            patch.object(segment_renderer.TOOL09_BATCH_STORE, "update"),
+            patch.object(segment_renderer.STORE, "get", return_value=completed),
+        ):
+            result = segment_renderer.tool09_batch_status("t9bj_final_01")
+
+        self.assertTrue(result["done"])
+        self.assertTrue(result["segment_render_valid"])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["schema_version"], "tool09-batch-status-v1")
+        self.assertTrue(json.loads(result["rendered_v1_json"])["segment_render_valid"])
+
+    def test_tool09_batch_status_preserves_segment_transition(self):
+        from app.segment_renderer import _tool09_rendered_from_job
+
+        rendered = _tool09_rendered_from_job("gold-master-transition", {
+            "status": "completed",
+            "payload": {
+                "segment_id": "seg_01",
+                "order": 1,
+                "transition_out": {"type": "fade", "duration_ms": 300},
+            },
+            "result": {
+                "video_url": "https://example.invalid/seg_01.mp4",
+                "probe_valid": True,
+                "kline_main_visual_present": True,
+            },
+        })
+
+        self.assertEqual(
+            rendered["transition_out"],
+            {"type": "fade", "duration_ms": 300},
+        )
 
     def test_tool09_models_reject_empty_master_request_id(self):
         from app.segment_renderer import Tool09FinalizeRequest, Tool09SegmentRequest
