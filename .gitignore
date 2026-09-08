@@ -2,7 +2,10 @@
 start-local.sh
 *.local.sh
 *.env
+.env
 .env.*
+!.env.example
+data/
 
 # Python 虚拟环境与缓存
 .venv/
