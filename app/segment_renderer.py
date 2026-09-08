@@ -34,7 +34,7 @@ _ACTIVE_RENDER_JOBS: set[str] = set()
 _ACTIVE_RENDER_LOCK = threading.RLock()
 SEGMENT_RENDER_CONCURRENCY = max(
     1,
-    min(4, int(os.environ.get("SEGMENT_RENDER_CONCURRENCY", "2"))),
+    min(4, int(os.environ.get("SEGMENT_RENDER_CONCURRENCY", "1"))),
 )
 _RENDER_SLOTS = threading.BoundedSemaphore(SEGMENT_RENDER_CONCURRENCY)
 DATA_RETENTION_DAYS = max(
