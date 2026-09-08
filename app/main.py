@@ -72,6 +72,7 @@ def resolve_data_dir() -> Path:
 
 DATA_DIR = resolve_data_dir()
 MEDIA_DIR = DATA_DIR / "media"
+COMPOSED_DIR = DATA_DIR / "composed"
 WORK_DIR = DATA_DIR / "work"
 PHOTO_WORK_DIR = DATA_DIR / "photo-work"
 APP_DIR = Path(__file__).resolve().parent
@@ -79,6 +80,7 @@ PHOTO_ASSET_DIR = APP_DIR.parent / "assets" / "photo"
 TIKTOK_PREVIEW_DIR = APP_DIR / "tiktok_preview"
 MACRO_STATUS_DIR = APP_DIR / "macro_status"
 MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+COMPOSED_DIR.mkdir(parents=True, exist_ok=True)
 WORK_DIR.mkdir(parents=True, exist_ok=True)
 PHOTO_WORK_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -426,6 +428,11 @@ app = FastAPI(
     title="302 AI + Python Gold K-line Renderer",
     version="1.0.0",
     description="根据真实OHLCV、预测情景和302.AI语音生成TikTok竖屏MP4。",
+)
+app.mount(
+    "/media/composed",
+    StaticFiles(directory=COMPOSED_DIR),
+    name="composed-media",
 )
 app.mount("/media", StaticFiles(directory=MEDIA_DIR), name="media")
 app.mount(

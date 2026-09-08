@@ -21,6 +21,22 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertIn("/v1/compose-jobs", paths)
         self.assertIn("/v1/compose-jobs/{job_id}", paths)
 
+    def test_composed_video_is_served_under_media_url(self):
+        from fastapi.testclient import TestClient
+        from app import main
+
+        file_name = "test-composed-video.mp4"
+        composed_dir = main.DATA_DIR / "composed"
+        composed_dir.mkdir(parents=True, exist_ok=True)
+        video_path = composed_dir / file_name
+        video_path.write_bytes(b"test video")
+        self.addCleanup(video_path.unlink, missing_ok=True)
+
+        response = TestClient(main.app).get(f"/media/composed/{file_name}")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.content, b"test video")
+
     def test_job_store_is_idempotent_and_rejects_conflict(self):
         from app.job_store import IdempotencyConflict, JobStore
 
