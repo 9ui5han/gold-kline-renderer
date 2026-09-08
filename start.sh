@@ -10,6 +10,7 @@ HOST_PORT="18100"
 CONTAINER_PORT="8000"
 ENV_FILE="$ROOT_DIR/.env"
 DATA_DIR_HOST="$ROOT_DIR/data"
+DEBIAN_MIRROR="${DEBIAN_MIRROR:-https://mirrors.aliyun.com}"
 
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "错误：缺少 .env 文件：$ENV_FILE"
@@ -29,7 +30,10 @@ git branch --show-current
 git log -1 --oneline
 
 echo "[2/6] 构建 Docker 镜像（复用未变化的依赖缓存）"
-docker build --pull -t "$IMAGE_NAME" "$ROOT_DIR"
+echo "      Debian 镜像源：$DEBIAN_MIRROR"
+docker build --pull \
+  --build-arg "DEBIAN_MIRROR=$DEBIAN_MIRROR" \
+  -t "$IMAGE_NAME" "$ROOT_DIR"
 
 echo "[3/6] 验证镜像包含 TOOL-09 路由"
 docker run --rm "$IMAGE_NAME" \
