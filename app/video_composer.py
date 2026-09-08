@@ -78,6 +78,7 @@ class ComposeSegment(BaseModel):
     kline_main_visual_present: bool
     degraded: bool = False
     degradation_code: str = ""
+    phase1_dynamic_valid: bool = False
     transition_out: TransitionOut
 
 
@@ -210,6 +211,50 @@ def _audio_trim_bounds(
     return head, head + max(0.0, float(base_duration_sec))
 
 
+def _transition_duration_sec(
+    transition: dict[str, Any],
+    previous_base_sec: float,
+    next_base_sec: float,
+) -> float:
+    """Validate one requested boundary without silently changing its timing."""
+    transition_type = str(transition.get("type") or "fade")
+    requested_ms = int(transition.get("duration_ms") or 0)
+    if transition_type == "hard_cut":
+        if requested_ms != 0:
+            raise ValueError("TRANSITION_DURATION_INVALID")
+        return 0.0
+    if transition_type not in TRANSITION_MAP:
+        raise ValueError(f"TRANSITION_UNSUPPORTED:{transition_type}")
+    duration_sec = requested_ms / 1000.0
+    maximum_sec = min(0.50, float(previous_base_sec) * 0.25, float(next_base_sec) * 0.25)
+    if duration_sec < 0.15 or duration_sec > maximum_sec:
+        raise ValueError("TRANSITION_DURATION_INVALID")
+    return duration_sec
+
+
+def _validate_handle_contract(
+    segments: list[ComposeSegment],
+    transitions: list[dict[str, Any]],
+    fps: int,
+) -> None:
+    """Phase 1 uses outgoing tail handles only, preserving narration timing."""
+    for index, segment in enumerate(segments):
+        if abs(float(segment.head_handle_sec)) > 0.002:
+            raise ValueError("BOUNDARY_HANDLE_MISMATCH")
+        expected_tail = 0.0
+        if index < len(transitions):
+            expected_tail = _transition_duration_sec(
+                transitions[index],
+                segment.base_duration_sec,
+                segments[index + 1].base_duration_sec,
+            )
+        if abs(float(segment.tail_handle_sec) - expected_tail) > 0.002:
+            raise ValueError("BOUNDARY_HANDLE_MISMATCH")
+        expected_render = float(segment.base_duration_sec) + expected_tail
+        if abs(expected_render - float(segment.actual_render_duration_sec)) > (1.0 / fps + 0.001):
+            raise ValueError(f"{segment.segment_id}:RENDER_HANDLE_MISMATCH")
+
+
 def _build_ffmpeg_command(
     files: list[Path],
     transitions: list[dict[str, Any]],
@@ -271,32 +316,11 @@ def _build_ffmpeg_command(
         )
 
         ffmpeg_transition = TRANSITION_MAP.get(transition_type)
-        if transition_type != "hard_cut" and not ffmpeg_transition:
-            raise ValueError(f"TRANSITION_UNSUPPORTED:{transition_type}")
-
-        transition_sec = (
-            int(
-                transition.get(
-                    "duration_ms",
-                    350,
-                )
-            )
-            / 1000.0
+        transition_sec = _transition_duration_sec(
+            transition,
+            base_durations[index - 1],
+            base_durations[index],
         )
-
-        if transition_type == "hard_cut":
-            transition_sec = 0.0
-        else:
-            # 普通转场需满足固定范围和相邻基础切片25%上限。
-            transition_sec = max(
-                0.15,
-                min(
-                    transition_sec,
-                    0.50,
-                    durations[index - 1] * 0.25,
-                    durations[index] * 0.25,
-                ),
-            )
 
         offset = (
             cumulative_duration
@@ -369,24 +393,17 @@ def _build_ffmpeg_command(
 def _transition_ledger(segments, transitions):
     ledger = []
     for index, transition in enumerate(transitions):
-        requested_ms = int(transition.get("duration_ms") or 0)
         transition_type = str(transition.get("type") or "fade")
-        if transition_type == "hard_cut":
-            actual_sec = 0.0
-        else:
-            actual_sec = max(
-                0.15,
-                min(
-                    requested_ms / 1000.0,
-                    0.50,
-                    float(segments[index].actual_render_duration_sec) * 0.25,
-                    float(segments[index + 1].actual_render_duration_sec) * 0.25,
-                ),
-            )
+        actual_sec = _transition_duration_sec(
+            transition,
+            segments[index].base_duration_sec,
+            segments[index + 1].base_duration_sec,
+        )
         ledger.append({
             "from_segment_id": segments[index].segment_id,
             "to_segment_id": segments[index + 1].segment_id,
             "type": transition_type,
+            "ffmpeg_effect": "concat" if transition_type == "hard_cut" else TRANSITION_MAP[transition_type],
             "duration_ms": int(round(actual_sec * 1000)),
             "actual_overlap_sec": round(actual_sec, 3),
         })
@@ -414,14 +431,7 @@ def run_compose_job(job_id: str, payload: dict[str, Any]) -> None:
 
         requested_preview = [item.transition_out.model_dump() for item in segments[:-1]]
         requested_ledger_preview = _transition_ledger(segments, requested_preview)
-        for index, boundary in enumerate(requested_ledger_preview):
-            available = float(segments[index].tail_handle_sec) + float(segments[index + 1].head_handle_sec)
-            if abs(available - float(boundary["actual_overlap_sec"])) > 0.002:
-                raise ValueError("BOUNDARY_HANDLE_MISMATCH")
-        for segment in segments:
-            planned = float(segment.base_duration_sec) + float(segment.head_handle_sec) + float(segment.tail_handle_sec)
-            if abs(planned - float(segment.actual_render_duration_sec)) > (1.0 / request.video.fps + 0.001):
-                raise ValueError(f"{segment.segment_id}:RENDER_HANDLE_MISMATCH")
+        _validate_handle_contract(segments, requested_preview, request.video.fps)
         requested_expected = sum(float(item.actual_render_duration_sec) for item in segments) - sum(float(item["actual_overlap_sec"]) for item in requested_ledger_preview)
         if abs(requested_expected - float(request.expected_final_duration_sec)) > 0.05:
             raise ValueError("EXPECTED_FINAL_DURATION_MISMATCH")
@@ -532,6 +542,10 @@ def run_compose_job(job_id: str, payload: dict[str, Any]) -> None:
             "applied_transitions": applied_ledger,
             "actual_overlap_sec": actual_overlap,
             "degradation_records": records,
+            "phase1_dynamic_valid": (
+                all(item.phase1_dynamic_valid for item in segments)
+                and attempt_name == "requested"
+            ),
             "rebuild_segment_ids": [],
         }
         JOB_STORE.update(job_id, status="completed", result=result, error=None)
@@ -626,14 +640,19 @@ def _compose_request_from_tool10(payload: FinalComposeStartRequest) -> ComposeRe
             "kline_main_visual_present": item.get("kline_main_visual_present") is True,
             "degraded": item.get("degraded") is True,
             "degradation_code": str(item.get("degradation_code") or ""),
+            "phase1_dynamic_valid": item.get("phase1_dynamic_valid") is True,
             "transition_out": transition,
         })
 
     ordered = sorted(segments, key=lambda value: value["order"])
     # The final segment has no following boundary, so its transition is ignored.
     requested = [value["transition_out"] for value in ordered[:-1]]
-    typed_segments = [ComposeSegment.model_validate(value) for value in ordered]
-    ledger = _transition_ledger(typed_segments, requested)
+    try:
+        typed_segments = [ComposeSegment.model_validate(value) for value in ordered]
+        ledger = _transition_ledger(typed_segments, requested)
+        _validate_handle_contract(typed_segments, requested, 30)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     expected = sum(value["actual_render_duration_sec"] for value in ordered) - sum(
         float(value["actual_overlap_sec"]) for value in ledger
     )
@@ -689,6 +708,7 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
     if composed and not duration_in_hard:
         errors = ["FINAL_DURATION_HARD_LIMIT_EXCEEDED"]
     valid = composed and duration_in_hard
+    phase1_dynamic_valid = composed and result.get("phase1_dynamic_valid") is True
     contract = {
         "schema_version": "final-result-contract-v1",
         "master_request_id": master_request_id,
@@ -696,6 +716,7 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
         "final_errors": errors,
         "final_video_url": str(result.get("video_url") or ""),
         "final_duration_sec": duration,
+        "phase1_dynamic_valid": phase1_dynamic_valid,
     }
     return {
         "schema_version": "final-compose-result-v1",
@@ -705,6 +726,7 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
         "final_errors_json": json.dumps(errors, ensure_ascii=False, separators=(",", ":")),
         "final_video_url": str(result.get("video_url") or ""),
         "final_duration_sec": duration,
+        "phase1_dynamic_valid": phase1_dynamic_valid,
         "target_duration_sec": target,
         "duration_diff_sec": difference,
         "duration_in_preferred": duration_in_preferred,

@@ -50,6 +50,76 @@ def _start_payload(master_request_id="gold-contract-01"):
 
 
 class FinalComposeContractTests(unittest.TestCase):
+    def test_tool10_rejects_invalid_transition_duration_and_handle_contract(self):
+        from app.video_composer import FinalComposeStartRequest, _compose_request_from_tool10
+        from fastapi import HTTPException
+
+        payload = _start_payload()
+        rendered = json.loads(payload["rendered_v1_json"])
+        second = dict(rendered["rendered_segments"][0])
+        second.update({
+            "segment_id": "seg_02",
+            "order": 2,
+            "video": {"url": "https://example.invalid/seg_02.mp4", "duration_sec": 4.0},
+        })
+        rendered["rendered_segments"].append(second)
+        rendered["rendered_segments"][0]["transition_out"] = {
+            "type": "fade",
+            "duration_ms": 100,
+        }
+        payload["rendered_v1_json"] = json.dumps(rendered)
+
+        with self.assertRaises(HTTPException) as caught:
+            _compose_request_from_tool10(FinalComposeStartRequest.model_validate(payload))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail, "TRANSITION_DURATION_INVALID")
+
+        rendered["rendered_segments"][0]["transition_out"]["duration_ms"] = 250
+        payload["rendered_v1_json"] = json.dumps(rendered)
+        with self.assertRaises(HTTPException) as caught:
+            _compose_request_from_tool10(FinalComposeStartRequest.model_validate(payload))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertEqual(caught.exception.detail, "BOUNDARY_HANDLE_MISMATCH")
+
+    def test_tool10_transition_ledger_reports_requested_effect_mapping(self):
+        from app.video_composer import ComposeSegment, _transition_ledger
+
+        segments = [
+            ComposeSegment(
+                segment_id="seg_01", order=1, video_url="https://example.invalid/1.mp4",
+                base_duration_sec=4.0, head_handle_sec=0.0, tail_handle_sec=0.25,
+                actual_render_duration_sec=4.25, transition_out={"type": "fade", "duration_ms": 250},
+                probe_valid=True, kline_main_visual_present=True,
+            ),
+            ComposeSegment(
+                segment_id="seg_02", order=2, video_url="https://example.invalid/2.mp4",
+                base_duration_sec=4.0, head_handle_sec=0.0, tail_handle_sec=0.0,
+                actual_render_duration_sec=4.0, transition_out={"type": "hard_cut", "duration_ms": 0},
+                probe_valid=True, kline_main_visual_present=True,
+            ),
+        ]
+
+        ledger = _transition_ledger(segments, [segments[0].transition_out.model_dump()])
+        self.assertEqual(ledger[0]["type"], "fade")
+        self.assertEqual(ledger[0]["ffmpeg_effect"], "fade")
+
+    def test_final_result_keeps_media_valid_but_flags_non_dynamic_output(self):
+        from app.video_composer import _final_result
+
+        result = _final_result({
+            "status": "completed",
+            "result": {
+                "video_url": "https://example.invalid/final.mp4",
+                "duration_sec": 60.0,
+                "hard_duration_min_sec": 50.0,
+                "hard_duration_max_sec": 70.0,
+                "phase1_dynamic_valid": False,
+            },
+        }, "gold-contract-01")
+
+        self.assertTrue(result["final_valid"])
+        self.assertFalse(result["phase1_dynamic_valid"])
+
     def test_models_reject_whitespace_master_request_id(self):
         from app.video_composer import FinalComposeStartRequest, FinalComposeStepRequest
         from pydantic import ValidationError
@@ -70,16 +140,27 @@ class FinalComposeContractTests(unittest.TestCase):
         paths = app.openapi()["paths"]
         self.assertIn("/v1/final-compose-jobs/start", paths)
         self.assertIn("/v1/final-compose-jobs/step", paths)
+        routes = []
+        for route in app.routes:
+            if hasattr(route, "path"):
+                routes.append(route)
+            elif hasattr(route, "original_router"):
+                routes.extend(route.original_router.routes)
         protected = {
             route.path: route
-            for route in app.routes
+            for route in routes
             if route.path in {
                 "/v1/final-compose-jobs/start",
                 "/v1/final-compose-jobs/step",
             }
         }
-        self.assertTrue(protected["/v1/final-compose-jobs/start"].dependant.dependencies)
-        self.assertTrue(protected["/v1/final-compose-jobs/step"].dependant.dependencies)
+        self.assertEqual(len(protected), 2)
+        protected_router = next(
+            route for route in app.routes
+            if hasattr(route, "original_router")
+            and protected["/v1/final-compose-jobs/start"] in route.original_router.routes
+        )
+        self.assertTrue(protected_router.include_context.dependencies)
 
     def test_tool10_request_is_adapted_to_existing_compose_contract(self):
         from app.video_composer import FinalComposeStartRequest, _compose_request_from_tool10
