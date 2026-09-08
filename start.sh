@@ -28,8 +28,8 @@ echo "[1/6] 当前代码版本"
 git branch --show-current
 git log -1 --oneline
 
-echo "[2/6] 重新构建 Docker 镜像（不使用旧缓存）"
-docker build --no-cache -t "$IMAGE_NAME" "$ROOT_DIR"
+echo "[2/6] 构建 Docker 镜像（复用未变化的依赖缓存）"
+docker build --pull -t "$IMAGE_NAME" "$ROOT_DIR"
 
 echo "[3/6] 验证镜像包含 TOOL-09 路由"
 docker run --rm "$IMAGE_NAME" \
