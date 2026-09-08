@@ -126,6 +126,162 @@ class V72VideoJobsTests(unittest.TestCase):
             _validate_payload(_dump(request))
         self.assertEqual(caught.exception.detail["code"], "SCENE_BOUNDS_INVALID")
 
+    def test_tool09_request_preserves_dynamic_visual_plan(self):
+        from app import segment_renderer
+
+        candles = [
+            {
+                "time": f"2026-09-08T{i:02d}:00:00Z",
+                "open": 4400 + i,
+                "high": 4402 + i,
+                "low": 4398 + i,
+                "close": 4401 + i,
+            }
+            for i in range(20)
+        ]
+        payload = segment_renderer.Tool09SegmentRequest.model_validate({
+            "schema_version": "tool09-segment-request-v1",
+            "master_request_id": "gold-dynamic-01",
+            "market_input": {
+                "schema_version": "market-input-contract-v1",
+                "data_as_of": "2026-09-08T00:00:00Z",
+                "normalized_market": {
+                    "symbol": "XAUUSD.I",
+                    "timeframes": {"1h": {"closed_bars": candles}},
+                },
+                "job_config": {
+                    "forecast": {"timeframe": "1h"},
+                    "video": {"width": 320, "height": 320, "fps": 30},
+                },
+            },
+            "segment_item": {
+                "segment_id": "seg_01",
+                "order": 1,
+                "visual": {
+                    "visual_mode": "scenario_animation",
+                    "source_timeframe": "1h",
+                    "camera_motion": "slow_zoom_in",
+                    "highlight_levels": ["R1"],
+                    "show_volume": False,
+                    "show_macro_marker": False,
+                },
+                "scenes": [
+                    {
+                        "scene_id": "scene_01",
+                        "template_id": "path_reveal",
+                        "start_sec": 0.0,
+                        "duration_sec": 1.0,
+                        "camera_motion": "slow_zoom_in",
+                        "overlay_events": [
+                            {
+                                "event_id": "path_01",
+                                "event_type": "scenario_path",
+                                "start_sec": 0.2,
+                                "duration_sec": 0.6,
+                                "fact_anchor_ids": ["scenario:up"],
+                            }
+                        ],
+                    },
+                    {
+                        "scene_id": "scene_02",
+                        "template_id": "closing_card",
+                        "start_sec": 1.0,
+                        "duration_sec": 1.0,
+                        "camera_motion": "static_hold",
+                        "overlay_events": [],
+                    },
+                ],
+                "resolved_visual_facts": [
+                    {
+                        "anchor_id": "level:R1",
+                        "fact_type": "price_zone",
+                        "center_price": 4410.0,
+                        "lower_price": 4409.0,
+                        "upper_price": 4411.0,
+                        "display_text": "R1",
+                    },
+                    {
+                        "anchor_id": "scenario:up",
+                        "fact_type": "scenario_path",
+                        "path_points": [
+                            {"price": 4401.0, "time_ratio": 0.0},
+                            {"price": 4412.0, "time_ratio": 1.0},
+                        ],
+                    },
+                ],
+                "audio": {
+                    "url": "https://example.invalid/audio.wav",
+                    "duration_sec": 2.0,
+                },
+                "duration_validation": {"valid": True},
+                "transition_out": {"type": "fade", "duration_ms": 250},
+            },
+        })
+
+        request = segment_renderer._tool09_render_request(payload)
+
+        self.assertEqual(len(request.visual_timeline["scenes"]), 2)
+        self.assertEqual(len(request.visual_timeline["camera_plan"]), 2)
+        self.assertEqual(len(request.visual_timeline["overlay_plan"]), 1)
+        self.assertEqual(request.visual_facts[0]["anchor_id"], "level:R1")
+        self.assertEqual(request.visual_timeline["scenes"][1]["start_sec"], 1.0)
+
+    def test_tool09_request_rejects_missing_visual_plan(self):
+        from app import segment_renderer
+        from fastapi import HTTPException
+
+        payload = segment_renderer.Tool09SegmentRequest.model_validate({
+            "schema_version": "tool09-segment-request-v1",
+            "master_request_id": "gold-dynamic-missing-plan",
+            "market_input": {"schema_version": "market-input-contract-v1"},
+            "segment_item": {
+                "segment_id": "seg_01",
+                "order": 1,
+                "audio": {"url": "https://example.invalid/audio.wav", "duration_sec": 1.0},
+                "duration_validation": {"valid": True},
+            },
+        })
+
+        with self.assertRaises(HTTPException) as caught:
+            segment_renderer._tool09_render_request(payload)
+
+        self.assertEqual(caught.exception.detail["code"], "VISUAL_PLAN_REQUIRED")
+
+    def test_dynamic_frame_changes_as_timeline_progresses(self):
+        from app import segment_renderer
+
+        candles = [
+            {"open": 100 + i, "high": 102 + i, "low": 98 + i, "close": 101 + i}
+            for i in range(20)
+        ]
+        timeline = {
+            "base_duration_sec": 2.0,
+            "scenes": [{
+                "scene_id": "scene_01",
+                "start_sec": 0.0,
+                "end_sec": 2.0,
+                "duration_sec": 2.0,
+                "camera_motion": "slow_zoom_in",
+            }],
+            "camera_plan": [{
+                "event_id": "camera_01",
+                "start_sec": 0.0,
+                "end_sec": 2.0,
+                "motion": "slow_zoom_in",
+            }],
+            "overlay_plan": [],
+        }
+
+        first = segment_renderer._render_dynamic_frame(
+            candles, 160, 160, timeline, [], 0.0,
+        )
+        last = segment_renderer._render_dynamic_frame(
+            candles, 160, 160, timeline, [], 1.9,
+        )
+
+        self.assertNotEqual(first, last)
+        self.assertEqual(len(first), 160 * 160 * 3)
+
     def test_wait_for_segment_render_job_reports_completed_and_timeout(self):
         from app import segment_renderer
 

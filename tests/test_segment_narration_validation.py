@@ -9,6 +9,7 @@ import unittest
 sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
 from app.segment_narration_validation import (
+    _estimated_spoken_seconds,
     complete_tool08,
     confirm_tts_result,
     finalize_tool08,
@@ -413,7 +414,7 @@ def test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audi
     assert scheduled[1]["original_target_sec"] == 10.0
 
 
-def test_rebalance_keeps_out_of_range_estimate_as_advisory_without_repair():
+def test_rebalance_marks_unfit_global_budget_for_narration_repair():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -441,9 +442,90 @@ def test_rebalance_keeps_out_of_range_estimate_as_advisory_without_repair():
     assert result["content_fit_valid"] is True
     assert result["content_fit_error"] == ""
     assert len(result["scheduled_items"]) == 1
-    assert result["scheduled_items"][0]["needs_narration_repair"] is False
-    assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 3
-    assert result["scheduled_total_sec"] == 3.0
+    assert result["scheduled_items"][0]["needs_narration_repair"] is True
+    assert result["scheduled_items"][0]["content_fit_error"] == (
+        "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+    )
+    assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 13.0
+    assert result["scheduled_total_sec"] == 13.0
+
+    scheduled = result["scheduled_items"][0]
+    step = process_step(
+        scheduled["item"],
+        scheduled["segment_narration"],
+        scheduled["segment_performance"],
+        _profile(),
+        "mm_finance_male_02",
+        "master_01",
+    )
+    assert step["action"] == "repair_narration"
+    assert "PRE_TTS_DURATION_OUT_OF_RANGE" in json.loads(
+        step["repair_prompt_json"]
+    )["validator_errors"]
+
+    second_step = process_step(
+        scheduled["item"],
+        None,
+        None,
+        _profile(),
+        "mm_finance_male_02",
+        "master_01",
+        repair_candidate={
+            "state_json": '{"repair_count":1,"narration_revision":1}',
+            "segment_narration": scheduled["segment_narration"],
+            "segment_performance": scheduled["segment_performance"],
+        },
+    )
+    assert second_step["action"] == "fail"
+    assert second_step["step_error"] == "REPAIR_LIMIT_EXCEEDED"
+
+
+def test_spoken_word_duration_estimate_scales_with_speed():
+    text = "Gold closed at four thousand four hundred thirty four point eight eight."
+
+    slow_total, slow_words = _estimated_spoken_seconds(
+        text, 20.0, 0.95, _profile()["pause_model"], 0, 2.6
+    )
+    fast_total, fast_words = _estimated_spoken_seconds(
+        text, 20.0, 1.05, _profile()["pause_model"], 0, 2.6
+    )
+
+    assert slow_words > fast_words
+    assert slow_total > fast_total
+
+
+def test_rebalance_expands_budget_for_spoken_overrun():
+    item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 4,
+        "duration_min_sec": 2.5,
+        "duration_max_sec": 5.5,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold closed at 4434.88, while confirmation remains important.",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_01_intro", speed=1.0, pause_after_ms=0)
+
+    result = rebalance_tool08(
+        [{
+            "item": item,
+            "segment_narration": narration,
+            "segment_performance": performance,
+        }],
+        _profile(),
+    )
+
+    assert result["schedule_valid"] is True
+    scheduled_item = result["scheduled_items"][0]
+    assert scheduled_item["item"]["duration_target_sec"] > 4.0
+    assert result["scheduled_total_sec"] == scheduled_item["item"]["duration_target_sec"]
 
 
 def test_step_requests_narration_repair_before_paid_tts():
@@ -747,7 +829,9 @@ def load_tests(loader, tests, pattern):
         test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
         test_price_spoken_duration_does_not_trigger_repair_when_two_prices_exceed_visual_budget,
         test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio,
-        test_rebalance_keeps_out_of_range_estimate_as_advisory_without_repair,
+        test_rebalance_marks_unfit_global_budget_for_narration_repair,
+        test_spoken_word_duration_estimate_scales_with_speed,
+        test_rebalance_expands_budget_for_spoken_overrun,
         test_step_requests_narration_repair_before_paid_tts,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,

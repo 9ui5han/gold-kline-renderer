@@ -18,6 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
+from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.job_store import IdempotencyConflict, JobStore
@@ -125,6 +126,7 @@ class SegmentRenderRequest(BaseModel):
     tail_handle_sec: float = Field(ge=0, le=3)
     render_duration_sec: float = Field(gt=0, le=306)
     visual_timeline: dict[str, Any]
+    visual_facts: list[dict[str, Any]] = Field(default_factory=list)
     video: VideoSpec
     fallback_policy: dict[str, Any]
     transition_out: dict[str, Any] = Field(default_factory=dict)
@@ -242,10 +244,110 @@ def _tool09_candles(market_input: dict[str, Any], timeframe: str) -> list[dict[s
     return candles
 
 
+def _build_visual_timeline(
+    item: dict[str, Any],
+    segment_id: str,
+    base_duration: float,
+    fps: int,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Convert TOOL-08's scene contract into the renderer timeline.
+
+    TOOL-09 must consume resolved facts and scene timing from TOOL-08.  It is
+    deliberately not allowed to replace the plan with a guessed chart scene.
+    """
+    visual = item.get("visual")
+    scenes = item.get("scenes")
+    facts = item.get("resolved_visual_facts")
+    if not isinstance(visual, dict) or not isinstance(scenes, list) or not scenes:
+        raise HTTPException(status_code=422, detail={"code": "VISUAL_PLAN_REQUIRED"})
+    if not isinstance(facts, list) or not facts:
+        raise HTTPException(status_code=422, detail={"code": "RESOLVED_VISUAL_FACTS_REQUIRED"})
+
+    normalized_scenes: list[dict[str, Any]] = []
+    camera_plan: list[dict[str, Any]] = []
+    overlay_plan: list[dict[str, Any]] = []
+    fact_ids = {
+        str(fact.get("anchor_id"))
+        for fact in facts
+        if isinstance(fact, dict) and fact.get("anchor_id")
+    }
+    previous_end = 0.0
+    default_motion = str(visual.get("camera_motion") or "static_hold")
+    for index, raw_scene in enumerate(scenes, start=1):
+        if not isinstance(raw_scene, dict):
+            raise HTTPException(status_code=422, detail={"code": "SCENE_NOT_OBJECT", "index": index - 1})
+        try:
+            start = float(raw_scene.get("start_sec", previous_end))
+            duration = float(raw_scene.get("duration_sec"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail={"code": "SCENE_TIME_INVALID", "index": index - 1}) from exc
+        end = float(raw_scene.get("end_sec", start + duration))
+        if start < 0 or duration <= 0 or end <= start:
+            raise HTTPException(status_code=422, detail={"code": "SCENE_TIME_INVALID", "index": index - 1})
+        if abs(start - previous_end) > 0.05:
+            raise HTTPException(status_code=422, detail={"code": "SCENE_NOT_CONTIGUOUS", "index": index - 1})
+        motion = str(raw_scene.get("camera_motion") or default_motion)
+        template_id = str(raw_scene.get("template_id") or "chart_push")
+        if motion == "static_hold" and template_id != "closing_card":
+            raise HTTPException(status_code=422, detail={"code": "STATIC_HOLD_NOT_ALLOWED", "scene_id": str(raw_scene.get("scene_id") or index)})
+        scene = {
+            "scene_id": str(raw_scene.get("scene_id") or f"scene_{index:02d}"),
+            "template_id": template_id,
+            "start_sec": start,
+            "end_sec": end,
+            "duration_sec": end - start,
+            "camera_motion": motion,
+            "overlay_events": raw_scene.get("overlay_events") if isinstance(raw_scene.get("overlay_events"), list) else [],
+        }
+        normalized_scenes.append(scene)
+        camera_plan.append({
+            "event_id": f"{scene['scene_id']}:camera",
+            "start_sec": start,
+            "end_sec": end,
+            "motion": motion,
+            "focus_target": str(visual.get("visual_mode") or "full_chart"),
+        })
+        for event_index, raw_event in enumerate(scene["overlay_events"], start=1):
+            if not isinstance(raw_event, dict):
+                raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_NOT_OBJECT", "index": event_index - 1})
+            try:
+                event_start = start + float(raw_event.get("start_sec", 0.0))
+                event_duration = float(raw_event.get("duration_sec", end - start))
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_TIME_INVALID"}) from exc
+            event_end = event_start + event_duration
+            if event_start < start - 0.05 or event_end > end + 0.05 or event_end <= event_start:
+                raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_BOUNDS_INVALID"})
+            anchors = raw_event.get("fact_anchor_ids") if isinstance(raw_event.get("fact_anchor_ids"), list) else []
+            if any(str(anchor) not in fact_ids for anchor in anchors):
+                raise HTTPException(status_code=422, detail={"code": "RESOLVED_VISUAL_FACT_NOT_FOUND", "event_id": str(raw_event.get("event_id") or "")})
+            overlay_plan.append({
+                "event_id": str(raw_event.get("event_id") or f"{scene['scene_id']}:overlay:{event_index}"),
+                "event_type": str(raw_event.get("event_type") or "caption"),
+                "start_sec": event_start,
+                "end_sec": event_end,
+                "fact_anchor_ids": anchors,
+            })
+        previous_end = end
+
+    if abs(previous_end - base_duration) > 0.08:
+        raise HTTPException(status_code=422, detail={"code": "SCENES_DO_NOT_COVER_BASE"})
+    return {
+        "schema_version": "visual-timeline-v1",
+        "segment_id": segment_id,
+        "base_duration_sec": base_duration,
+        "fps": fps,
+        "visual_mode": str(visual.get("visual_mode") or "chart_intro"),
+        "highlight_levels": visual.get("highlight_levels") if isinstance(visual.get("highlight_levels"), list) else [],
+        "show_volume": bool(visual.get("show_volume")),
+        "show_macro_marker": bool(visual.get("show_macro_marker")),
+        "scenes": normalized_scenes,
+        "camera_plan": camera_plan,
+        "overlay_plan": overlay_plan,
+    }, facts
+
+
 def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderRequest:
-    market = normalize_kline_numbers(payload.market_input)
-    if market.get("schema_version") != "market-input-contract-v1":
-        raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
     item = payload.segment_item
     segment_id = str(item.get("segment_id") or "").strip()
     if not segment_id:
@@ -258,6 +360,10 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
         raise HTTPException(status_code=422, detail={"code": "AUDIO_DURATION_NOT_VALID"})
     if base_duration <= 0:
         raise HTTPException(status_code=422, detail={"code": "AUDIO_DURATION_INVALID"})
+
+    market = normalize_kline_numbers(payload.market_input)
+    if market.get("schema_version") != "market-input-contract-v1":
+        raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
 
     normalized = market.get("normalized_market")
     if not isinstance(normalized, dict):
@@ -274,21 +380,7 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
     fps = int(video.get("fps") or 30)
     transition = item.get("transition_out") if isinstance(item.get("transition_out"), dict) else {}
     tail_handle = max(0.0, min(3.0, float(transition.get("duration_ms") or 0) / 1000.0))
-    timeline = {
-        "schema_version": "visual-timeline-v1",
-        "segment_id": segment_id,
-        "base_duration_sec": base_duration,
-        "fps": fps,
-        "scenes": [{
-            "scene_id": "scene_01",
-            "start_sec": 0.0,
-            "end_sec": base_duration,
-            "duration_sec": base_duration,
-            "template_id": "chart_push",
-        }],
-        "camera_plan": [],
-        "overlay_plan": [],
-    }
+    timeline, visual_facts = _build_visual_timeline(item, segment_id, base_duration, fps)
     data_as_of = str(market.get("data_as_of") or normalized.get("data_as_of") or "").strip()
     request_data = {
         "request_id": _tool09_request_id(payload.master_request_id, segment_id),
@@ -305,6 +397,7 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
         "tail_handle_sec": tail_handle,
         "render_duration_sec": base_duration + tail_handle,
         "visual_timeline": timeline,
+        "visual_facts": visual_facts,
         "video": {
             "width": int(video.get("width") or 1080),
             "height": int(video.get("height") or 1920),
@@ -338,6 +431,9 @@ def _tool09_failed_segment(payload: Tool09SegmentRequest, code: str, message: st
         "degraded": False,
         "degradation_code": "",
         "degradation_records": [],
+        "planned_effects": [],
+        "applied_effects": [],
+        "visual_timeline_valid": False,
         "transition_out": payload.segment_item.get("transition_out") if isinstance(payload.segment_item.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
     }
 
@@ -372,6 +468,9 @@ def _tool09_rendered_from_job(
             "degraded": False,
             "degradation_code": "",
             "degradation_records": [],
+            "planned_effects": [],
+            "applied_effects": [],
+            "visual_timeline_valid": False,
             "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
         }
 
@@ -392,6 +491,9 @@ def _tool09_rendered_from_job(
         "degraded": bool(result.get("degraded")),
         "degradation_code": str(result.get("degradation_code") or ""),
         "degradation_records": result.get("degradation_records") if isinstance(result.get("degradation_records"), list) else [],
+        "planned_effects": result.get("planned_effects") if isinstance(result.get("planned_effects"), list) else [],
+        "applied_effects": result.get("applied_effects") if isinstance(result.get("applied_effects"), list) else [],
+        "visual_timeline_valid": bool(result.get("visual_timeline_valid")),
         "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
     }
     if not (rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"]):
@@ -577,6 +679,183 @@ def _write_kline_ppm(candles: list[dict[str, Any]], width: int, height: int, des
         output.write(pixels)
 
 
+SUPPORTED_CAMERA_MOTIONS = {
+    "static_hold",
+    "micro_drift",
+    "slow_zoom_in",
+    "slow_zoom_out",
+    "focus_zoom",
+    "light_zoom",
+    "cross_zoom",
+    "blur_zoom",
+    "pan_left",
+    "pan_right",
+    "whip_left",
+    "whip_right",
+}
+SUPPORTED_OVERLAY_EVENTS = {
+    "caption",
+    "hook_text",
+    "technical_label",
+    "risk_notice",
+    "scenario_path",
+    "closing_question",
+}
+
+
+def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def _active_event(events: list[dict[str, Any]], elapsed_sec: float) -> tuple[dict[str, Any] | None, float]:
+    if not events:
+        return None, 0.0
+    candidate = events[-1]
+    for event in events:
+        if float(event.get("start_sec") or 0.0) <= elapsed_sec <= float(event.get("end_sec") or 0.0):
+            candidate = event
+            break
+    start = float(candidate.get("start_sec") or 0.0)
+    end = float(candidate.get("end_sec") or start + 1.0)
+    return candidate, _clamp((elapsed_sec - start) / max(end - start, 1e-6))
+
+
+def _render_dynamic_frame(
+    candles: list[dict[str, Any]],
+    width: int,
+    height: int,
+    timeline: dict[str, Any],
+    visual_facts: list[dict[str, Any]],
+    elapsed_sec: float,
+) -> bytes:
+    """Render one RGB frame from the validated TOOL-08 visual timeline."""
+    base_duration = max(float(timeline.get("base_duration_sec") or 1.0), 1e-6)
+    elapsed = _clamp(float(elapsed_sec), 0.0, base_duration)
+    camera, camera_progress = _active_event(timeline.get("camera_plan") or [], elapsed)
+    motion = str((camera or {}).get("motion") or "static_hold")
+    if motion not in SUPPORTED_CAMERA_MOTIONS:
+        motion = "micro_drift"
+
+    if motion in {"slow_zoom_in", "focus_zoom", "light_zoom", "cross_zoom", "blur_zoom"}:
+        scale = 1.0 + (0.08 if motion == "light_zoom" else 0.14) * camera_progress
+    elif motion == "slow_zoom_out":
+        scale = 1.14 - 0.14 * camera_progress
+    elif motion in {"pan_left", "pan_right", "whip_left", "whip_right"}:
+        scale = 1.10
+    elif motion == "micro_drift":
+        scale = 1.04
+    else:
+        scale = 1.0
+    canvas_width = max(width, int(round(width * scale)))
+    canvas_height = max(height, int(round(height * scale)))
+    image = Image.new("RGB", (canvas_width, canvas_height), (8, 13, 24))
+    draw = ImageDraw.Draw(image, "RGBA")
+    font = ImageFont.load_default()
+    margin_x = max(24, canvas_width // 18)
+    top = max(44, canvas_height // 12)
+    bottom = canvas_height - max(72, canvas_height // 9)
+    chart_width = canvas_width - margin_x * 2
+    chart_height = max(1, bottom - top)
+
+    for step in range(6):
+        y = top + int(chart_height * step / 5)
+        draw.line((margin_x, y, canvas_width - margin_x, y), fill=(28, 39, 58, 255), width=1)
+
+    usable = candles[-min(len(candles), 80):]
+    visible_count = max(1, min(len(usable), int(round(1 + (len(usable) - 1) * (0.35 + 0.65 * _clamp(elapsed / base_duration))))))
+    visible = usable[:visible_count]
+    highs = [float(x["high"]) for x in usable]
+    lows = [float(x["low"]) for x in usable]
+    high = max(highs)
+    low = min(lows)
+    span = max(high - low, 1e-9)
+    slot = chart_width / max(len(usable), 1)
+    body_width = max(2, int(slot * 0.55))
+
+    def y_for(price: float) -> int:
+        return top + int((high - price) / span * chart_height)
+
+    for index, candle in enumerate(visible):
+        x = margin_x + int((index + 0.5) * slot)
+        open_y = y_for(float(candle["open"]))
+        close_y = y_for(float(candle["close"]))
+        high_y = y_for(float(candle["high"]))
+        low_y = y_for(float(candle["low"]))
+        color = (35, 211, 156, 255) if float(candle["close"]) >= float(candle["open"]) else (245, 92, 92, 255)
+        draw.line((x, high_y, x, low_y), fill=color, width=max(1, body_width // 3))
+        draw.rectangle((x - body_width // 2, min(open_y, close_y), x + body_width // 2, max(open_y, close_y)), fill=color)
+
+    if timeline.get("show_volume"):
+        volume_max = max((float(x.get("volume") or 0.0) for x in visible), default=1.0) or 1.0
+        for index, candle in enumerate(visible):
+            x = margin_x + int((index + 0.5) * slot)
+            bar_height = int((float(candle.get("volume") or 0.0) / volume_max) * max(12, chart_height * 0.12))
+            draw.rectangle((x - body_width // 2, bottom - bar_height, x + body_width // 2, bottom), fill=(83, 120, 180, 90))
+
+    facts_by_id = {
+        str(fact.get("anchor_id")): fact
+        for fact in visual_facts
+        if isinstance(fact, dict) and fact.get("anchor_id")
+    }
+    for level_id in timeline.get("highlight_levels") or []:
+        fact = facts_by_id.get(f"level:{level_id}") or facts_by_id.get(str(level_id))
+        if not fact:
+            continue
+        try:
+            y = y_for(float(fact.get("center_price")))
+        except (TypeError, ValueError):
+            continue
+        draw.line((margin_x, y, canvas_width - margin_x, y), fill=(245, 194, 66, 230), width=2)
+        draw.text((margin_x + 4, max(0, y - 12)), str(fact.get("display_text") or level_id), fill=(245, 220, 120, 255), font=font)
+
+    for event in timeline.get("overlay_plan") or []:
+        event_start = float(event.get("start_sec") or 0.0)
+        event_end = float(event.get("end_sec") or event_start)
+        if not (event_start <= elapsed <= event_end):
+            continue
+        event_progress = _clamp((elapsed - event_start) / max(event_end - event_start, 1e-6))
+        event_type = str(event.get("event_type") or "caption")
+        anchor_ids = event.get("fact_anchor_ids") if isinstance(event.get("fact_anchor_ids"), list) else []
+        facts = [facts_by_id[str(anchor)] for anchor in anchor_ids if str(anchor) in facts_by_id]
+        if event_type == "scenario_path":
+            fact = next((fact for fact in facts if fact.get("fact_type") == "scenario_path"), None)
+            points = fact.get("path_points") if isinstance(fact, dict) else []
+            if isinstance(points, list) and len(points) >= 2:
+                coords: list[tuple[int, int]] = []
+                for point in points:
+                    try:
+                        ratio = _clamp(float(point.get("time_ratio")))
+                        price = float(point.get("price"))
+                    except (TypeError, ValueError):
+                        continue
+                    if ratio <= event_progress:
+                        coords.append((margin_x + int(chart_width * ratio), y_for(price)))
+                if len(coords) == 1:
+                    coords.append(coords[0])
+                if len(coords) >= 2:
+                    draw.line(coords, fill=(76, 166, 255, 255), width=max(2, canvas_width // 240), joint="curve")
+            continue
+        display = next((str(fact.get("display_text") or "") for fact in facts if fact.get("display_text")), event_type)
+        display = display.replace("\n", " ")[:120]
+        box_top = max(8, top // 3)
+        box_bottom = box_top + max(28, canvas_height // 18)
+        draw.rounded_rectangle((margin_x, box_top, canvas_width - margin_x, box_bottom), radius=8, fill=(16, 28, 48, 225), outline=(76, 166, 255, 230), width=2)
+        draw.text((margin_x + 10, box_top + 8), display, fill=(235, 242, 255, 255), font=font)
+
+    if canvas_width == width and canvas_height == height:
+        crop = image
+    else:
+        horizontal = _clamp(camera_progress)
+        if motion in {"pan_left", "whip_left"}:
+            horizontal = 1.0 - horizontal
+        elif motion not in {"pan_right", "whip_right"}:
+            horizontal = 0.5
+        left = int((canvas_width - width) * horizontal)
+        top_crop = int((canvas_height - height) * 0.5)
+        crop = image.crop((left, top_crop, left + width, top_crop + height))
+    return crop.tobytes()
+
+
 def _run(command: list[str], code: str) -> str:
     completed = subprocess.run(command, capture_output=True, text=True, timeout=360)
     if completed.returncode != 0:
@@ -631,25 +910,70 @@ def _effect_degradations(payload: dict[str, Any]) -> tuple[str, list[dict[str, s
     for event in timeline.get("camera_plan") or []:
         effect = str(event.get("motion") or "static_hold")
         requested_effects.append(effect)
-        if effect != "static_hold":
+        if effect not in SUPPORTED_CAMERA_MOTIONS:
             records.append({
-                "code": "UNSUPPORTED_CAMERA_STATIC_HOLD",
-                "message": f"camera event {event.get('event_id') or ''} is planned but not implemented",
+                "code": "UNSUPPORTED_CAMERA_MOTION",
+                "message": f"camera motion {effect} is not implemented",
                 "requested_effect": effect,
-                "applied_effect": "static_hold",
+                "applied_effect": "failed",
             })
     for event in timeline.get("overlay_plan") or []:
         effect = str(event.get("event_type") or "overlay")
         requested_effects.append(effect)
-        if effect != "static_hold":
+        if effect not in SUPPORTED_OVERLAY_EVENTS:
             records.append({
-                "code": "UNSUPPORTED_OVERLAY_HIDDEN",
-                "message": f"overlay event {event.get('event_id') or ''} is planned but not implemented",
+                "code": "UNSUPPORTED_OVERLAY_EVENT",
+                "message": f"overlay event {effect} is not implemented",
                 "requested_effect": effect,
-                "applied_effect": "hidden",
+                "applied_effect": "failed",
             })
     requested = ",".join(requested_effects) if requested_effects else "static_hold"
     return requested, records
+
+
+def _render_dynamic_video(payload: dict[str, Any], audio_path: Path, output_path: Path) -> None:
+    """Stream timeline-rendered RGB frames into FFmpeg without image files."""
+    video = payload["video"]
+    width = int(video["width"])
+    height = int(video["height"])
+    fps = int(video["fps"])
+    duration = float(payload["render_duration_sec"])
+    frame_count = max(1, int(math.ceil(duration * fps)))
+    command = [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
+        "-i", str(audio_path),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-af", f"adelay={int(round(float(payload['head_handle_sec']) * 1000))}|{int(round(float(payload['head_handle_sec']) * 1000))},apad",
+        "-t", f"{duration:.6f}",
+        "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
+        "-r", str(fps), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart", str(output_path),
+    ]
+    process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        assert process.stdin is not None
+        for frame_index in range(frame_count):
+            elapsed = frame_index / fps
+            frame = _render_dynamic_frame(
+                payload["historical_candles"],
+                width,
+                height,
+                payload["visual_timeline"],
+                payload.get("visual_facts") if isinstance(payload.get("visual_facts"), list) else [],
+                elapsed,
+            )
+            process.stdin.write(frame)
+        process.stdin.close()
+        stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+        return_code = process.wait(timeout=360)
+    except Exception:
+        process.kill()
+        process.wait(timeout=10)
+        raise
+    if return_code != 0:
+        raise RuntimeError(f"FFMPEG_RENDER_FAILED:{stderr[-2000:]}")
 
 
 def _render_failure_details(exc: Exception, payload: dict[str, Any]) -> dict[str, Any]:
@@ -669,11 +993,11 @@ def _render_failure_details(exc: Exception, payload: dict[str, Any]) -> dict[str
             "retryable": status >= 500,
             "audio_url": str(payload.get("audio_url") or ""),
         }
-    return {
-        "code": "SEGMENT_RENDER_FAILED",
-        "message": str(exc)[:2000],
-        "retryable": True,
-    }
+    message = str(exc)[:2000]
+    if message.startswith("DYNAMIC_EFFECT_UNSUPPORTED:"):
+        _, code, detail = (message.split(":", 2) + ["", ""])[:3]
+        return {"code": code or "DYNAMIC_EFFECT_UNSUPPORTED", "message": detail or message, "retryable": False}
+    return {"code": "SEGMENT_RENDER_FAILED", "message": message, "retryable": True}
 
 
 def _render(job_id: str) -> None:
@@ -682,23 +1006,14 @@ def _render(job_id: str) -> None:
         job = STORE.update(job_id, status="rendering", error=None)
         payload = job["payload"]
         audio_path = work / "audio.bin"
-        frame_path = work / "frame.ppm"
         output_path = MEDIA_DIR / f"{job_id}.mp4"
+        requested, records = _effect_degradations(payload)
+        if records:
+            first = records[0]
+            raise RuntimeError(f"DYNAMIC_EFFECT_UNSUPPORTED:{first['code']}:{first['message']}")
         _download_audio(str(payload["audio_url"]), audio_path)
         video = payload["video"]
-        _write_kline_ppm(payload["historical_candles"], int(video["width"]), int(video["height"]), frame_path)
-        head_ms = int(round(float(payload["head_handle_sec"]) * 1000))
-        audio_filter = f"adelay={head_ms}|{head_ms},apad"
-        _run([
-            "ffmpeg", "-y", "-loop", "1", "-framerate", str(video["fps"]),
-            "-i", str(frame_path), "-i", str(audio_path),
-            "-map", "0:v:0", "-map", "1:a:0", "-af", audio_filter,
-            "-t", f"{float(payload['render_duration_sec']):.6f}",
-            "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
-            "-r", str(video["fps"]), "-c:a", "aac", "-b:a", "192k",
-            "-ar", "48000", "-ac", "2",
-            "-movflags", "+faststart", str(output_path),
-        ], "FFMPEG_RENDER_FAILED")
+        _render_dynamic_video(payload, audio_path, output_path)
         probe = _probe(
             output_path,
             float(payload["render_duration_sec"]),
@@ -708,8 +1023,6 @@ def _render(job_id: str) -> None:
         )
         if not probe["probe_valid"]:
             raise RuntimeError("FFPROBE_CONTRACT_FAILED")
-        requested, records = _effect_degradations(payload)
-        degraded = bool(records)
         result = {
             "video_url": f"{PUBLIC_BASE_URL}/media/{output_path.name}",
             "thumbnail_url": "",
@@ -719,11 +1032,14 @@ def _render(job_id: str) -> None:
             "render_duration_sec": float(payload["render_duration_sec"]),
             **probe,
             "kline_main_visual_present": True,
-            "degraded": degraded,
-            "degradation_code": records[0]["code"] if degraded else "",
+            "degraded": False,
+            "degradation_code": "",
             "requested_effect": requested,
-            "applied_effect": "static_hold",
-            "degradation_records": records,
+            "applied_effect": "dynamic_timeline",
+            "planned_effects": requested.split(",") if requested else [],
+            "applied_effects": ["dynamic_timeline"],
+            "visual_timeline_valid": True,
+            "degradation_records": [],
         }
         STORE.update(job_id, status="completed", result=result, error=None)
     except Exception as exc:
@@ -1009,6 +1325,9 @@ def tool09_render_and_await(payload: Tool09SegmentRequest) -> dict[str, Any]:
         "degraded": bool(job.get("degraded")),
         "degradation_code": str(job.get("degradation_code") or ""),
         "degradation_records": job.get("degradation_records") if isinstance(job.get("degradation_records"), list) else [],
+        "planned_effects": job.get("planned_effects") if isinstance(job.get("planned_effects"), list) else [],
+        "applied_effects": job.get("applied_effects") if isinstance(job.get("applied_effects"), list) else [],
+        "visual_timeline_valid": bool(job.get("visual_timeline_valid")),
         "transition_out": transition,
     }
     valid = bool(rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"])
@@ -1061,6 +1380,9 @@ def tool09_finalize(payload: Tool09FinalizeRequest) -> dict[str, Any]:
         errors.append("SEGMENT_MEDIA_IDS_INVALID")
     elif sorted(rendered_ids) != sorted(expected_ids):
         errors.append("RENDERED_SEGMENT_IDS_MISMATCH")
+    orders = [int(item.get("order") or 0) for item in parsed]
+    if len(orders) != len(set(orders)) or sorted(orders) != list(range(1, len(orders) + 1)):
+        errors.append("RENDERED_SEGMENT_ORDER_INVALID")
 
     order_by_id = {segment_id: index for index, segment_id in enumerate(expected_ids)}
     ordered = sorted(parsed, key=lambda item: order_by_id.get(str(item.get("segment_id") or ""), len(order_by_id)))

@@ -365,6 +365,12 @@ def initialize_tool08(
         if not master_id:
             raise ValueError("MASTER_REQUEST_ID_REQUIRED")
         profile = _voice_duration_profile(narrator_profile_id)
+        video_config = (
+            market_input.get("job_config", {}).get("video", {})
+            if isinstance(market_input.get("job_config"), dict)
+            else {}
+        )
+        video_hard_max = _as_float(video_config.get("hard_max_sec"))
         raw_segments = segment_plan.get("segments")
         if not isinstance(raw_segments, list) or not raw_segments:
             raise ValueError("SEGMENT_PLAN_SEGMENTS_REQUIRED")
@@ -398,6 +404,10 @@ def initialize_tool08(
             item["duration_target_sec"] = budget["target_duration_sec"]
             item["duration_min_sec"] = budget["duration_min_sec"]
             item["duration_max_sec"] = budget["duration_max_sec"]
+            if video_hard_max is not None and video_hard_max > 0:
+                # Internal scheduling metadata travels with the iteration item
+                # but is not copied into the public segment-media contract.
+                item["_video_hard_max_sec"] = video_hard_max
             if not isinstance(item.get("visual"), dict):
                 raise ValueError(f"{segment_id}:VISUAL_PLAN_REQUIRED")
             if not isinstance(item.get("scenes"), list) or not item.get("scenes"):
@@ -464,7 +474,10 @@ def _estimated_spoken_seconds(
     )
     character_speech_seconds = len(re.sub(r"\s+", "", text)) / (chars_per_second * speed)
     word_rate = words_per_second if words_per_second > 0 else MIN_ENGLISH_WORDS_PER_SECOND
-    word_speech_seconds = len(ENGLISH_WORD_PATTERN.findall(text)) / word_rate
+    # The provider's word throughput is measured at speed 1.0.  Applying the
+    # selected speed here keeps the pre-TTS estimate aligned with the text and
+    # performance plan that will actually be sent to the provider.
+    word_speech_seconds = len(ENGLISH_WORD_PATTERN.findall(text)) / (word_rate * speed)
     return (
         max(character_speech_seconds, word_speech_seconds) + pause_seconds,
         word_speech_seconds + pause_seconds,
@@ -521,10 +534,13 @@ def rebalance_tool08(
     candidates: list[Any],
     voice_duration_profile: dict[str, Any],
 ) -> dict[str, Any]:
-    """Prepare drafts while keeping authored visual budgets as metadata.
+    """Prepare all drafts against one global spoken-duration budget.
 
-    A text estimate is advisory only.  Paid TTS creates the authoritative
-    audio duration, which TOOL-09 uses to size the segment visual timeline.
+    The estimate is calculated from the provider-facing spoken text.  Segment
+    targets are expanded only when the spoken draft needs more room; if the
+    combined estimate cannot fit the video's hard maximum, the available
+    extra time is allocated proportionally and the affected segment is marked
+    for the existing one-shot narration repair before paid TTS.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -616,19 +632,61 @@ def rebalance_tool08(
             "scheduled_total_sec": 0.0,
         }
 
+    original_total = sum(entry["original_target_sec"] for entry in prepared)
+    explicit_hard_max = next(
+        (
+            _as_float(entry["item"].get("_video_hard_max_sec"))
+            for entry in prepared
+            if _as_float(entry["item"].get("_video_hard_max_sec")) is not None
+        ),
+        None,
+    )
+    hard_max = explicit_hard_max if explicit_hard_max is not None else original_total + 10.0
+    hard_max = max(original_total, hard_max)
+
+    overruns = [
+        max(0.0, entry["estimated_spoken_sec"] - entry["original_target_sec"])
+        for entry in prepared
+    ]
+    total_overrun = sum(overruns)
+    estimated_total = sum(entry["estimated_spoken_sec"] for entry in prepared)
+    # Keep the authored total when the whole draft already fits inside it.
+    # Only the amount by which the spoken draft exceeds that total may consume
+    # the video's extra hard-budget allowance.
+    available_extra = max(
+        0.0,
+        min(hard_max, estimated_total) - original_total,
+    )
+    allocation_ratio = (
+        min(1.0, available_extra / total_overrun)
+        if total_overrun > 0
+        else 0.0
+    )
+
     scheduled_items: list[dict[str, Any]] = []
-    for entry in prepared:
-        estimated = entry["estimated_spoken_sec"]
+    scheduled_total = 0.0
+    for entry, overrun in zip(prepared, overruns):
+        allocated_extra = overrun * allocation_ratio
+        target = entry["original_target_sec"] + allocated_extra
+        tolerance = entry["tolerance_sec"]
+        item = _reschedule_item(entry["item"], target, tolerance)
+        requires_global_repair = entry["estimated_spoken_sec"] > target + 0.001
+        if requires_global_repair:
+            item["_force_duration_repair"] = True
+        scheduled_total += target
         scheduled_items.append({
-            "item": copy.deepcopy(entry["item"]),
+            "item": item,
             "segment_narration": entry["segment_narration"],
             "segment_performance": entry["segment_performance"],
             "display_text": entry["display_text"],
             "spoken_text": entry["spoken_text"],
-            "estimated_spoken_sec": round(estimated, 3),
+            "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
-            "needs_narration_repair": False,
-            "content_fit_error": "",
+            "needs_narration_repair": requires_global_repair,
+            "content_fit_error": (
+                "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
+                if requires_global_repair else ""
+            ),
         })
     return {
         "schema_version": "segment-narration-schedule-v1",
@@ -637,9 +695,11 @@ def rebalance_tool08(
         "content_fit_valid": True,
         "content_fit_error": "",
         "scheduled_items": scheduled_items,
-        "scheduled_total_sec": round(sum(
-            entry["item"]["duration_target_sec"] for entry in scheduled_items
-        ), 3),
+        "scheduled_total_sec": round(scheduled_total, 3),
+        "estimated_spoken_total_sec": round(
+            sum(entry["estimated_spoken_sec"] for entry in prepared), 3
+        ),
+        "video_hard_max_sec": round(hard_max, 3),
     }
 
 
@@ -805,6 +865,14 @@ def process_step(
 
     result = _validate_candidate(item, segment_narration, segment_performance, voice_duration_profile)
     errors = result["errors"]
+    if (
+        bool(item.get("_force_duration_repair"))
+        and result["estimated_total_sec"]
+        > (_as_float(item.get("duration_target_sec"), 0.0) or 0.0) + 0.001
+    ):
+        errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
+        result["narration_violation"] = True
+    errors = list(dict.fromkeys(errors))
     base_result = {
         "performance_valid": not errors,
         "performance_error": ";".join(errors),
