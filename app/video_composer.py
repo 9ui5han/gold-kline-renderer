@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import json
+import logging
 import subprocess
 import threading
 import uuid
@@ -38,6 +39,8 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 JOB_STORE = JobStore(DATA_DIR / "compose_jobs")
 
 router = APIRouter()
+
+logger = logging.getLogger(__name__)
 
 
 TRANSITION_MAP = {
@@ -533,6 +536,11 @@ def run_compose_job(job_id: str, payload: dict[str, Any]) -> None:
         }
         JOB_STORE.update(job_id, status="completed", result=result, error=None)
     except Exception as exc:
+        logger.exception(
+            "COMPOSE_FAILED job_id=%s error=%s",
+            job_id,
+            str(exc),
+        )
         JOB_STORE.update(job_id, status="failed", result=None, error={
             "code": "COMPOSE_FAILED",
             "message": str(exc),
