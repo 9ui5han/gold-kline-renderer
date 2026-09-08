@@ -116,7 +116,13 @@ def build_visual_fact_catalog(
         })
 
     if "market_structure" in technical_facts:
-        structure = _text(technical_facts.get("market_structure"))
+        raw_structure = technical_facts.get("market_structure")
+        source_timeframe = ""
+        if isinstance(raw_structure, dict):
+            source_timeframe = _text(technical_facts.get("primary_timeframe"))
+            structure = _text(raw_structure.get(source_timeframe))
+        else:
+            structure = _text(raw_structure)
         if structure not in MARKET_STRUCTURE_LABELS:
             raise VisualFactCatalogError(
                 f"VISUAL_TEXT_ENUM_UNKNOWN:technical:market_structure={structure}"
@@ -125,6 +131,7 @@ def build_visual_fact_catalog(
             "anchor_id": "technical:market_structure",
             "fact_type": "text_fact",
             "display_text": MARKET_STRUCTURE_LABELS[structure],
+            **({"source_timeframe": source_timeframe} if source_timeframe else {}),
         })
 
     if _text(technical_facts.get("technical_summary")):

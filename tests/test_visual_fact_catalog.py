@@ -71,6 +71,25 @@ class VisualFactCatalogTests(unittest.TestCase):
                 {}, LEVELS, PATHS, FRAMEWORK, MACRO,
             )
 
+    def test_market_structure_object_uses_primary_timeframe(self):
+        catalog = build_visual_fact_catalog(
+            {
+                **TECHNICAL,
+                "primary_timeframe": "1h",
+                "market_structure": {
+                    "15m": "lower_high_lower_low",
+                    "1h": "range_or_mixed",
+                    "4h": "higher_high_higher_low",
+                },
+            },
+            {}, {}, {}, {}, {},
+        )
+        facts = {item["anchor_id"]: item for item in catalog["facts"]}
+        self.assertEqual(
+            facts["technical:market_structure"]["display_text"],
+            "Range / mixed",
+        )
+
     def test_segment_contract_contains_catalog_without_changing_outer_outputs(self):
         from copy import deepcopy
         from tests.test_segment_plan_validation import BUDGET, CONTEXT, VALID_PLAN
