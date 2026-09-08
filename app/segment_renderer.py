@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 from pathlib import Path
@@ -596,6 +597,30 @@ def _effect_degradations(payload: dict[str, Any]) -> tuple[str, list[dict[str, s
     return requested, records
 
 
+def _render_failure_details(exc: Exception, payload: dict[str, Any]) -> dict[str, Any]:
+    """Add an actionable marker when the source audio cannot be fetched."""
+    if isinstance(exc, urllib.error.HTTPError):
+        status = int(exc.code)
+        if status == 404:
+            return {
+                "code": "AUDIO_URL_NOT_FOUND",
+                "message": f"audio_url returned HTTP 404: {payload.get('audio_url', '')}",
+                "retryable": False,
+                "audio_url": str(payload.get("audio_url") or ""),
+            }
+        return {
+            "code": "AUDIO_FETCH_HTTP_ERROR",
+            "message": f"audio_url returned HTTP {status}",
+            "retryable": status >= 500,
+            "audio_url": str(payload.get("audio_url") or ""),
+        }
+    return {
+        "code": "SEGMENT_RENDER_FAILED",
+        "message": str(exc)[:2000],
+        "retryable": True,
+    }
+
+
 def _render(job_id: str) -> None:
     work = Path(tempfile.mkdtemp(prefix=f"{job_id}-"))
     try:
@@ -647,11 +672,12 @@ def _render(job_id: str) -> None:
         }
         STORE.update(job_id, status="completed", result=result, error=None)
     except Exception as exc:
-        STORE.update(job_id, status="failed", result=None, error={
-            "code": "SEGMENT_RENDER_FAILED",
-            "message": str(exc)[:2000],
-            "retryable": True,
-        })
+        STORE.update(
+            job_id,
+            status="failed",
+            result=None,
+            error=_render_failure_details(exc, payload),
+        )
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
