@@ -541,6 +541,35 @@ def test_step_requests_narration_repair_before_paid_tts():
     assert "PERSONALIZED_TRADE_DIRECTIVE" in repair["validator_errors"]
 
 
+def test_duration_repair_prompt_contains_provider_spoken_budget():
+    item = {
+        **_item(),
+        "duration_target_sec": 4.0,
+        "duration_min_sec": 2.5,
+        "duration_max_sec": 4.5,
+        "_force_duration_repair": True,
+    }
+    narration = _narration("Gold 4403.71 mixed.")
+    performance = _performance(narration["text"])
+    performance["speed"] = 1.05
+    performance["pause_after_ms"] = 0
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    assert result["action"] == "repair_narration"
+    repair = json.loads(result["repair_prompt_json"])
+    budget = repair["segment_duration_budget"]
+    assert budget["spoken_text"] == (
+        "Gold four thousand four hundred three point seven one mixed."
+    )
+    assert budget["estimated_spoken_duration_sec"] == 4.649
+    assert budget["safe_duration_max_sec"] == 4.2
+    assert budget["duration_overrun_sec"] == 0.449
+    assert budget["spoken_word_count"] == 10
+
+
 def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
     item = {
         "segment_id": "seg_01_intro",
@@ -833,6 +862,7 @@ def load_tests(loader, tests, pattern):
         test_spoken_word_duration_estimate_scales_with_speed,
         test_rebalance_expands_budget_for_spoken_overrun,
         test_step_requests_narration_repair_before_paid_tts,
+        test_duration_repair_prompt_contains_provider_spoken_budget,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,

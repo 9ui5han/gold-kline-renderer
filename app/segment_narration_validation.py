@@ -207,6 +207,44 @@ def _duration_budget(item: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     }, errors
 
 
+def _duration_repair_budget(
+    budget: dict[str, Any],
+    spoken_text: str,
+    estimated_total_sec: float,
+    voice_profile: dict[str, Any],
+) -> dict[str, Any]:
+    """Expose deterministic provider-facing duration facts to the repair LLM."""
+    duration_max = _as_float(budget.get("duration_max_sec"), 0.0) or 0.0
+    safe_max = max(0.1, duration_max - 0.30)
+    pause_model = voice_profile.get("pause_model") or {}
+    pause_after_ms = 0
+    punctuation_pause_sec = _punctuation_seconds(spoken_text, pause_model)
+    words_per_second = _profile_words_per_second(voice_profile)
+    spoken_word_count = len(ENGLISH_WORD_PATTERN.findall(spoken_text))
+    max_spoken_words = max(
+        0,
+        math.floor(
+            max(0.0, safe_max - punctuation_pause_sec - pause_after_ms / 1000.0)
+            * words_per_second
+            * 1.05
+        ),
+    )
+    return {
+        **copy.deepcopy(budget),
+        "spoken_text": spoken_text,
+        "spoken_word_count": spoken_word_count,
+        "spoken_words_per_second": round(words_per_second, 3),
+        "punctuation_pause_sec": round(punctuation_pause_sec, 3),
+        "estimated_spoken_duration_sec": round(estimated_total_sec, 3),
+        "safe_duration_max_sec": round(safe_max, 3),
+        "duration_overrun_sec": round(max(0.0, estimated_total_sec - safe_max), 3),
+        "duration_margin_sec": round(safe_max - estimated_total_sec, 3),
+        "max_spoken_word_budget": max_spoken_words,
+        "repair_speed": 1.05,
+        "repair_pause_after_ms": pause_after_ms,
+    }
+
+
 def _visual_fact_catalog_map(catalog: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(catalog, dict) or catalog.get("schema_version") != "visual-fact-catalog-v1":
         raise ValueError("VISUAL_FACT_CATALOG_REQUIRED")
@@ -922,6 +960,12 @@ def process_step(
             "step_error": "REPAIR_LIMIT_EXCEEDED",
         }
     next_state = {"repair_count": repairs + 1, "narration_revision": revision + 1}
+    repair_budget = _duration_repair_budget(
+        result["budget"],
+        result["spoken_text"],
+        result["estimated_total_sec"],
+        voice_duration_profile,
+    ) if narration_repair_required else copy.deepcopy(result["budget"])
     repair_prompt = {
         "repair_kind": kind,
         "validator_errors": errors,
@@ -930,7 +974,7 @@ def process_step(
             if kind == "narration" else ["segment_performance"]
         ),
         "item": item,
-        "segment_duration_budget": result["budget"],
+        "segment_duration_budget": repair_budget,
         "voice_duration_profile": voice_duration_profile,
         "segment_narration": segment_narration,
         "segment_performance": segment_performance,
