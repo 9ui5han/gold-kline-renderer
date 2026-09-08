@@ -207,6 +207,103 @@ def _duration_budget(item: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     }, errors
 
 
+def _visual_fact_catalog_map(catalog: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(catalog, dict) or catalog.get("schema_version") != "visual-fact-catalog-v1":
+        raise ValueError("VISUAL_FACT_CATALOG_REQUIRED")
+    facts = catalog.get("facts")
+    if not isinstance(facts, list) or not facts:
+        raise ValueError("VISUAL_FACT_CATALOG_EMPTY")
+    result: dict[str, dict[str, Any]] = {}
+    for fact in facts:
+        if not isinstance(fact, dict) or not str(fact.get("anchor_id") or "").strip():
+            raise ValueError("VISUAL_FACT_CATALOG_ITEM_INVALID")
+        anchor_id = str(fact["anchor_id"]).strip()
+        if anchor_id in result:
+            raise ValueError("VISUAL_FACT_CATALOG_DUPLICATE")
+        result[anchor_id] = copy.deepcopy(fact)
+    return result
+
+
+def _visual_anchor_ids(item: dict[str, Any]) -> list[str]:
+    anchors: list[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        anchor = str(value or "").strip()
+        if anchor and anchor not in seen:
+            seen.add(anchor)
+            anchors.append(anchor)
+
+    for value in item.get("fact_anchor_ids") or []:
+        add(value)
+    visual = item.get("visual") if isinstance(item.get("visual"), dict) else {}
+    for value in visual.get("highlight_levels") or []:
+        raw = str(value or "").strip()
+        add(raw)
+    for scene in item.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        for event in scene.get("overlay_events") or []:
+            if not isinstance(event, dict):
+                continue
+            for value in event.get("fact_anchor_ids") or []:
+                add(value)
+    return anchors
+
+
+def _resolve_visual_facts(item: dict[str, Any], catalog: Any) -> list[dict[str, Any]]:
+    facts = _visual_fact_catalog_map(catalog)
+    resolved: list[dict[str, Any]] = []
+    for anchor_id in _visual_anchor_ids(item):
+        fact = facts.get(anchor_id)
+        if fact is None:
+            level_anchor = (
+                anchor_id
+                if anchor_id.startswith("level:")
+                else f"level:{anchor_id}"
+            )
+            fact = facts.get(level_anchor)
+        if fact is None:
+            raise ValueError(f"VISUAL_FACT_NOT_RESOLVED:{anchor_id}")
+        if not any(value.get("anchor_id") == fact["anchor_id"] for value in resolved):
+            resolved.append(copy.deepcopy(fact))
+    if not resolved:
+        raise ValueError("VISUAL_FACTS_REQUIRED")
+    return resolved
+
+
+def _rescale_visual_timeline(item: dict[str, Any], actual_duration: float) -> tuple[list[dict[str, Any]], float, bool]:
+    scenes = item.get("scenes")
+    if not isinstance(scenes, list) or not scenes:
+        raise ValueError("SCENES_REQUIRED")
+    planned_duration = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
+    if planned_duration <= 0:
+        raise ValueError("PLANNED_SEGMENT_DURATION_REQUIRED")
+    time_scale = actual_duration / planned_duration
+    adjusted = not math.isclose(time_scale, 1.0, rel_tol=0.0, abs_tol=0.0005)
+    scaled: list[dict[str, Any]] = []
+    for raw_scene in scenes:
+        if not isinstance(raw_scene, dict):
+            raise ValueError("SCENE_OBJECT_REQUIRED")
+        scene = copy.deepcopy(raw_scene)
+        scene["start_sec"] = round((_as_float(scene.get("start_sec"), 0.0) or 0.0) * time_scale, 3)
+        scene["duration_sec"] = round((_as_float(scene.get("duration_sec"), 0.0) or 0.0) * time_scale, 3)
+        events = scene.get("overlay_events")
+        if events is not None:
+            if not isinstance(events, list):
+                raise ValueError("OVERLAY_EVENTS_REQUIRED")
+            for event in events:
+                if not isinstance(event, dict):
+                    raise ValueError("OVERLAY_EVENT_OBJECT_REQUIRED")
+                event["start_sec"] = round((_as_float(event.get("start_sec"), 0.0) or 0.0) * time_scale, 3)
+                event["duration_sec"] = round((_as_float(event.get("duration_sec"), 0.0) or 0.0) * time_scale, 3)
+        scaled.append(scene)
+    last = scaled[-1]
+    last_start = _as_float(last.get("start_sec"), 0.0) or 0.0
+    last["duration_sec"] = round(max(0.0, actual_duration - last_start), 3)
+    return scaled, time_scale, adjusted
+
+
 def _voice_duration_profile(narrator_profile_id: str) -> dict[str, Any]:
     profile = resolve_profile(narrator_profile_id, allow_documented=False)
     calibration = VOICE_DURATION_CALIBRATIONS.get(profile["profile_id"], {})
@@ -260,6 +357,8 @@ def initialize_tool08(
         segment_plan = segment_plan_contract.get("segment_plan")
         if not isinstance(segment_plan, dict):
             raise ValueError("SEGMENT_PLAN_OBJECT_REQUIRED")
+        visual_fact_catalog = segment_plan_contract.get("visual_fact_catalog")
+        _visual_fact_catalog_map(visual_fact_catalog)
         # The MASTER workflow creates this once. TOOL-08 must preserve it so
         # TTS, TOOL-09, and TOOL-10 share the same idempotency key.
         master_id = str(master_request_id or "").strip()
@@ -279,6 +378,7 @@ def initialize_tool08(
             "market_analysis": analysis,
             "forecast": forecast,
             "segment_plan": segment_plan,
+            "visual_fact_catalog": visual_fact_catalog,
             "narrator_profile_id": str(narrator_profile_id or "").strip(),
             "master_request_id": master_id,
         }
@@ -298,6 +398,11 @@ def initialize_tool08(
             item["duration_target_sec"] = budget["target_duration_sec"]
             item["duration_min_sec"] = budget["duration_min_sec"]
             item["duration_max_sec"] = budget["duration_max_sec"]
+            if not isinstance(item.get("visual"), dict):
+                raise ValueError(f"{segment_id}:VISUAL_PLAN_REQUIRED")
+            if not isinstance(item.get("scenes"), list) or not item.get("scenes"):
+                raise ValueError(f"{segment_id}:SCENES_REQUIRED")
+            item["resolved_visual_facts"] = _resolve_visual_facts(item, visual_fact_catalog)
             item["narration_prompt_json"] = _compact_json({
                 "item": item,
                 "segment_duration_budget": budget,
@@ -821,8 +926,29 @@ def confirm_tts_result(
     narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
     performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
     spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
+    try:
+        scenes, time_scale, timeline_adjusted = _rescale_visual_timeline(item, duration)
+    except ValueError as exc:
+        return _confirm_fail(str(exc))
+    resolved_visual_facts = item.get("resolved_visual_facts")
+    if not isinstance(resolved_visual_facts, list) or not resolved_visual_facts:
+        return _confirm_fail("VISUAL_FACTS_NOT_RESOLVED")
     media = {
         "segment_id": budget["segment_id"],
+        "order": item.get("order"),
+        "section": item.get("section"),
+        "planning_role": item.get("planning_role"),
+        "scenario_id": item.get("scenario_id"),
+        "fact_anchor_ids": copy.deepcopy(item.get("fact_anchor_ids") or []),
+        "content_goal": item.get("content_goal"),
+        "importance": item.get("importance"),
+        "speech_style": item.get("speech_style"),
+        "duration_target_sec": budget["target_duration_sec"],
+        "duration_min_sec": budget["duration_min_sec"],
+        "duration_max_sec": budget["duration_max_sec"],
+        "resolved_visual_facts": copy.deepcopy(resolved_visual_facts),
+        "visual": copy.deepcopy(item.get("visual")),
+        "scenes": scenes,
         "transition_out": copy.deepcopy(
             item.get("transition_out")
             if isinstance(item.get("transition_out"), dict)
@@ -842,6 +968,9 @@ def confirm_tts_result(
             "duration_min_sec": budget["duration_min_sec"],
             "duration_max_sec": budget["duration_max_sec"],
             "actual_duration_sec": duration,
+            "planned_duration_sec": budget["target_duration_sec"],
+            "time_scale": round(time_scale, 6),
+            "timeline_adjusted": timeline_adjusted,
             "mode": "actual_audio_authoritative",
             "valid": True,
         },
@@ -971,7 +1100,21 @@ def complete_tool08(
         media = media_by_id.get(expected_id) or {}
         audio = media.get("audio") if isinstance(media.get("audio"), dict) else {}
         validation = media.get("duration_validation") if isinstance(media.get("duration_validation"), dict) else {}
-        valid = bool(audio.get("url")) and (_as_float(audio.get("duration_sec"), 0.0) or 0.0) > 0 and validation.get("valid") is True
+        visual_valid = (
+            isinstance(media.get("order"), int)
+            and media.get("order") > 0
+            and isinstance(media.get("visual"), dict)
+            and isinstance(media.get("scenes"), list)
+            and bool(media.get("scenes"))
+            and isinstance(media.get("resolved_visual_facts"), list)
+            and bool(media.get("resolved_visual_facts"))
+        )
+        valid = (
+            bool(audio.get("url"))
+            and (_as_float(audio.get("duration_sec"), 0.0) or 0.0) > 0
+            and validation.get("valid") is True
+            and visual_valid
+        )
         duration_validations.append(copy.deepcopy(validation) if validation else {"segment_id": expected_id, "valid": False})
         if not valid:
             bad_ids.append(expected_id)

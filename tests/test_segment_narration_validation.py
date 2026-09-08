@@ -23,11 +23,53 @@ from app.segment_narration_validation import (
 def _item() -> dict:
     return {
         "segment_id": "seg_01",
+        "order": 1,
+        "section": "analysis",
         "planning_role": "technical_context",
+        "scenario_id": None,
         "fact_anchor_ids": ["level.current"],
+        "content_goal": "Explain the current level.",
+        "importance": "high",
+        "speech_style": "calm_analysis",
         "duration_target_sec": 4,
         "duration_min_sec": 2,
         "duration_max_sec": 8,
+        "visual": {
+            "visual_mode": "technical_analysis",
+            "source_timeframe": "1h",
+            "camera_motion": "pan_right",
+            "highlight_levels": ["level.current"],
+            "show_volume": True,
+            "show_macro_marker": False,
+        },
+        "scenes": [
+            {
+                "scene_id": "seg_01_sc_01",
+                "template_id": "chart_push",
+                "start_sec": 0.0,
+                "duration_sec": 4.0,
+                "camera_motion": "pan_right",
+                "overlay_events": [
+                    {
+                        "event_id": "seg_01_level",
+                        "event_type": "price_level",
+                        "start_sec": 0.5,
+                        "duration_sec": 2.0,
+                        "fact_anchor_ids": ["level.current"],
+                    }
+                ],
+                "transition_out": {"type": "hard_cut", "duration_ms": 0},
+            }
+        ],
+        "transition_out": {"type": "fade", "duration_ms": 250},
+        "resolved_visual_facts": [
+            {
+                "anchor_id": "level.current",
+                "fact_type": "price_point",
+                "price": 2400.0,
+                "display_text": "2400.00",
+            }
+        ],
     }
 
 
@@ -78,6 +120,17 @@ def _init_contracts() -> dict:
         "forecast_v1_json": json.dumps({"schema_version": "forecast-contract-v1"}),
         "segment_plan_v1_json": json.dumps({
             "schema_version": "segment-plan-contract-v1",
+            "visual_fact_catalog": {
+                "schema_version": "visual-fact-catalog-v1",
+                "facts": [
+                    {
+                        "anchor_id": "level.current",
+                        "fact_type": "price_point",
+                        "price": 2400.0,
+                        "display_text": "2400.00",
+                    }
+                ],
+            },
             "segment_plan_valid": True,
             "segment_plan": {"segments": [_item()]},
         }),
@@ -132,6 +185,41 @@ def test_init_rejects_missing_master_request_id():
     assert result["init_valid"] is False
     assert result["init_error"] == "MASTER_REQUEST_ID_REQUIRED"
     assert result["master_request_id"] == ""
+
+
+def test_init_rejects_missing_visual_fact_catalog():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan.pop("visual_fact_catalog")
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is False
+    assert result["init_error"] == "VISUAL_FACT_CATALOG_REQUIRED"
+
+
+def test_init_maps_visual_level_ids_to_catalog_level_anchors():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["visual_fact_catalog"]["facts"] = [{
+        "anchor_id": "level:R1",
+        "fact_type": "price_zone",
+        "lower_price": 4448.0,
+        "upper_price": 4452.0,
+        "center_price": 4450.0,
+        "display_text": "R1",
+    }]
+    plan["segment_plan"]["segments"][0]["fact_anchor_ids"] = ["level:R1"]
+    plan["segment_plan"]["segments"][0]["visual"]["highlight_levels"] = ["R1"]
+    for event in plan["segment_plan"]["segments"][0]["scenes"][0]["overlay_events"]:
+        event["fact_anchor_ids"] = ["level:R1"]
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is True
+    assert result["segments"][0]["resolved_visual_facts"][0]["anchor_id"] == "level:R1"
 
 
 def test_render_step_accepts_initial_pass_without_repair():
@@ -463,6 +551,59 @@ def test_confirm_preserves_segment_transition_for_tool09():
     assert media["transition_out"] == {"type": "fade", "duration_ms": 250}
 
 
+def test_confirm_preserves_complete_visual_plan_and_rescales_scene_timeline():
+    item = _item()
+    step = process_step(
+        item, _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
+    )
+    confirmed = confirm_tts_result(
+        item,
+        step["result_json"],
+        {
+            "wait_status": "completed",
+            "job": {
+                "status": "completed",
+                "audio_url": "https://example.test/audio.mp3",
+                "duration_sec": 6.0,
+            },
+        },
+    )
+
+    media = json.loads(confirmed["result_json"])["segment_media_input"]
+    assert media["order"] == 1
+    assert media["visual"] == item["visual"]
+    assert media["transition_out"] == item["transition_out"]
+    assert media["resolved_visual_facts"][0]["anchor_id"] == "level.current"
+    assert media["scenes"][0]["start_sec"] == 0.0
+    assert media["scenes"][0]["duration_sec"] == 6.0
+    assert media["scenes"][0]["overlay_events"][0]["start_sec"] == 0.75
+    assert media["scenes"][0]["overlay_events"][0]["duration_sec"] == 3.0
+    assert media["duration_validation"]["time_scale"] == 1.5
+    assert media["duration_validation"]["timeline_adjusted"] is True
+
+
+def test_confirm_rejects_unresolved_visual_facts():
+    item = {key: value for key, value in _item().items() if key != "resolved_visual_facts"}
+    step = process_step(
+        item, _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
+    )
+    confirmed = confirm_tts_result(
+        item,
+        step["result_json"],
+        {
+            "wait_status": "completed",
+            "job": {
+                "status": "completed",
+                "audio_url": "https://example.test/audio.mp3",
+                "duration_sec": 4.0,
+            },
+        },
+    )
+
+    assert confirmed["action"] == "fail"
+    assert confirmed["confirm_error"] == "VISUAL_FACTS_NOT_RESOLVED"
+
+
 def test_second_invalid_candidate_fails_after_one_repair():
     narration = _narration("You should buy gold now.")
     result = process_step(
@@ -596,6 +737,8 @@ def load_tests(loader, tests, pattern):
     for test in (
         test_init_returns_direct_iteration_array_and_profile,
         test_init_rejects_missing_master_request_id,
+        test_init_rejects_missing_visual_fact_catalog,
+        test_init_maps_visual_level_ids_to_catalog_level_anchors,
         test_render_step_accepts_initial_pass_without_repair,
         test_render_step_validates_the_single_repair_candidate,
         test_step_pass_builds_tts_request_without_a_per_segment_duration_target,
@@ -610,6 +753,8 @@ def load_tests(loader, tests, pattern):
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,
         test_confirm_reads_await_wrapper_job_and_packages_media,
+        test_confirm_preserves_complete_visual_plan_and_rescales_scene_timeline,
+        test_confirm_rejects_unresolved_visual_facts,
         test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget,
         test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget,
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
