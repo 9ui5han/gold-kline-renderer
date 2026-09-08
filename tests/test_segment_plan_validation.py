@@ -49,7 +49,7 @@ def _segment(order, section, role, duration, template, event_type=None):
         "visual": {
             "visual_mode": "scenario_animation" if section == "primary_path" else "chart_intro",
             "source_timeframe": "1h",
-            "camera_motion": "static_hold",
+            "camera_motion": "static_hold" if section == "outro" else "micro_drift",
             "highlight_levels": [],
             "show_volume": False,
             "show_macro_marker": False,
@@ -59,7 +59,7 @@ def _segment(order, section, role, duration, template, event_type=None):
             "template_id": template,
             "start_sec": 0,
             "duration_sec": duration,
-            "camera_motion": "static_hold",
+            "camera_motion": "static_hold" if section == "outro" else "micro_drift",
             "overlay_events": events,
             "transition_out": {
                 "type": "hard_cut",

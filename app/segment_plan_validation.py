@@ -7,6 +7,10 @@ from math import isclose
 from typing import Any
 
 from .kline_precision import normalize_kline_numbers
+from .visual_fact_catalog import (
+    VisualFactCatalogError,
+    build_visual_fact_catalog,
+)
 
 
 EPSILON = 0.001
@@ -109,6 +113,22 @@ def validate_segment_plan(
     macro_timing: dict[str, Any],
 ) -> dict[str, Any]:
     errors: list[str] = []
+    try:
+        visual_fact_catalog = build_visual_fact_catalog(
+            technical_facts,
+            market_analysis,
+            validated_levels,
+            structure_paths,
+            forecast_framework,
+            macro_timing,
+        )
+    except VisualFactCatalogError as exc:
+        visual_fact_catalog = {
+            "schema_version": "visual-fact-catalog-v1",
+            "facts": [],
+        }
+        errors.append(str(exc))
+
     if segment_plan.get("schema_version") != "video-segment-plan-v1":
         errors.append("schema_version必须是video-segment-plan-v1")
 
@@ -137,19 +157,11 @@ def validate_segment_plan(
         if isinstance(item, dict) and str(item.get("event_id") or "")
     }
     has_relevant_macro = bool(segment_budget.get("has_relevant_macro"))
-    known_anchor_ids: set[str] = set()
-    for field in ("last_close", "market_structure", "technical_summary"):
-        if field in technical_facts:
-            known_anchor_ids.add(f"technical:{field}")
-    if validated_levels:
-        known_anchor_ids.add("technical:validated_levels")
-    if market_analysis:
-        known_anchor_ids.add("market:analysis")
-    if forecast_framework:
-        known_anchor_ids.add("forecast:framework")
-    known_anchor_ids.update(f"level:{item}" for item in level_ids)
-    known_anchor_ids.update(f"scenario:{item}" for item in scenario_ids)
-    known_anchor_ids.update(f"macro:{item}" for item in macro_event_ids)
+    known_anchor_ids = {
+        str(item.get("anchor_id"))
+        for item in visual_fact_catalog.get("facts") or []
+        if isinstance(item, dict) and str(item.get("anchor_id") or "")
+    }
 
     required_sections = {"intro", "analysis", "primary_path", "outro"}
     expected_roles = {
@@ -225,6 +237,10 @@ def validate_segment_plan(
             errors.append(f"{segment_id}:visual_mode无效")
         if visual.get("camera_motion") not in allowed_camera:
             errors.append(f"{segment_id}:camera_motion无效")
+        if visual.get("camera_motion") == "static_hold" and section != "outro":
+            errors.append(
+                f"{segment_id}:static_hold仅允许closing_card"
+            )
         for field in ("show_volume", "show_macro_marker"):
             if type(visual.get(field)) is not bool:
                 errors.append(f"{segment_id}:{field}必须是Boolean")
@@ -276,6 +292,11 @@ def validate_segment_plan(
                 errors.append(f"{label}:start_sec必须与上一场连续")
             if scene.get("camera_motion") not in allowed_camera:
                 errors.append(f"{label}:camera_motion无效")
+            if (
+                scene.get("camera_motion") == "static_hold"
+                and str(scene.get("template_id") or "") != "closing_card"
+            ):
+                errors.append(f"{label}:static_hold仅允许closing_card")
 
             events = scene.get("overlay_events")
             if not isinstance(events, list):
@@ -419,6 +440,7 @@ def validate_segment_plan(
         errors.append(f"预计最终时长{estimated:.2f}s超出Hard范围")
     return {
         "segment_plan": segment_plan,
+        "visual_fact_catalog": visual_fact_catalog,
         "segment_plan_valid": len(errors) == 0,
         "segment_plan_errors": errors,
         "calculated_final_duration_sec": round(estimated, 3),
@@ -458,6 +480,7 @@ def process_segment_plan_step(
     errors = validation["segment_plan_errors"]
     contract = {
         "schema_version": "segment-plan-contract-v1",
+        "visual_fact_catalog": validation["visual_fact_catalog"],
         "segment_plan": candidate,
         "segment_plan_valid": valid,
         "segment_plan_errors": errors,
