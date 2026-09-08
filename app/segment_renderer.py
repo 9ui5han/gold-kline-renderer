@@ -37,6 +37,14 @@ SEGMENT_RENDER_CONCURRENCY = max(
     min(4, int(os.environ.get("SEGMENT_RENDER_CONCURRENCY", "2"))),
 )
 _RENDER_SLOTS = threading.BoundedSemaphore(SEGMENT_RENDER_CONCURRENCY)
+DATA_RETENTION_DAYS = max(
+    1,
+    int(os.environ.get("DATA_RETENTION_DAYS", "15")),
+)
+DATA_CLEANUP_INTERVAL_SEC = max(
+    300,
+    int(os.environ.get("DATA_CLEANUP_INTERVAL_SEC", "3600")),
+)
 router = APIRouter(tags=["segment-render"])
 SEGMENT_RENDER_AWAIT_TIMEOUT_SEC = max(
     1.0,
@@ -46,6 +54,53 @@ SEGMENT_RENDER_AWAIT_POLL_INTERVAL_SEC = max(
     0.1,
     min(5.0, float(os.environ.get("SEGMENT_RENDER_AWAIT_POLL_INTERVAL_SEC", "1"))),
 )
+
+
+def _cleanup_expired_data() -> int:
+    """Delete generated files older than the retention window.
+
+    Keep the list explicit so a persistent DATA_DIR can also contain files
+    that are not generated runtime data (for example, templates or config).
+    """
+    cutoff = time.time() - (DATA_RETENTION_DAYS * 86400)
+    roots = (
+        MEDIA_DIR,
+        DATA_DIR / "work",
+        DATA_DIR / "photo-work",
+        DATA_DIR / "segment_jobs",
+        DATA_DIR / "tool09_batch_jobs",
+        DATA_DIR / "compose_jobs",
+        DATA_DIR / "compose",
+        DATA_DIR / "composed",
+    )
+    removed = 0
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            try:
+                if path.is_file() and path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                continue
+            except OSError:
+                continue
+    return removed
+
+
+def _start_cleanup_worker() -> None:
+    _cleanup_expired_data()
+
+    def run() -> None:
+        while True:
+            time.sleep(DATA_CLEANUP_INTERVAL_SEC)
+            _cleanup_expired_data()
+
+    threading.Thread(target=run, daemon=True, name="data-retention-cleanup").start()
+
+
+_start_cleanup_worker()
 
 
 class VideoSpec(BaseModel):

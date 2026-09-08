@@ -44,6 +44,29 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertTrue(job["job_id"].startswith("t9bj_"))
 
+    def test_data_retention_removes_only_expired_generated_files(self):
+        from app import segment_renderer
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media = root / "media"
+            media.mkdir()
+            old_file = media / "old.mp4"
+            old_file.write_text("old", encoding="utf-8")
+            fresh_file = media / "fresh.mp4"
+            fresh_file.write_text("fresh", encoding="utf-8")
+            old_time = segment_renderer.time.time() - (16 * 86400)
+            os.utime(old_file, (old_time, old_time))
+
+            with patch.object(segment_renderer, "DATA_DIR", root), patch.object(
+                segment_renderer, "MEDIA_DIR", media
+            ), patch.object(segment_renderer, "DATA_RETENTION_DAYS", 15):
+                removed = segment_renderer._cleanup_expired_data()
+
+            self.assertEqual(removed, 1)
+            self.assertFalse(old_file.exists())
+            self.assertTrue(fresh_file.exists())
+
     def test_compose_audio_trim_skips_head_handle(self):
         from app.video_composer import _audio_trim_bounds
 
