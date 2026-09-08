@@ -181,6 +181,20 @@ class FinalComposeContractTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 409)
         self.assertEqual(caught.exception.detail, "MASTER_REQUEST_ID_MISMATCH")
 
+    def test_compose_failure_logs_job_id_and_exception(self):
+        from app import video_composer
+
+        with (
+            patch.object(video_composer.JOB_STORE, "update") as update,
+            self.assertLogs("app.video_composer", level="ERROR") as logs,
+        ):
+            video_composer.run_compose_job("job-debug-01", {"invalid": True})
+
+        self.assertTrue(any("job-debug-01" in line for line in logs.output))
+        self.assertTrue(any("COMPOSE_FAILED" in line for line in logs.output))
+        self.assertEqual(update.call_args.args[0], "job-debug-01")
+        self.assertEqual(update.call_args.kwargs["error"]["code"], "COMPOSE_FAILED")
+
     def test_failed_job_returns_a_parseable_failure_contract(self):
         from app import video_composer
 
