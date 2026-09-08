@@ -823,6 +823,11 @@ def confirm_tts_result(
     spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
     media = {
         "segment_id": budget["segment_id"],
+        "transition_out": copy.deepcopy(
+            item.get("transition_out")
+            if isinstance(item.get("transition_out"), dict)
+            else {"type": "hard_cut", "duration_ms": 0}
+        ),
         "audio": {"url": audio_url, "duration_sec": duration},
         "narration": {
             "schema_version": narration.get("schema_version"),

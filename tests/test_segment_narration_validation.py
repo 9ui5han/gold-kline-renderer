@@ -444,6 +444,25 @@ def test_confirm_reads_await_wrapper_job_and_packages_media():
     )
 
 
+def test_confirm_preserves_segment_transition_for_tool09():
+    item = {
+        **_item(),
+        "transition_out": {"type": "fade", "duration_ms": 250},
+    }
+    step = process_step(
+        item, _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
+    )
+    confirmed = confirm_tts_result(
+        item,
+        step["result_json"],
+        {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/audio.mp3", "duration_sec": 4.2}},
+    )
+
+    media = json.loads(confirmed["result_json"])["segment_media_input"]
+
+    assert media["transition_out"] == {"type": "fade", "duration_ms": 250}
+
+
 def test_second_invalid_candidate_fails_after_one_repair():
     narration = _narration("You should buy gold now.")
     result = process_step(
