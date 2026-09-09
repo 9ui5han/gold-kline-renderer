@@ -1010,6 +1010,8 @@ def _tts_request(
     tts_performance = copy.deepcopy(performance)
     tts_narration["text"] = text
     tts_performance["text"] = text
+    raw_narration_sentences = tts_narration.get("sentences")
+    raw_performance_sentences = tts_performance.get("sentences")
     # Sentence performance is carried by segment.sentences[].performance_plan;
     # the strict v7.2 top-level performance schema must not contain it.
     tts_performance.pop("sentences", None)
@@ -1017,8 +1019,6 @@ def _tts_request(
     # Preserve the sentence-level plan at the paid-TTS boundary.  The
     # MiniMax worker uses one request per sentence; dropping this field here
     # silently falls back to one request per segment.
-    raw_narration_sentences = tts_narration.get("sentences")
-    raw_performance_sentences = tts_performance.get("sentences")
     if isinstance(raw_narration_sentences, list) and raw_narration_sentences:
         sentence_entries: list[dict[str, Any]] = []
         for index, sentence in enumerate(raw_narration_sentences, start=1):
