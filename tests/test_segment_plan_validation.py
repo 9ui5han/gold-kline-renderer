@@ -20,6 +20,12 @@ BUDGET = {
         "forecast_total": [0.60, 0.75],
         "outro": [0.03, 0.06],
     },
+    "edge_duration_policy": {
+        "ratio": 0.05,
+        "min_sec": 5.5,
+        "sections": ["intro", "outro"],
+        "reallocation": "average_from_eligible_middle_segments",
+    },
     "visual_modes": ["chart_intro", "technical_analysis", "scenario_animation", "summary"],
     "camera_motions": ["static_hold", "micro_drift"],
 }
@@ -78,10 +84,10 @@ VALID_PLAN = {
     "target_duration_sec": 100,
     "estimated_final_duration_sec": 100,
     "segments": [
-        _segment(1, "intro", "opening_hook", 4, "hook_chart", "hook_text"),
+        _segment(1, "intro", "opening_hook", 5.5, "hook_chart", "hook_text"),
         _segment(2, "analysis", "technical_context", 17, "chart_push"),
-        _segment(3, "primary_path", "primary_forecast", 75, "path_reveal"),
-        _segment(4, "outro", "closing_question", 4, "closing_card", "closing_question"),
+        _segment(3, "primary_path", "primary_forecast", 72, "path_reveal"),
+        _segment(4, "outro", "closing_question", 5.5, "closing_card", "closing_question"),
     ],
 }
 
@@ -158,6 +164,72 @@ class SegmentPlanValidationTests(unittest.TestCase):
         self.assertTrue(result["done"])
         final = json.loads(result["result_json"])
         self.assertFalse(final["segment_plan_valid"])
+
+    def test_edge_duration_minimum_is_dynamic_and_enforced(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["segments"][0]["duration_target_sec"] = 5.4
+        candidate["segments"][0]["scenes"][0]["duration_sec"] = 5.4
+        candidate["segments"][2]["duration_target_sec"] = 72.1
+        candidate["segments"][2]["scenes"][0]["duration_sec"] = 72.1
+        result = self._step(candidate, 0)
+        self.assertEqual(result["action"], "repair")
+        prompt = json.loads(result["repair_prompt_json"])
+        self.assertTrue(any("至少为5.5秒" in item for item in prompt["validator_errors"]))
+
+    def test_edge_floor_uses_target_ratio_for_longer_video(self):
+        budget = json.loads(json.dumps(BUDGET))
+        budget["target_duration_sec"] = 120
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["target_duration_sec"] = 120
+        candidate["estimated_final_duration_sec"] = 120
+        candidate["segments"][0]["duration_target_sec"] = 6
+        candidate["segments"][0]["scenes"][0]["duration_sec"] = 6
+        candidate["segments"][1]["duration_target_sec"] = 19
+        candidate["segments"][1]["scenes"][0]["duration_sec"] = 19
+        candidate["segments"][2]["duration_target_sec"] = 89
+        candidate["segments"][2]["scenes"][0]["duration_sec"] = 89
+        candidate["segments"][3]["duration_target_sec"] = 6
+        candidate["segments"][3]["scenes"][0]["duration_sec"] = 6
+        result = process_segment_plan_step(
+            candidate,
+            budget,
+            CONTEXT["technical_facts"],
+            CONTEXT["market_analysis"],
+            CONTEXT["validated_levels"],
+            CONTEXT["structure_paths"],
+            CONTEXT["forecast_framework"],
+            CONTEXT["macro_timing"],
+            0,
+        )
+        self.assertEqual(result["action"], "pass")
+
+    def test_edge_minimum_reports_infeasible_short_target(self):
+        budget = json.loads(json.dumps(BUDGET))
+        budget["target_duration_sec"] = 12
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["target_duration_sec"] = 12
+        candidate["estimated_final_duration_sec"] = 12
+        candidate["segments"][0]["duration_target_sec"] = 5.5
+        candidate["segments"][0]["scenes"][0]["duration_sec"] = 5.5
+        candidate["segments"][1]["duration_target_sec"] = 2
+        candidate["segments"][1]["scenes"][0]["duration_sec"] = 2
+        candidate["segments"][2]["duration_target_sec"] = 2
+        candidate["segments"][2]["scenes"][0]["duration_sec"] = 2
+        candidate["segments"][3]["duration_target_sec"] = 2.5
+        candidate["segments"][3]["scenes"][0]["duration_sec"] = 2.5
+        result = process_segment_plan_step(
+            candidate,
+            budget,
+            CONTEXT["technical_facts"],
+            CONTEXT["market_analysis"],
+            CONTEXT["validated_levels"],
+            CONTEXT["structure_paths"],
+            CONTEXT["forecast_framework"],
+            CONTEXT["macro_timing"],
+            0,
+        )
+        prompt = json.loads(result["repair_prompt_json"])
+        self.assertTrue(any("EDGE_DURATION_INFEASIBLE" in item for item in prompt["validator_errors"]))
 
 
 if __name__ == "__main__":

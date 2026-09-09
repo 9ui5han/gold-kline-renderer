@@ -14,6 +14,8 @@ from .visual_fact_catalog import (
 
 
 EPSILON = 0.001
+DEFAULT_EDGE_RATIO = 0.05
+DEFAULT_EDGE_MIN_SEC = 5.5
 ALLOWED_TRANSITIONS = {
     "hard_cut", "fade", "slide_left", "slide_right", "zoom_blur",
     "cross_zoom", "light_zoom", "whip_left", "whip_right", "flash",
@@ -44,6 +46,38 @@ def _canonicalize_visual_booleans(visual: dict[str, Any]) -> None:
         value = visual.get(field)
         if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
             visual[field] = value.strip().lower() == "true"
+
+
+def _edge_duration_requirement(
+    segment_budget: dict[str, Any],
+    target_duration_sec: float,
+) -> tuple[float, float, set[str]]:
+    """Return the dynamic edge ratio, floor, and applicable sections."""
+    policy = segment_budget.get("edge_duration_policy")
+    if not isinstance(policy, dict):
+        policy = {}
+
+    try:
+        ratio = float(policy.get("ratio", DEFAULT_EDGE_RATIO))
+    except (TypeError, ValueError):
+        ratio = DEFAULT_EDGE_RATIO
+    try:
+        minimum = float(policy.get("min_sec", DEFAULT_EDGE_MIN_SEC))
+    except (TypeError, ValueError):
+        minimum = DEFAULT_EDGE_MIN_SEC
+
+    if ratio < 0:
+        ratio = DEFAULT_EDGE_RATIO
+    if minimum < 0:
+        minimum = DEFAULT_EDGE_MIN_SEC
+
+    raw_sections = policy.get("sections")
+    sections = {
+        str(item)
+        for item in raw_sections
+        if str(item) in {"intro", "outro"}
+    } if isinstance(raw_sections, list) else {"intro", "outro"}
+    return ratio, minimum, sections
 
 
 def _check_anchor_ids(
@@ -178,6 +212,24 @@ def validate_segment_plan(
     seen_ids: set[str] = set()
     segment_sum = 0.0
     section_durations: dict[str, float] = {}
+    budget_target = _number(
+        segment_budget.get("target_duration_sec"),
+        "segment_budget.target_duration_sec",
+        errors,
+    )
+    edge_ratio, edge_min_sec, edge_sections = _edge_duration_requirement(
+        segment_budget,
+        budget_target,
+    )
+    edge_duration_min = max(budget_target * edge_ratio, edge_min_sec)
+    if budget_target > 0 and len(segments) >= 2:
+        middle_minimum = max(0.0, len(segments) - len(edge_sections)) * 2.0
+        if budget_target + EPSILON < (
+            edge_duration_min * len(edge_sections) + middle_minimum
+        ):
+            errors.append(
+                "EDGE_DURATION_INFEASIBLE:目标时长不足以容纳边缘分段最低时长"
+            )
 
     for index, raw_segment in enumerate(segments, start=1):
         segment = raw_segment if isinstance(raw_segment, dict) else {}
@@ -210,8 +262,10 @@ def validate_segment_plan(
         )
         if duration < 2.0 or duration > 120.0:
             errors.append(f"{segment_id}:duration_target_sec必须为2..120")
-        if section in {"intro", "outro"} and not 2.0 <= duration <= 4.0:
-            errors.append(f"{segment_id}:intro/outro时长必须为2..4秒")
+        if section in edge_sections and duration + EPSILON < edge_duration_min:
+            errors.append(
+                f"{segment_id}:边缘分段时长必须至少为{edge_duration_min:g}秒"
+            )
         if str(segment.get("importance") or "") not in {
             "normal", "high", "critical",
         }:
@@ -400,10 +454,6 @@ def validate_segment_plan(
     declared_target = _number(
         segment_plan.get("target_duration_sec"), "target_duration_sec", errors
     )
-    budget_target = _number(
-        segment_budget.get("target_duration_sec"),
-        "segment_budget.target_duration_sec", errors,
-    )
     declared_estimated = _number(
         segment_plan.get("estimated_final_duration_sec"),
         "estimated_final_duration_sec", errors,
@@ -427,6 +477,10 @@ def validate_segment_plan(
         }
         for name, ratio in actual_ratios.items():
             lower, upper = [float(item) for item in ratio_policy[name]]
+            if name in edge_sections:
+                lower = max(lower, edge_ratio, edge_duration_min / estimated)
+                # The dynamic minimum supersedes a legacy fixed upper bound.
+                upper = max(upper, lower)
             if ratio < lower - 1e-9 or ratio > upper + 1e-9:
                 errors.append(
                     f"{name}比例{ratio:.4f}不在{lower:.2f}..{upper:.2f}"
