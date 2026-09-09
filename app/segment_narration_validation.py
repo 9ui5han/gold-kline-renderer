@@ -489,6 +489,23 @@ def initialize_tool08(
             if not isinstance(item.get("scenes"), list) or not item.get("scenes"):
                 raise ValueError(f"{segment_id}:SCENES_REQUIRED")
             item["resolved_visual_facts"] = _resolve_visual_facts(item, visual_fact_catalog)
+            item.update(
+                _draft_spoken_budget(
+                    item,
+                    profile,
+                    {
+                        "resolved_visual_facts": item["resolved_visual_facts"],
+                        "authoritative_price_map": (
+                            forecast.get("active_levels", {}).get(
+                                "authoritative_price_map",
+                                {},
+                            )
+                            if isinstance(forecast.get("active_levels"), dict)
+                            else {}
+                        ),
+                    },
+                )
+            )
             item["narration_prompt_json"] = _compact_json({
                 "item": item,
                 "segment_duration_budget": budget,
@@ -563,6 +580,79 @@ def _estimated_spoken_seconds(
 def _profile_words_per_second(profile: dict[str, Any]) -> float:
     value = _as_float(profile.get("base_words_per_second"))
     return value if value is not None and value > 0 else MIN_ENGLISH_WORDS_PER_SECOND
+
+
+def _numeric_spoken_costs(value: Any) -> dict[str, int]:
+    """Return the spoken-word cost of numeric tokens available to one segment."""
+    tokens: list[str] = []
+
+    def collect(current: Any) -> None:
+        if isinstance(current, dict):
+            for child in current.values():
+                collect(child)
+        elif isinstance(current, list):
+            for child in current:
+                collect(child)
+        elif isinstance(current, str):
+            tokens.extend(NUMBER_PATTERN.findall(current))
+        elif isinstance(current, (int, float)) and not isinstance(current, bool):
+            number = float(current)
+            if math.isfinite(number):
+                tokens.append(str(current))
+
+    collect(value)
+    costs: dict[str, int] = {}
+    for token in tokens:
+        if token in costs:
+            continue
+        spoken = _spoken_tts_text(token)
+        costs[token] = len(ENGLISH_WORD_PATTERN.findall(spoken))
+    return costs
+
+
+def _draft_spoken_budget(
+    item: dict[str, Any],
+    voice_profile: dict[str, Any],
+    numeric_sources: Any = None,
+) -> dict[str, Any]:
+    """Build a conservative pre-generation word budget for T8-05."""
+    target = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
+    speed_min = _as_float(voice_profile.get("safe_speed_min"), 0.90) or 0.90
+    speed_max = _as_float(voice_profile.get("safe_speed_max"), 1.05) or 1.05
+    speed_assumption = min(speed_max, max(speed_min, 1.0))
+    words_per_second = _profile_words_per_second(voice_profile)
+    pause_model = voice_profile.get("pause_model") or {}
+    role = str(item.get("planning_role") or "")
+    sentence_count = 1 if role in {"opening_hook", "closing_question"} else 2
+    punctuation_ms = (
+        float(pause_model.get("question_ms", 360))
+        if role == "closing_question"
+        else sentence_count * float(pause_model.get("period_ms", 320))
+    )
+    punctuation_sec = punctuation_ms / 1000.0
+    sentence_pause_sec = max(0, sentence_count - 1) * 0.20
+    safety_margin_sec = 0.30
+    usable_seconds = max(
+        0.1,
+        target - punctuation_sec - sentence_pause_sec - safety_margin_sec,
+    )
+    max_spoken_words = max(
+        1,
+        math.floor(usable_seconds * words_per_second * speed_assumption),
+    )
+    return {
+        "draft_duration_cap_sec": round(target, 3),
+        "draft_speed_assumption": round(speed_assumption, 3),
+        "draft_punctuation_sec": round(punctuation_sec, 3),
+        "draft_sentence_pause_sec": round(sentence_pause_sec, 3),
+        "draft_safety_margin_sec": round(safety_margin_sec, 3),
+        "draft_max_spoken_words": max_spoken_words,
+        "numeric_spoken_costs": _numeric_spoken_costs(
+            numeric_sources
+            if numeric_sources is not None
+            else item.get("resolved_visual_facts") or []
+        ),
+    }
 
 
 def _as_candidate_object(value: Any, field_name: str) -> dict[str, Any]:

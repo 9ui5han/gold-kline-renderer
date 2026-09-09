@@ -153,6 +153,36 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["master_request_id"].startswith("master_01")
 
 
+def test_init_adds_conservative_draft_spoken_word_budget():
+    contracts = _init_contracts()
+    contracts["forecast_v1_json"] = json.dumps({
+        "schema_version": "forecast-contract-v1",
+        "active_levels": {
+            "authoritative_price_map": {
+                "OPEN_UPSIDE": 4416.0,
+                "OPEN_DOWNSIDE": 4391.42,
+            }
+        },
+    })
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is True
+    item = result["segments"][0]
+    assert item["draft_duration_cap_sec"] == 4.0
+    assert item["draft_speed_assumption"] == 1.0
+    assert item["draft_punctuation_sec"] == 0.64
+    assert item["draft_sentence_pause_sec"] == 0.2
+    assert item["draft_safety_margin_sec"] == 0.3
+    assert item["draft_max_spoken_words"] == 7
+    assert item["numeric_spoken_costs"]["2400.00"] > 1
+    assert item["numeric_spoken_costs"]["4416.0"] > 1
+    assert item["numeric_spoken_costs"]["4391.42"] > 1
+
+    prompt = json.loads(item["narration_prompt_json"])
+    assert prompt["item"]["draft_max_spoken_words"] == 7
+    assert prompt["item"]["numeric_spoken_costs"]["2400.00"] > 1
+
+
 def test_init_exposes_two_decimal_kline_values_to_narration_llm():
     contracts = _init_contracts()
     contracts["technical_v1_json"] = json.dumps({
@@ -1226,6 +1256,7 @@ def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for test in (
         test_init_returns_direct_iteration_array_and_profile,
+        test_init_adds_conservative_draft_spoken_word_budget,
         test_init_rejects_missing_master_request_id,
         test_init_rejects_missing_visual_fact_catalog,
         test_init_maps_visual_level_ids_to_catalog_level_anchors,
