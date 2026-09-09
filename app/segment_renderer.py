@@ -212,7 +212,7 @@ def _tool09_request_id(master_request_id: str, segment_id: str) -> str:
     digest = hashlib.sha256(f"{master_request_id}|{segment_id}".encode("utf-8")).hexdigest()[:16]
     # The renderer now uses a continuous rolling chart timeline.  Bump the
     # idempotency revision so a rerun cannot reuse old, reset-per-segment MP4s.
-    suffix = f"{digest}-{safe_segment}-visual-r1"
+    suffix = f"{digest}-{safe_segment}-visual-r4"
     return f"{safe_master[: max(1, 120 - len(suffix) - 1)]}-{suffix}"
 
 
@@ -303,12 +303,19 @@ def _build_visual_timeline(
             "overlay_events": raw_scene.get("overlay_events") if isinstance(raw_scene.get("overlay_events"), list) else [],
         }
         normalized_scenes.append(scene)
+        focus_anchor_ids = [
+            str(anchor)
+            for event in scene["overlay_events"]
+            if isinstance(event, dict)
+            for anchor in (event.get("fact_anchor_ids") or [])
+        ]
         camera_plan.append({
             "event_id": f"{scene['scene_id']}:camera",
             "start_sec": start,
             "end_sec": end,
             "motion": motion,
             "focus_target": str(visual.get("visual_mode") or "full_chart"),
+            "focus_anchor_ids": list(dict.fromkeys(focus_anchor_ids)),
         })
         for event_index, raw_event in enumerate(scene["overlay_events"], start=1):
             if not isinstance(raw_event, dict):
@@ -736,7 +743,9 @@ def _rolling_chart_window(
     maximum = max(1, min(int(window_candles), len(candles)))
     if not candles:
         return [], 0.0, maximum
-    reveal = maximum + (len(candles) - maximum) * _clamp(progress)
+    # Start with the first candle and build the chart left-to-right.  Only
+    # after the display is full do older candles leave through the left edge.
+    reveal = 1.0 + (len(candles) - 1.0) * _clamp(progress)
     left_position = max(0.0, reveal - maximum)
     first = max(0, int(math.floor(left_position)))
     last = min(len(candles), max(first + 1, int(math.ceil(reveal))))
@@ -758,18 +767,42 @@ def _camera_view(motion: str, progress: float) -> tuple[float, float]:
     """Return a deliberately visible camera crop for the reference-video pace."""
     progress = _clamp(progress)
     if motion == "focus_zoom":
-        return 1.34, 0.68
+        return 1.60, 0.72
     if motion in {"slow_zoom_in", "light_zoom", "cross_zoom", "blur_zoom"}:
-        return 1.0 + 0.24 * progress, 0.58
+        return 1.0 + 0.45 * progress, 0.62
     if motion == "slow_zoom_out":
-        return 1.24 - 0.20 * progress, 0.42
+        return 1.45 - 0.38 * progress, 0.38
     if motion in {"pan_left", "whip_left"}:
-        return 1.22, 1.0 - progress
+        return 1.40, 1.0 - progress
     if motion in {"pan_right", "whip_right"}:
-        return 1.22, progress
+        return 1.40, progress
     if motion == "micro_drift":
         return 1.08, 0.5 + math.sin(progress * math.pi * 2.0) * 0.18
     return 1.0, 0.5
+
+
+def _camera_focus_price(
+    facts_by_id: dict[str, dict[str, Any]],
+    anchor_ids: list[Any],
+) -> float | None:
+    """Resolve the price the active scene is actually discussing."""
+    for raw_anchor in anchor_ids:
+        fact = facts_by_id.get(str(raw_anchor))
+        if not isinstance(fact, dict):
+            continue
+        for key in ("center_price", "price"):
+            try:
+                return float(fact[key])
+            except (KeyError, TypeError, ValueError):
+                pass
+        points = fact.get("path_points")
+        if isinstance(points, list):
+            for point in reversed(points):
+                try:
+                    return float(point["price"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+    return None
 
 
 def _render_dynamic_frame(
@@ -899,6 +932,12 @@ def _render_dynamic_frame(
                 if len(coords) >= 2:
                     draw.line(coords, fill=(76, 166, 255, 255), width=max(2, canvas_width // 240), joint="curve")
             continue
+        # A technical label is already represented by the chart's EMA and
+        # level layers.  Do not turn a raw number into a large blue banner at
+        # the top of the screen; it obscures the chart and has no narration
+        # context for the viewer.
+        if event_type == "technical_label":
+            continue
         display = next((str(fact.get("display_text") or "") for fact in facts if fact.get("display_text")), event_type)
         display = display.replace("\n", " ")[:120]
         box_top = max(8, top // 3)
@@ -910,7 +949,17 @@ def _render_dynamic_frame(
         crop = image
     else:
         left = int((canvas_width - width) * _clamp(horizontal))
-        top_crop = int((canvas_height - height) * 0.5)
+        focus_price = _camera_focus_price(
+            facts_by_id,
+            (camera or {}).get("focus_anchor_ids") or [],
+        ) if motion == "focus_zoom" else None
+        if focus_price is None:
+            top_crop = int((canvas_height - height) * 0.5)
+        else:
+            target_y = y_for(focus_price)
+            top_crop = int(_clamp(
+                (target_y - height * 0.5) / max(canvas_height - height, 1),
+            ) * (canvas_height - height))
         crop = image.crop((left, top_crop, left + width, top_crop + height))
     return crop.tobytes()
 
