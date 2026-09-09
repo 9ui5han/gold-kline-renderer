@@ -418,6 +418,7 @@ def initialize_tool08(
             else {}
         )
         video_hard_max = _as_float(video_config.get("hard_max_sec"))
+        video_preferred_max = _as_float(video_config.get("preferred_max_sec"))
         raw_segments = segment_plan.get("segments")
         if not isinstance(raw_segments, list) or not raw_segments:
             raise ValueError("SEGMENT_PLAN_SEGMENTS_REQUIRED")
@@ -455,6 +456,8 @@ def initialize_tool08(
                 # Internal scheduling metadata travels with the iteration item
                 # but is not copied into the public segment-media contract.
                 item["_video_hard_max_sec"] = video_hard_max
+            if video_preferred_max is not None and video_preferred_max > 0:
+                item["_video_preferred_max_sec"] = video_preferred_max
             if not isinstance(item.get("visual"), dict):
                 raise ValueError(f"{segment_id}:VISUAL_PLAN_REQUIRED")
             if not isinstance(item.get("scenes"), list) or not item.get("scenes"):
@@ -657,6 +660,23 @@ def rebalance_tool08(
         else original_total + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC
     )
     hard_max = max(original_total, hard_max)
+    explicit_preferred_max = next(
+        (
+            _as_float(entry["item"].get("_video_preferred_max_sec"))
+            for entry in prepared
+            if _as_float(entry["item"].get("_video_preferred_max_sec")) is not None
+        ),
+        None,
+    )
+    pre_tts_max = (
+        min(hard_max, explicit_preferred_max)
+        if explicit_preferred_max is not None and explicit_preferred_max > 0
+        else hard_max
+    )
+    # A malformed configuration must not require a rewrite of an otherwise
+    # valid planned timeline.  The normal ceiling can never be below the
+    # original segment-plan total; the hard ceiling remains the final guard.
+    pre_tts_max = max(original_total, pre_tts_max)
 
     overruns = [
         max(0.0, entry["estimated_spoken_sec"] - entry["original_target_sec"])
@@ -679,13 +699,13 @@ def rebalance_tool08(
         max(0.0, explicit_tolerance)
         if explicit_tolerance is not None
         else (
-            max(0.0, hard_max - original_total)
+            max(0.0, pre_tts_max - original_total)
             if explicit_hard_max is not None
             else DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC
         )
     )
     global_overrun = max(0.0, estimated_total - original_total)
-    duration_reduction_required = max(0.0, estimated_total - hard_max)
+    duration_reduction_required = max(0.0, estimated_total - pre_tts_max)
     global_overrun_exceeded = duration_reduction_required > 0.001
 
     repair_reductions = [0.0 for _ in prepared]
@@ -707,6 +727,14 @@ def rebalance_tool08(
         # Preserve authored visual targets.  Assign only the real full-video
         # reduction requirement, proportionally across overrun segments.
         target = entry["original_target_sec"]
+        section = str(entry["item"].get("section") or "")
+        edge_max = _as_float(entry["item"].get("duration_max_sec"), 0.0) or 0.0
+        edge_reduction = (
+            max(0.0, entry["estimated_spoken_sec"] - edge_max)
+            if section in {"intro", "outro"} and edge_max > 0
+            else 0.0
+        )
+        required_reduction = max(required_reduction, edge_reduction)
         requires_global_repair = required_reduction > 0.001
         accepted_max_estimated = max(
             0.1,
@@ -756,7 +784,11 @@ def rebalance_tool08(
         "global_overrun_sec": round(global_overrun, 3),
         "global_tolerance_sec": round(global_tolerance, 3),
         "duration_reduction_required_sec": round(duration_reduction_required, 3),
-        "duration_repair_required": global_overrun_exceeded,
+        "duration_repair_required": any(
+            bool(scheduled["item"].get("_duration_repair_authorized"))
+            for scheduled in scheduled_items
+        ),
+        "pre_tts_max_sec": round(pre_tts_max, 3),
         "video_hard_max_sec": round(hard_max, 3),
     }
 
@@ -1114,6 +1146,7 @@ def confirm_tts_result(
     narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
     performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
     spoken_text = str(result.get("spoken_text") or narration.get("text") or "")
+    estimated_duration = _as_float(result.get("estimated_total_sec"))
     try:
         scenes, time_scale, timeline_adjusted = _rescale_visual_timeline(item, duration)
     except ValueError as exc:
@@ -1156,6 +1189,11 @@ def confirm_tts_result(
             "duration_min_sec": budget["duration_min_sec"],
             "duration_max_sec": budget["duration_max_sec"],
             "actual_duration_sec": duration,
+            "estimated_duration_sec": estimated_duration,
+            "estimation_error_sec": (
+                round(duration - estimated_duration, 3)
+                if estimated_duration is not None else None
+            ),
             "planned_duration_sec": budget["target_duration_sec"],
             "time_scale": round(time_scale, 6),
             "timeline_adjusted": timeline_adjusted,

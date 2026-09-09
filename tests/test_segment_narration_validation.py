@@ -697,6 +697,69 @@ def test_rebalance_assigns_one_explicit_repair_target_for_real_global_overrun():
     assert scheduled["item"]["_accepted_max_estimated_sec"] == scheduled["accepted_max_estimated_sec"]
 
 
+def test_rebalance_uses_preferred_video_maximum_before_hard_maximum():
+    item = {
+        "segment_id": "seg_03_primary",
+        "section": "primary_path",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+        "_video_hard_max_sec": 70,
+        "_video_preferred_max_sec": 4,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_03_primary",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "text": "Gold 4403.71 needs confirmation while the conditional path remains uncertain.",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_03_primary", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": item, "segment_narration": narration, "segment_performance": performance},
+    ], _profile())
+
+    assert result["estimated_spoken_total_sec"] < 70
+    assert result["pre_tts_max_sec"] == 4.0
+    assert result["duration_repair_required"] is True
+
+
+def test_rebalance_always_repairs_an_overlong_edge_segment():
+    item = {
+        "segment_id": "seg_04_outro",
+        "section": "outro",
+        "planning_role": "closing_question",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 5.5,
+        "duration_min_sec": 4.0,
+        "duration_max_sec": 7.0,
+        "_video_hard_max_sec": 70,
+        "_video_preferred_max_sec": 63,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_04_outro",
+        "planning_role": "closing_question",
+        "fact_anchor_ids": ["level.current"],
+        "text": "With price near 4403.71, which side confirms first beyond the current boundaries?",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_04_outro", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": item, "segment_narration": narration, "segment_performance": performance},
+    ], _profile())
+
+    scheduled = result["scheduled_items"][0]
+    assert result["duration_reduction_required_sec"] == 0
+    assert scheduled["needs_narration_repair"] is True
+    assert scheduled["accepted_max_estimated_sec"] == 7.0
+
+
 def test_step_requests_narration_repair_before_paid_tts():
     narration = _narration("You should buy gold now.")
     result = process_step(
@@ -923,6 +986,9 @@ def test_confirm_reads_await_wrapper_job_and_packages_media():
     assert packed["segment_media_input"]["narration"]["spoken_text"] == (
         "Gold holds near two thousand four hundred while confirmation remains important."
     )
+    validation = packed["segment_media_input"]["duration_validation"]
+    assert validation["estimated_duration_sec"] > 0
+    assert validation["estimation_error_sec"] == round(4.2 - validation["estimated_duration_sec"], 3)
 
 
 def test_confirm_preserves_segment_transition_for_tool09():
@@ -1151,6 +1217,8 @@ def load_tests(loader, tests, pattern):
         test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded,
         test_rebalance_offsets_middle_overrun_with_other_segments_spare_time,
         test_rebalance_assigns_one_explicit_repair_target_for_real_global_overrun,
+        test_rebalance_uses_preferred_video_maximum_before_hard_maximum,
+        test_rebalance_always_repairs_an_overlong_edge_segment,
         test_step_requests_narration_repair_before_paid_tts,
         test_duration_repair_prompt_contains_provider_spoken_budget,
         test_authorized_repair_allows_reduced_candidate_above_segment_target,
