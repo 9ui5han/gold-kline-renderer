@@ -810,6 +810,33 @@ def test_duration_repair_prompt_contains_provider_spoken_budget():
     assert budget["duration_repair_authorized"] is True
 
 
+def test_duration_repair_prompt_omits_duplicated_generation_context():
+    item = {
+        **_item(),
+        "duration_target_sec": 4.0,
+        "duration_min_sec": 2.5,
+        "duration_max_sec": 4.5,
+        "narration_prompt_json": "{" + "x" * 20000 + "}",
+        "performance_context_json": "{" + "y" * 20000 + "}",
+        "_duration_repair_authorized": True,
+        "_force_duration_repair": True,
+    }
+    narration = _narration("Gold 4403.71 mixed.")
+    performance = _performance(narration["text"])
+    performance["speed"] = 1.05
+    performance["pause_after_ms"] = 0
+
+    result = process_step(
+        item, narration, performance, _profile(), "mm_finance_male_02", "master_01"
+    )
+
+    repair = json.loads(result["repair_prompt_json"])
+    assert "narration_prompt_json" not in repair["item"]
+    assert "performance_context_json" not in repair["item"]
+    assert repair["item"]["content_goal"] == item["content_goal"]
+    assert repair["item"]["resolved_visual_facts"] == item["resolved_visual_facts"]
+
+
 def test_authorized_repair_allows_reduced_candidate_above_segment_target():
     item = {
         **_item(),
@@ -1221,6 +1248,7 @@ def load_tests(loader, tests, pattern):
         test_rebalance_always_repairs_an_overlong_edge_segment,
         test_step_requests_narration_repair_before_paid_tts,
         test_duration_repair_prompt_contains_provider_spoken_budget,
+        test_duration_repair_prompt_omits_duplicated_generation_context,
         test_authorized_repair_allows_reduced_candidate_above_segment_target,
         test_authorized_repair_reads_baseline_from_repair_state,
         test_authorized_repair_must_meet_backend_assigned_maximum,

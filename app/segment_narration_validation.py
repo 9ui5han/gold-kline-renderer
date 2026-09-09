@@ -254,6 +254,32 @@ def _duration_repair_budget(
     }
 
 
+def _compact_repair_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Keep a repair prompt focused on editable narration facts and budget.
+
+    Iteration items also carry the original generation prompt, which embeds
+    every upstream contract and can dwarf the actual repair instructions.
+    That context is redundant here: resolved visual facts and the current
+    narration are the authoritative repair inputs.
+    """
+    allowed_keys = (
+        "segment_id", "order", "section", "planning_role", "scenario_id",
+        "fact_anchor_ids", "content_goal", "importance", "speech_style",
+        "duration_target_sec", "duration_min_sec", "duration_max_sec",
+        "resolved_visual_facts", "_video_hard_max_sec",
+        "_video_preferred_max_sec", "_global_overrun_sec",
+        "_global_tolerance_sec", "_segment_overrun_sec",
+        "_duration_reduction_required_sec", "_accepted_max_estimated_sec",
+        "_pre_repair_estimated_sec", "_duration_repair_authorized",
+        "_force_duration_repair",
+    )
+    return {
+        key: copy.deepcopy(item[key])
+        for key in allowed_keys
+        if key in item
+    }
+
+
 def _visual_fact_catalog_map(catalog: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(catalog, dict) or catalog.get("schema_version") != "visual-fact-catalog-v1":
         raise ValueError("VISUAL_FACT_CATALOG_REQUIRED")
@@ -1081,7 +1107,7 @@ def process_step(
             ["segment_narration.text", "segment_performance"]
             if kind == "narration" else ["segment_performance"]
         ),
-        "item": item,
+        "item": _compact_repair_item(item),
         "segment_duration_budget": repair_budget,
         "voice_duration_profile": voice_duration_profile,
         "segment_narration": segment_narration,
