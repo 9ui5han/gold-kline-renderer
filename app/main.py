@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -678,6 +679,33 @@ def _persist_tts_job_locked(
         "payload_hash": payload_hash,
         "job": job,
     }
+    _save_tts_idempotency_registry(registry)
+
+
+def _replace_terminal_tts_request_locked(
+    registry: dict[str, Any],
+    request_id: str,
+    existing_job: dict[str, Any],
+) -> None:
+    """Discard one terminal idempotency entry before a changed retry.
+
+    TOOL-08 derives a stable request id from its master id, segment id and
+    revision.  A later full rerun can legitimately produce different text for
+    that same logical segment.  Completed/failed jobs are therefore replaced;
+    active jobs stay protected from accidental duplicate paid synthesis.
+    """
+    status = str(existing_job.get("status") or "")
+    if status not in {"completed", "failed"}:
+        raise HTTPException(status_code=409, detail="REQUEST_ID_IN_PROGRESS")
+
+    audio_name = Path(urlparse(str(existing_job.get("audio_url") or "")).path).name
+    if re.fullmatch(r"tts-[A-Za-z0-9-]+\.(?:mp3|wav)", audio_name):
+        (MEDIA_DIR / audio_name).unlink(missing_ok=True)
+
+    job_id = str(existing_job.get("job_id") or "")
+    if job_id:
+        TTS_JOBS.pop(job_id, None)
+    registry.pop(request_id, None)
     _save_tts_idempotency_registry(registry)
 
 
@@ -3602,17 +3630,31 @@ def enqueue_tts_job(payload: TTSProxyRequest) -> dict[str, Any]:
         existing = registry.get(payload.request_id)
         if isinstance(existing, dict):
             if existing.get("payload_hash") != payload_hash:
-                raise HTTPException(status_code=409, detail="REQUEST_ID_CONFLICT")
-            existing_job = existing.get("job")
-            if not isinstance(existing_job, dict):
-                raise HTTPException(
-                    status_code=503,
-                    detail="TTS_IDEMPOTENCY_STORE_INVALID",
+                existing_job = existing.get("job")
+                if not isinstance(existing_job, dict):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="TTS_IDEMPOTENCY_STORE_INVALID",
+                    )
+                _replace_terminal_tts_request_locked(
+                    registry,
+                    payload.request_id,
+                    existing_job,
                 )
-            job_id = str(existing_job.get("job_id") or "")
-            if job_id:
-                TTS_JOBS[job_id] = dict(existing_job)
-            return dict(existing_job)
+                existing = None
+            if existing is None:
+                pass
+            else:
+                existing_job = existing.get("job")
+                if not isinstance(existing_job, dict):
+                    raise HTTPException(
+                        status_code=503,
+                        detail="TTS_IDEMPOTENCY_STORE_INVALID",
+                    )
+                job_id = str(existing_job.get("job_id") or "")
+                if job_id:
+                    TTS_JOBS[job_id] = dict(existing_job)
+                return dict(existing_job)
 
         job_id = str(uuid.uuid4())
         status_url = f"{PUBLIC_BASE_URL}/v1/tts-jobs/{job_id}"

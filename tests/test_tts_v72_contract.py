@@ -138,7 +138,7 @@ class TtsV72ContractTests(unittest.TestCase):
         self.assertEqual(first.json()["job_id"], second.json()["job_id"])
         self.assertEqual(start_worker.call_count, 1)
 
-    def test_same_request_id_with_different_payload_returns_conflict(self):
+    def test_same_request_id_with_different_completed_payload_replaces_old_audio(self):
         first = main.TTSProxyRequest(
             request_id="stable-id",
             text=TEXT,
@@ -149,20 +149,57 @@ class TtsV72ContractTests(unittest.TestCase):
         )
         changed = first.model_copy(update={"text": "Gold breaks support."})
         with TemporaryDirectory() as directory:
+            media_dir = Path(directory) / "media"
+            media_dir.mkdir()
+            old_audio = media_dir / "tts-old.wav"
+            old_audio.write_bytes(b"old-audio")
+            registry_path = Path(directory) / "tts-idempotency.json"
             with (
                 patch.object(
                     main,
                     "TTS_IDEMPOTENCY_PATH",
-                    Path(directory) / "tts-idempotency.json",
+                    registry_path,
                 ),
+                patch.object(main, "MEDIA_DIR", media_dir),
+                patch.object(main, "resolve_tts_request_profile", side_effect=lambda x: x),
+                patch.object(main, "AI302_API_KEY", "test-key"),
+                patch.object(main, "start_tts_job_worker") as start_worker,
+            ):
+                main.TTS_JOBS.clear()
+                old_job = main.enqueue_tts_job(first)
+                registry = main._load_tts_idempotency_registry()
+                registry[first.request_id]["job"].update(
+                    status="completed",
+                    audio_url="https://example.test/media/tts-old.wav",
+                )
+                main._save_tts_idempotency_registry(registry)
+                main.TTS_JOBS.clear()
+                replacement = main.enqueue_tts_job(changed)
+
+        self.assertNotEqual(old_job["job_id"], replacement["job_id"])
+        self.assertEqual(start_worker.call_count, 2)
+        self.assertFalse(old_audio.exists())
+
+    def test_same_request_id_with_different_active_payload_remains_blocked(self):
+        first = main.TTSProxyRequest(
+            request_id="stable-active-id",
+            text=TEXT,
+            narration_json=NARRATION,
+            narrator_profile_id="verified-profile",
+            target_duration_sec=5,
+            duration_tolerance_sec=1.5,
+        )
+        changed = first.model_copy(update={"text": "Gold breaks support."})
+        with TemporaryDirectory() as directory:
+            with (
+                patch.object(main, "TTS_IDEMPOTENCY_PATH", Path(directory) / "tts-idempotency.json"),
                 patch.object(main, "resolve_tts_request_profile", side_effect=lambda x: x),
                 patch.object(main, "AI302_API_KEY", "test-key"),
                 patch.object(main, "start_tts_job_worker"),
             ):
                 main.TTS_JOBS.clear()
                 main.enqueue_tts_job(first)
-                main.TTS_JOBS.clear()
-                with self.assertRaisesRegex(main.HTTPException, "REQUEST_ID_CONFLICT"):
+                with self.assertRaisesRegex(main.HTTPException, "REQUEST_ID_IN_PROGRESS"):
                     main.enqueue_tts_job(changed)
 
     def test_await_route_returns_completed_job_without_a_dify_poll_loop(self):
