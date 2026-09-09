@@ -1731,26 +1731,16 @@ def complete_tool08(
     video_duration_validation = {
         "target_duration_sec": round(planned_total_duration, 3),
         "actual_duration_sec": round(actual_total_duration, 3),
-        "tolerance_sec": DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC,
-        "min_duration_sec": round(max(0.0, planned_total_duration - DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC), 3),
-        "max_duration_sec": round(planned_total_duration + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC, 3),
-        "valid": (
-            max(0.0, planned_total_duration - DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC) - 0.001
-            <= actual_total_duration
-            <= planned_total_duration + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC + 0.001
-        ),
+        # The planned duration remains the ratio-based reference for timeline
+        # layout, but total audio length is no longer a completion gate.
+        "tolerance_sec": None,
+        "min_duration_sec": None,
+        "max_duration_sec": None,
+        "enforced": False,
+        "valid": True,
     }
     if bad_ids:
         return _complete_failure(bad_ids, voice_duration_profile, "SEGMENT_MEDIA_INVALID", segment_media_inputs, duration_validations)
-    if not video_duration_validation["valid"]:
-        return _complete_failure(
-            expected_ids,
-            voice_duration_profile,
-            "ACTUAL_VIDEO_DURATION_OUT_OF_RANGE",
-            segment_media_inputs,
-            duration_validations,
-            video_duration_validation,
-        )
     ordered_media = [media_by_id[segment_id] for segment_id in expected_ids]
     payload = {
         "schema_version": "segment-media-contract-v1",
