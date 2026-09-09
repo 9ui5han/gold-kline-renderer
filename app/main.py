@@ -1584,10 +1584,6 @@ def parse_minimax_sentence_units(
         text = str(item.get("text") or item.get("spoken_text") or "").strip()
         if not text:
             raise ValueError(f"MiniMax分段{segment_index}的文本为空")
-        sentences = [text]
-        if not sentences:
-            raise ValueError(f"MiniMax分段{segment_index}没有有效句子")
-
         performance = item.get("performance_plan") or {}
         raw_segment_speed = performance.get("speed", item.get("speed"))
         raw_effective_speed = item.get("effective_speed")
@@ -1640,15 +1636,38 @@ def parse_minimax_sentence_units(
             raise ValueError(
                 f"MiniMax分段{segment_index}的pause_after_ms超出0至650毫秒范围"
             )
+        raw_sentences = item.get("sentences")
+        if raw_sentences is None:
+            sentences = [{"text": text, "performance_plan": performance}]
+        elif isinstance(raw_sentences, list) and raw_sentences:
+            sentences = raw_sentences
+        else:
+            raise ValueError(f"MiniMax分段{segment_index}的sentences无效")
         segment_id = str(
             item.get("segment_id") or f"segment_{segment_index}"
         ).strip()
-        for sentence_index, sentence in enumerate(sentences, start=1):
-            speed = round(base_speed, 2)
-            is_last = sentence_index == len(sentences)
-            internal_pause = 220 if re.search(r"\d", sentence) else (
-                200 if sentence_index % 2 else 220
+        for sentence_index, sentence_item in enumerate(sentences, start=1):
+            if not isinstance(sentence_item, dict):
+                raise ValueError(f"MiniMax分段{segment_index}的句子不是对象")
+            sentence = str(sentence_item.get("text") or "").strip()
+            if not sentence:
+                raise ValueError(f"MiniMax分段{segment_index}的句子为空")
+            sentence_perf = sentence_item.get("performance_plan") or sentence_item
+            sentence_speed = sentence_perf.get("speed")
+            if sentence_speed is not None and (isinstance(sentence_speed, bool) or not isinstance(sentence_speed, (int, float))):
+                raise ValueError(f"MiniMax句子{segment_index}-{sentence_index}的speed不是数字")
+            speed = round(
+                base_speed if sentence_speed is None
+                else float(payload.speed_ratio) * float(sentence_speed),
+                2,
             )
+            if not 0.5 <= speed <= 2.0:
+                raise ValueError(f"MiniMax句子{segment_index}-{sentence_index}的实际speed超出范围")
+            emotion = str(sentence_perf.get("emotion") or performance.get("emotion") or "calm")
+            pitch = sentence_perf.get("pitch", performance.get("pitch", 0))
+            is_last = sentence_index == len(sentences)
+            sentence_pause = sentence_perf.get("pause_after_ms")
+            internal_pause = int(sentence_pause) if isinstance(sentence_pause, int) and 0 <= sentence_pause <= 650 else (220 if re.search(r"\d", sentence) else 200)
             units.append(
                 {
                     "order": len(units) + 1,
@@ -1656,7 +1675,9 @@ def parse_minimax_sentence_units(
                     "parent_segment_id": segment_id,
                     "text": sentence,
                     "speed": speed,
-                    "pause_after_ms": pause_value if is_last else internal_pause,
+                    "emotion": emotion,
+                    "pitch": pitch,
+                    "pause_after_ms": pause_value if is_last and sentence_pause is None else (int(sentence_pause) if isinstance(sentence_pause, int) else internal_pause),
                 }
             )
 
@@ -2326,6 +2347,8 @@ def generate_minimax_tts_segment(
     speed: float,
     output_path: Path,
     provider_settings: dict[str, Any] | None = None,
+    emotion: str | None = None,
+    pitch: float | int | None = None,
 ) -> None:
     """按302.AI当前MiniMax Speech 2.8 Turbo格式生成单句音频。"""
     settings = provider_settings or {}
@@ -2340,8 +2363,8 @@ def generate_minimax_tts_segment(
                 "voice_id": voice,
                 "speed": speed,
                 "vol": settings.get("vol", 1),
-                "pitch": settings.get("pitch", 0),
-                "emotion": settings.get("emotion", "calm"),
+                "pitch": settings.get("pitch", pitch if pitch is not None else 0),
+                "emotion": settings.get("emotion", emotion or "calm"),
                 "text_normalization": True,
             },
             "audio_setting": {
@@ -2428,6 +2451,8 @@ def generate_minimax_segmented_tts(
                     float(unit["speed"]),
                     source_path,
                     payload.provider_settings,
+                    unit.get("emotion"),
+                    unit.get("pitch"),
                 )
             else:
                 generate_minimax_tts_segment(
@@ -2435,6 +2460,8 @@ def generate_minimax_segmented_tts(
                     payload.minimax_voice_id,
                     float(unit["speed"]),
                     source_path,
+                    emotion=unit.get("emotion"),
+                    pitch=unit.get("pitch"),
                 )
             normalize_audio_to_wav(source_path, normalized_path)
             normalized_paths.append(normalized_path)
