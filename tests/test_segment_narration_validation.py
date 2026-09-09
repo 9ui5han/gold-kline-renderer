@@ -219,6 +219,8 @@ def test_step_repairs_a_candidate_below_the_pregeneration_duration_band():
     assert budget["target_spoken_word_budget"] == item["draft_target_spoken_words"]
     assert budget["max_spoken_word_budget"] == item["draft_max_spoken_words"]
     assert budget["accepted_min_estimated_sec"] > 0
+    assert budget["repair_speed"] == item["draft_speed"]
+    assert budget["repair_pause_after_ms"] == 0
 
 
 def test_step_rejects_performance_that_changes_pregeneration_preset():
@@ -570,7 +572,8 @@ def test_rebalance_marks_unfit_global_budget_for_narration_repair():
         },
     )
     assert second_step["action"] == "fail"
-    assert second_step["step_error"] == "REPAIR_LIMIT_EXCEEDED"
+    assert second_step["step_error"].startswith("REPAIR_LIMIT_EXCEEDED;")
+    assert "PRE_TTS_DURATION" in second_step["step_error"]
 
 
 def test_spoken_word_duration_estimate_scales_with_speed():
@@ -1029,7 +1032,8 @@ def test_authorized_repair_must_meet_backend_assigned_maximum():
     )
 
     assert result["action"] == "fail"
-    assert result["step_error"] == "REPAIR_LIMIT_EXCEEDED"
+    assert result["step_error"].startswith("REPAIR_LIMIT_EXCEEDED;")
+    assert "PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET" in result["step_error"]
     assert "PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET" in json.loads(
         result["result_json"]
     )["performance_error"]
@@ -1192,7 +1196,8 @@ def test_second_invalid_candidate_fails_after_one_repair():
 
     assert result["action"] == "fail"
     assert result["done"] is True
-    assert result["step_error"] == "REPAIR_LIMIT_EXCEEDED"
+    assert result["step_error"].startswith("REPAIR_LIMIT_EXCEEDED;")
+    assert "PERSONALIZED_TRADE_DIRECTIVE" in result["step_error"]
 
 
 def test_confirm_rejects_actual_audio_outside_segment_duration_budget():

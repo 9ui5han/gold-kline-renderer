@@ -1402,6 +1402,7 @@ def process_step(
     # Dify keeps exactly one repair LLM node.  A second failed candidate is a
     # deterministic failure, rather than a second front-end repair loop.
     if repairs >= 1:
+        repair_error = ";".join(errors) or "UNKNOWN_REPAIR_FAILURE"
         return {
             "schema_version": "segment-narration-step-result-v1",
             "action": "fail",
@@ -1409,7 +1410,7 @@ def process_step(
             "result_json": _compact_json(base_result),
             "repair_prompt_json": "{}",
             "next_state_json": _compact_json({"repair_count": repairs, "narration_revision": revision}),
-            "step_error": "REPAIR_LIMIT_EXCEEDED",
+            "step_error": f"REPAIR_LIMIT_EXCEEDED;{repair_error}",
         }
     next_state = {"repair_count": repairs + 1, "narration_revision": revision + 1}
     if narration_repair_required:
@@ -1461,6 +1462,11 @@ def process_step(
         "max_spoken_word_budget": int(
             _as_float(item.get("draft_max_spoken_words"), 0.0) or 0
         ),
+        "repair_speed": round(
+            _as_float(item.get("draft_speed"), 1.0) or 1.0,
+            3,
+        ),
+        "repair_pause_after_ms": 0,
         "repair_direction": (
             "expand"
             if candidate_under_band
