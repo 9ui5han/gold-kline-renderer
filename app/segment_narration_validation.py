@@ -551,10 +551,10 @@ def rebalance_tool08(
     """Prepare all drafts against one global spoken-duration budget.
 
     The estimate is calculated from the provider-facing spoken text. Segment
-    targets remain at their authored proportions. The positive overrun of
-    every segment is summed against the video's single global tolerance; only
-    when that total exceeds the tolerance are segments with positive overruns
-    marked for the existing one-shot narration repair before paid TTS.
+    targets remain at their authored proportions. Spare time from shorter
+    segments offsets longer segments first. Only the amount by which the
+    estimated full narration exceeds the video hard maximum is assigned back
+    to overrun segments as explicit one-shot repair targets before paid TTS.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -662,11 +662,11 @@ def rebalance_tool08(
         max(0.0, entry["estimated_spoken_sec"] - entry["original_target_sec"])
         for entry in prepared
     ]
-    total_overrun = sum(overruns)
+    positive_segment_overrun = sum(overruns)
     estimated_total = sum(entry["estimated_spoken_sec"] for entry in prepared)
-    # Keep the authored total and segment proportions.  The global tolerance
-    # is checked against the sum of positive per-segment overruns below; it is
-    # not converted into independent segment tolerances.
+    # Keep the authored total and segment proportions.  The hard maximum is a
+    # full-video limit, so spare time in one segment offsets another segment's
+    # overrun before any repair is authorized.
     explicit_tolerance = next(
         (
             _as_float(entry["item"].get("_video_duration_tolerance_sec"))
@@ -684,20 +684,40 @@ def rebalance_tool08(
             else DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC
         )
     )
-    global_overrun_exceeded = total_overrun > global_tolerance + 0.001
+    global_overrun = max(0.0, estimated_total - original_total)
+    duration_reduction_required = max(0.0, estimated_total - hard_max)
+    global_overrun_exceeded = duration_reduction_required > 0.001
+
+    repair_reductions = [0.0 for _ in prepared]
+    if global_overrun_exceeded and positive_segment_overrun > 0.001:
+        for index, overrun in enumerate(overruns):
+            if overrun > 0.001:
+                repair_reductions[index] = min(
+                    overrun,
+                    duration_reduction_required
+                    * overrun
+                    / positive_segment_overrun,
+                )
 
     scheduled_items: list[dict[str, Any]] = []
     scheduled_total = 0.0
-    for entry, overrun in zip(prepared, overruns):
-        # Preserve the authored segment proportions.  The global tolerance is
-        # consumed by the sum of positive per-segment overruns; it is not
-        # distributed into new per-segment targets.
+    for entry, overrun, required_reduction in zip(
+        prepared, overruns, repair_reductions
+    ):
+        # Preserve authored visual targets.  Assign only the real full-video
+        # reduction requirement, proportionally across overrun segments.
         target = entry["original_target_sec"]
-        requires_global_repair = global_overrun_exceeded and overrun > 0.001
+        requires_global_repair = required_reduction > 0.001
+        accepted_max_estimated = max(
+            0.1,
+            entry["estimated_spoken_sec"] - required_reduction,
+        )
         item = copy.deepcopy(entry["item"])
-        item["_global_overrun_sec"] = round(total_overrun, 3)
+        item["_global_overrun_sec"] = round(global_overrun, 3)
         item["_global_tolerance_sec"] = round(global_tolerance, 3)
         item["_segment_overrun_sec"] = round(overrun, 3)
+        item["_duration_reduction_required_sec"] = round(required_reduction, 3)
+        item["_accepted_max_estimated_sec"] = round(accepted_max_estimated, 3)
         item["_pre_repair_estimated_sec"] = round(entry["estimated_spoken_sec"], 3)
         item["_duration_repair_authorized"] = requires_global_repair
         if requires_global_repair:
@@ -712,8 +732,10 @@ def rebalance_tool08(
             "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
             "segment_overrun_sec": round(overrun, 3),
-            "global_overrun_sec": round(total_overrun, 3),
+            "global_overrun_sec": round(global_overrun, 3),
             "global_tolerance_sec": round(global_tolerance, 3),
+            "duration_reduction_required_sec": round(required_reduction, 3),
+            "accepted_max_estimated_sec": round(accepted_max_estimated, 3),
             "needs_narration_repair": requires_global_repair,
             "content_fit_error": (
                 "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
@@ -731,8 +753,9 @@ def rebalance_tool08(
         "estimated_spoken_total_sec": round(
             sum(entry["estimated_spoken_sec"] for entry in prepared), 3
         ),
-        "global_overrun_sec": round(total_overrun, 3),
+        "global_overrun_sec": round(global_overrun, 3),
         "global_tolerance_sec": round(global_tolerance, 3),
+        "duration_reduction_required_sec": round(duration_reduction_required, 3),
         "duration_repair_required": global_overrun_exceeded,
         "video_hard_max_sec": round(hard_max, 3),
     }
@@ -905,7 +928,14 @@ def process_step(
     duration_repair_authorized = bool(item.get("_duration_repair_authorized"))
     duration_repair_forced = bool(item.get("_force_duration_repair"))
     target_duration = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
-    candidate_over_target = result["estimated_total_sec"] > target_duration + 0.001
+    explicit_accepted_max = _as_float(item.get("_accepted_max_estimated_sec"))
+    accepted_max_estimated = (
+        explicit_accepted_max
+        if explicit_accepted_max is not None else target_duration
+    )
+    candidate_over_target = (
+        result["estimated_total_sec"] > accepted_max_estimated + 0.001
+    )
     if duration_repair_forced and duration_repair_authorized and candidate_over_target:
         if repair_candidate is None:
             # The initial candidate starts the one-shot repair.  After the
@@ -922,7 +952,11 @@ def process_step(
                 baseline = target_duration + (
                     _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0
                 )
-            if result["estimated_total_sec"] >= baseline - 0.001:
+            if explicit_accepted_max is not None:
+                if result["estimated_total_sec"] > explicit_accepted_max + 0.001:
+                    errors.append("PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET")
+                    result["narration_violation"] = True
+            elif result["estimated_total_sec"] >= baseline - 0.001:
                 errors.append("PRE_TTS_DURATION_REPAIR_NO_IMPROVEMENT")
                 result["narration_violation"] = True
     errors = list(dict.fromkeys(errors))
@@ -995,6 +1029,14 @@ def process_step(
         ),
         "segment_overrun_sec": round(
             _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0, 3
+        ),
+        "duration_reduction_required_sec": round(
+            _as_float(item.get("_duration_reduction_required_sec"), 0.0) or 0.0,
+            3,
+        ),
+        "accepted_max_estimated_sec": round(
+            _as_float(item.get("_accepted_max_estimated_sec"), 0.0) or 0.0,
+            3,
         ),
         "duration_repair_authorized": bool(
             item.get("_duration_repair_authorized", False)

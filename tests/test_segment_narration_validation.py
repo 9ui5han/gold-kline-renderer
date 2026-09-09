@@ -614,6 +614,87 @@ def test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_excee
     assert "_force_duration_repair" not in scheduled[0]["item"]
     assert scheduled[1]["needs_narration_repair"] is True
     assert scheduled[1]["item"]["_force_duration_repair"] is True
+    assert round(sum(
+        item["duration_reduction_required_sec"] for item in scheduled
+    ), 3) == result["duration_reduction_required_sec"]
+
+
+def test_rebalance_offsets_middle_overrun_with_other_segments_spare_time():
+    short_item = {
+        "segment_id": "seg_02_short",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+        "_video_hard_max_sec": 10,
+    }
+    long_item = {
+        **short_item,
+        "segment_id": "seg_03_long",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+    }
+    short_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_02_short",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold holds.",
+    }
+    long_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_03_long",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "text": "Gold 4403.71 needs confirmation while the conditional path remains uncertain.",
+    }
+    short_performance = _performance(short_narration["text"])
+    short_performance.update(segment_id="seg_02_short", pause_after_ms=0)
+    long_performance = _performance(long_narration["text"])
+    long_performance.update(segment_id="seg_03_long", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": short_item, "segment_narration": short_narration, "segment_performance": short_performance},
+        {"item": long_item, "segment_narration": long_narration, "segment_performance": long_performance},
+    ], _profile())
+
+    assert result["estimated_spoken_total_sec"] <= result["video_hard_max_sec"]
+    assert result["duration_reduction_required_sec"] == 0
+    assert result["duration_repair_required"] is False
+    assert all(not item["needs_narration_repair"] for item in result["scheduled_items"])
+
+
+def test_rebalance_assigns_one_explicit_repair_target_for_real_global_overrun():
+    item = {
+        "segment_id": "seg_03_primary",
+        "section": "primary_path",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+        "_video_hard_max_sec": 4,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_03_primary",
+        "planning_role": "primary_forecast",
+        "fact_anchor_ids": ["forecast.framework"],
+        "text": "Gold 4403.71 needs confirmation while the conditional path remains uncertain.",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_03_primary", pause_after_ms=0)
+
+    result = rebalance_tool08([
+        {"item": item, "segment_narration": narration, "segment_performance": performance},
+    ], _profile())
+
+    scheduled = result["scheduled_items"][0]
+    assert result["duration_reduction_required_sec"] > 0
+    assert scheduled["needs_narration_repair"] is True
+    assert scheduled["accepted_max_estimated_sec"] < scheduled["estimated_spoken_sec"]
+    assert scheduled["item"]["_accepted_max_estimated_sec"] == scheduled["accepted_max_estimated_sec"]
 
 
 def test_step_requests_narration_repair_before_paid_tts():
@@ -731,6 +812,44 @@ def test_authorized_repair_reads_baseline_from_repair_state():
 
     assert result["action"] == "pass"
     assert result["done"] is True
+
+
+def test_authorized_repair_must_meet_backend_assigned_maximum():
+    item = {
+        **_item(),
+        "duration_target_sec": 3.0,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+        "_force_duration_repair": True,
+        "_duration_repair_authorized": True,
+        "_accepted_max_estimated_sec": 4.0,
+        "_duration_reduction_required_sec": 0.876,
+    }
+    repaired_text = "Gold 4403.71."
+    repaired = _narration(repaired_text)
+    performance = _performance(repaired_text)
+    performance["speed"] = 1.05
+    performance["pause_after_ms"] = 0
+
+    result = process_step(
+        item,
+        None,
+        None,
+        _profile(),
+        "mm_finance_male_02",
+        "master_01",
+        repair_candidate={
+            "state_json": '{"repair_count":1,"narration_revision":1,"pre_repair_estimated_sec":4.876}',
+            "segment_narration": repaired,
+            "segment_performance": performance,
+        },
+    )
+
+    assert result["action"] == "fail"
+    assert result["step_error"] == "REPAIR_LIMIT_EXCEEDED"
+    assert "PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET" in json.loads(
+        result["result_json"]
+    )["performance_error"]
 
 
 def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
@@ -1030,10 +1149,13 @@ def load_tests(loader, tests, pattern):
         test_rebalance_expands_budget_for_spoken_overrun,
         test_rebalance_allows_individual_overrun_within_global_tolerance,
         test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded,
+        test_rebalance_offsets_middle_overrun_with_other_segments_spare_time,
+        test_rebalance_assigns_one_explicit_repair_target_for_real_global_overrun,
         test_step_requests_narration_repair_before_paid_tts,
         test_duration_repair_prompt_contains_provider_spoken_budget,
         test_authorized_repair_allows_reduced_candidate_above_segment_target,
         test_authorized_repair_reads_baseline_from_repair_state,
+        test_authorized_repair_must_meet_backend_assigned_maximum,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,
