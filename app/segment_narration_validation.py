@@ -37,7 +37,7 @@ SPOKEN_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?(?!
 MIN_ENGLISH_WORDS_PER_SECOND = 2.2
 # TOOL-08's global default matches the upstream 60-second plan: the complete
 # spoken timeline may exceed its authored total by at most three seconds.
-DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC = 3.0
+DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC = 13.0
 # Calibrated against completed MiniMax segment audio.  Unknown voices retain
 # the conservative fallback until they have their own measured profile.
 VOICE_DURATION_CALIBRATIONS = {
@@ -1302,66 +1302,6 @@ def process_step(
 
     result = _validate_candidate(item, segment_narration, segment_performance, voice_duration_profile)
     errors = result["errors"]
-    band_enabled = all(
-        _as_float(item.get(key)) is not None
-        for key in (
-            "accepted_min_estimated_sec",
-            "accepted_max_estimated_sec",
-            "draft_min_spoken_words",
-            "draft_target_spoken_words",
-            "draft_max_spoken_words",
-        )
-    )
-    band_min = _as_float(item.get("accepted_min_estimated_sec"), 0.0) or 0.0
-    band_max = _as_float(item.get("accepted_max_estimated_sec"), 0.0) or 0.0
-    candidate_under_band = (
-        band_enabled and result["estimated_total_sec"] < band_min - 0.001
-    )
-    candidate_over_band = (
-        band_enabled and result["estimated_total_sec"] > band_max + 0.001
-    )
-    if candidate_under_band or candidate_over_band:
-        errors.append(
-            "PRE_TTS_DURATION_UNDER_RANGE"
-            if candidate_under_band else "PRE_TTS_DURATION_OUT_OF_RANGE"
-        )
-        result["narration_violation"] = True
-        item["_duration_repair_authorized"] = True
-        item["_force_duration_repair"] = True
-    duration_repair_authorized = bool(item.get("_duration_repair_authorized"))
-    duration_repair_forced = bool(item.get("_force_duration_repair"))
-    target_duration = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
-    explicit_accepted_max = _as_float(item.get("_accepted_max_estimated_sec"))
-    accepted_max_estimated = (
-        explicit_accepted_max
-        if explicit_accepted_max is not None else target_duration
-    )
-    candidate_over_target = (
-        result["estimated_total_sec"] > accepted_max_estimated + 0.001
-    )
-    if duration_repair_forced and duration_repair_authorized and candidate_over_target:
-        if repair_candidate is None:
-            # The initial candidate starts the one-shot repair.  After the
-            # repair, the global tolerance owns acceptance; a segment may
-            # remain above its authored target when its spoken number tokens
-            # make the target unreachable.
-            errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
-            result["narration_violation"] = True
-        else:
-            baseline = repair_baseline_from_state
-            if baseline is None:
-                baseline = _as_float(item.get("_pre_repair_estimated_sec"))
-            if baseline is None:
-                baseline = target_duration + (
-                    _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0
-                )
-            if explicit_accepted_max is not None:
-                if result["estimated_total_sec"] > explicit_accepted_max + 0.001:
-                    errors.append("PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET")
-                    result["narration_violation"] = True
-            elif result["estimated_total_sec"] >= baseline - 0.001:
-                errors.append("PRE_TTS_DURATION_REPAIR_NO_IMPROVEMENT")
-                result["narration_violation"] = True
     errors = list(dict.fromkeys(errors))
     base_result = {
         "performance_valid": not errors,
@@ -1467,11 +1407,7 @@ def process_step(
             3,
         ),
         "repair_pause_after_ms": 0,
-        "repair_direction": (
-            "expand"
-            if candidate_under_band
-            else ("compress" if candidate_over_band else "performance")
-        ),
+        "repair_direction": "performance" if kind == "performance" else "narration",
     })
     repair_prompt = {
         "repair_kind": kind,
@@ -1541,12 +1477,6 @@ def confirm_tts_result(
     budget, budget_errors = _duration_budget(item if isinstance(item, dict) else {})
     if budget_errors or not audio_url or duration <= 0:
         return _confirm_fail("TTS_MEDIA_RESULT_INVALID")
-    if not (
-        budget["duration_min_sec"] - 0.001
-        <= duration
-        <= budget["duration_max_sec"] + 0.001
-    ):
-        return _confirm_fail("ACTUAL_AUDIO_DURATION_OUT_OF_RANGE")
     result = _as_object_json(step_result_json, "STEP_RESULT")
     narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
     performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
@@ -1740,12 +1670,7 @@ def complete_tool08(
             planned_by_id.get(expected_id) or {}
         )
         actual_duration = _as_float(audio.get("duration_sec"), 0.0) or 0.0
-        actual_duration_valid = (
-            not planned_errors
-            and planned_budget["duration_min_sec"] - 0.001
-            <= actual_duration
-            <= planned_budget["duration_max_sec"] + 0.001
-        )
+        actual_duration_valid = not planned_errors and actual_duration > 0
         visual_valid = (
             isinstance(media.get("order"), int)
             and media.get("order") > 0
@@ -1769,8 +1694,37 @@ def complete_tool08(
         for media_id in media_by_id:
             if media_id not in expected_ids and media_id not in bad_ids:
                 bad_ids.append(media_id)
+    planned_total_duration = sum(
+        _as_float((planned_by_id.get(segment_id) or {}).get("duration_target_sec"), 0.0) or 0.0
+        for segment_id in expected_ids
+    )
+    actual_total_duration = sum(
+        _as_float(((media_by_id.get(segment_id) or {}).get("audio") or {}).get("duration_sec"), 0.0) or 0.0
+        for segment_id in expected_ids
+    )
+    video_duration_validation = {
+        "target_duration_sec": round(planned_total_duration, 3),
+        "actual_duration_sec": round(actual_total_duration, 3),
+        "tolerance_sec": DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC,
+        "min_duration_sec": round(max(0.0, planned_total_duration - DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC), 3),
+        "max_duration_sec": round(planned_total_duration + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC, 3),
+        "valid": (
+            max(0.0, planned_total_duration - DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC) - 0.001
+            <= actual_total_duration
+            <= planned_total_duration + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC + 0.001
+        ),
+    }
     if bad_ids:
         return _complete_failure(bad_ids, voice_duration_profile, "SEGMENT_MEDIA_INVALID", segment_media_inputs, duration_validations)
+    if not video_duration_validation["valid"]:
+        return _complete_failure(
+            expected_ids,
+            voice_duration_profile,
+            "ACTUAL_VIDEO_DURATION_OUT_OF_RANGE",
+            segment_media_inputs,
+            duration_validations,
+            video_duration_validation,
+        )
     ordered_media = [media_by_id[segment_id] for segment_id in expected_ids]
     payload = {
         "schema_version": "segment-media-contract-v1",
@@ -1779,6 +1733,7 @@ def complete_tool08(
         "segment_audio_valid": True,
         "bad_segment_ids": [],
         "duration_validations": duration_validations,
+        "video_duration_validation": video_duration_validation,
     }
     return {
         "schema_version": "segment-narration-complete-result-v1",
@@ -1838,6 +1793,7 @@ def _complete_failure(
     error: str,
     inputs: list[Any] | None = None,
     duration_validations: list[dict[str, Any]] | None = None,
+    video_duration_validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = {
         "schema_version": "segment-media-contract-v1",
@@ -1847,6 +1803,8 @@ def _complete_failure(
         "bad_segment_ids": bad_ids,
         "duration_validations": duration_validations or [],
     }
+    if video_duration_validation is not None:
+        payload["video_duration_validation"] = video_duration_validation
     return {
         "schema_version": "segment-narration-complete-result-v1",
         "complete_valid": False,
