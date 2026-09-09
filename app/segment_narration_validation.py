@@ -1393,6 +1393,12 @@ def confirm_tts_result(
     budget, budget_errors = _duration_budget(item if isinstance(item, dict) else {})
     if budget_errors or not audio_url or duration <= 0:
         return _confirm_fail("TTS_MEDIA_RESULT_INVALID")
+    if not (
+        budget["duration_min_sec"] - 0.001
+        <= duration
+        <= budget["duration_max_sec"] + 0.001
+    ):
+        return _confirm_fail("ACTUAL_AUDIO_DURATION_OUT_OF_RANGE")
     result = _as_object_json(step_result_json, "STEP_RESULT")
     narration = result.get("validated_narration") if isinstance(result.get("validated_narration"), dict) else {}
     performance = result.get("validated_performance") if isinstance(result.get("validated_performance"), dict) else {}
@@ -1571,12 +1577,27 @@ def complete_tool08(
         for item in (segment_media_inputs or [])
         if isinstance(item, dict)
     }
+    planned_by_id = {
+        str(item.get("segment_id") or ""): item
+        for item in planned
+        if isinstance(item, dict)
+    }
     bad_ids: list[str] = []
     duration_validations: list[dict[str, Any]] = []
     for expected_id in expected_ids:
         media = media_by_id.get(expected_id) or {}
         audio = media.get("audio") if isinstance(media.get("audio"), dict) else {}
         validation = media.get("duration_validation") if isinstance(media.get("duration_validation"), dict) else {}
+        planned_budget, planned_errors = _duration_budget(
+            planned_by_id.get(expected_id) or {}
+        )
+        actual_duration = _as_float(audio.get("duration_sec"), 0.0) or 0.0
+        actual_duration_valid = (
+            not planned_errors
+            and planned_budget["duration_min_sec"] - 0.001
+            <= actual_duration
+            <= planned_budget["duration_max_sec"] + 0.001
+        )
         visual_valid = (
             isinstance(media.get("order"), int)
             and media.get("order") > 0
@@ -1588,7 +1609,8 @@ def complete_tool08(
         )
         valid = (
             bool(audio.get("url"))
-            and (_as_float(audio.get("duration_sec"), 0.0) or 0.0) > 0
+            and actual_duration > 0
+            and actual_duration_valid
             and validation.get("valid") is True
             and visual_valid
         )

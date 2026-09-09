@@ -1132,7 +1132,7 @@ def test_second_invalid_candidate_fails_after_one_repair():
     assert result["step_error"] == "REPAIR_LIMIT_EXCEEDED"
 
 
-def test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget():
+def test_confirm_rejects_actual_audio_outside_segment_duration_budget():
     step = process_step(
         _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01",
         repair_count=1, narration_revision=1,
@@ -1143,13 +1143,34 @@ def test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget(
         {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/audio.mp3", "duration_sec": 20}},
         state_json=step["next_state_json"],
     )
-    assert confirmed["action"] == "pass"
+    assert confirmed["action"] == "fail"
     assert confirmed["done"] is True
-    assert confirmed["confirm_error"] == ""
-    media = json.loads(confirmed["result_json"])["segment_media_input"]
-    assert media["audio"]["duration_sec"] == 20
-    assert media["duration_validation"]["valid"] is True
-    assert media["duration_validation"]["mode"] == "actual_audio_authoritative"
+    assert confirmed["confirm_error"] == "ACTUAL_AUDIO_DURATION_OUT_OF_RANGE"
+    assert confirmed["result_json"] == "{}"
+
+
+def test_complete_rechecks_actual_duration_instead_of_trusting_valid_flag():
+    item = _item()
+    forged_media = {
+        **item,
+        "audio": {"url": "https://example.test/audio.mp3", "duration_sec": 20.0},
+        "duration_validation": {
+            "duration_min_sec": 2.0,
+            "duration_max_sec": 8.0,
+            "actual_duration_sec": 20.0,
+            "valid": True,
+        },
+    }
+
+    result = complete_tool08(
+        [forged_media],
+        _init_contracts()["segment_plan_v1_json"],
+        _profile(),
+    )
+
+    assert result["complete_valid"] is False
+    assert result["complete_error"] == "SEGMENT_MEDIA_INVALID"
+    assert json.loads(result["bad_segment_ids_json"]) == ["seg_01"]
 
 
 def test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget():
@@ -1289,7 +1310,8 @@ def load_tests(loader, tests, pattern):
         test_confirm_reads_await_wrapper_job_and_packages_media,
         test_confirm_preserves_complete_visual_plan_and_rescales_scene_timeline,
         test_confirm_rejects_unresolved_visual_facts,
-        test_confirm_uses_actual_audio_duration_even_outside_authored_visual_budget,
+        test_confirm_rejects_actual_audio_outside_segment_duration_budget,
+        test_complete_rechecks_actual_duration_instead_of_trusting_valid_flag,
         test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget,
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
         test_init_rejects_invalid_upstream_contract_version,
