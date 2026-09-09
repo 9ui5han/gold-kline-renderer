@@ -696,7 +696,10 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
     composed = status == "completed"
     error_code = str(error.get("code") or "FINAL_COMPOSE_FAILED")
     errors = [] if composed else [error_code]
-    duration = float(result.get("duration_sec") or 0)
+    # The voice track defines the finished video's timing.  Video-stream
+    # duration is still checked during composition, but the delivery contract
+    # reports the actual narration/audio length.
+    duration = float(result.get("audio_duration_sec") or result.get("duration_sec") or 0)
     target = float(result.get("video_target_duration_sec") or result.get("narration_timeline_sec") or 0)
     difference = round(duration - target, 3)
     preferred_min = float(result.get("preferred_duration_min_sec") or target - 3.0)
@@ -705,9 +708,9 @@ def _final_result(job: dict[str, Any], master_request_id: str) -> dict[str, Any]
     hard_max = float(result.get("hard_duration_max_sec") or target + 10.0)
     duration_in_preferred = composed and preferred_min <= duration <= preferred_max
     duration_in_hard = composed and hard_min <= duration <= hard_max
-    if composed and not duration_in_hard:
-        errors = ["FINAL_DURATION_HARD_LIMIT_EXCEEDED"]
-    valid = composed and duration_in_hard
+    # Final duration is reported for review but is not an acceptance gate.
+    # The video can be delivered when its media composition succeeded.
+    valid = composed
     phase1_dynamic_valid = composed and result.get("phase1_dynamic_valid") is True
     contract = {
         "schema_version": "final-result-contract-v1",
