@@ -876,6 +876,7 @@ def process_step(
     repair_candidate: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate one LLM candidate and return TTS, repair, or fail."""
+    repair_baseline_from_state: float | None = None
     if repair_candidate is not None:
         if not isinstance(repair_candidate, dict):
             return _step_failure("REPAIR_CANDIDATE_OBJECT_REQUIRED")
@@ -888,6 +889,7 @@ def process_step(
             )
             repair_count = int(state["repair_count"])
             narration_revision = int(state["narration_revision"])
+            repair_baseline_from_state = _as_float(state.get("pre_repair_estimated_sec"))
         except (KeyError, TypeError, ValueError):
             return _step_failure("REPAIR_STATE_INVALID")
     try:
@@ -913,7 +915,9 @@ def process_step(
             errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
             result["narration_violation"] = True
         else:
-            baseline = _as_float(item.get("_pre_repair_estimated_sec"))
+            baseline = repair_baseline_from_state
+            if baseline is None:
+                baseline = _as_float(item.get("_pre_repair_estimated_sec"))
             if baseline is None:
                 baseline = target_duration + (
                     _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0
@@ -971,6 +975,11 @@ def process_step(
             "step_error": "REPAIR_LIMIT_EXCEEDED",
         }
     next_state = {"repair_count": repairs + 1, "narration_revision": revision + 1}
+    if narration_repair_required:
+        # Keep the original provider-facing estimate inside the state that
+        # Dify copies back from the repair LLM.  This survives iteration
+        # serialization even when private item metadata is not forwarded.
+        next_state["pre_repair_estimated_sec"] = result["estimated_total_sec"]
     repair_budget = _duration_repair_budget(
         result["budget"],
         result["spoken_text"],
