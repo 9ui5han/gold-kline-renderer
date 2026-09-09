@@ -1742,6 +1742,23 @@ def complete_tool08(
     if bad_ids:
         return _complete_failure(bad_ids, voice_duration_profile, "SEGMENT_MEDIA_INVALID", segment_media_inputs, duration_validations)
     ordered_media = [media_by_id[segment_id] for segment_id in expected_ids]
+    # Every rendered segment is a slice of one continuous chart timeline.
+    # The renderer uses this shared cursor to keep candles moving left across
+    # segment boundaries instead of restarting the chart for each narration.
+    global_duration = sum(
+        _as_float((item.get("audio") or {}).get("duration_sec"), 0.0) or 0.0
+        for item in ordered_media
+    )
+    global_start = 0.0
+    for media in ordered_media:
+        media["continuous_chart"] = {
+            "schema_version": "continuous-chart-v1",
+            "mode": "rolling_left",
+            "global_start_sec": round(global_start, 3),
+            "global_duration_sec": round(global_duration, 3),
+            "window_candles": 70,
+        }
+        global_start += _as_float((media.get("audio") or {}).get("duration_sec"), 0.0) or 0.0
     payload = {
         "schema_version": "segment-media-contract-v1",
         "voice_duration_profile": voice_duration_profile if isinstance(voice_duration_profile, dict) else {},

@@ -214,6 +214,13 @@ class V72VideoJobsTests(unittest.TestCase):
                     "duration_sec": 2.0,
                 },
                 "duration_validation": {"valid": True},
+                "continuous_chart": {
+                    "schema_version": "continuous-chart-v1",
+                    "mode": "rolling_left",
+                    "global_start_sec": 2.0,
+                    "global_duration_sec": 10.0,
+                    "window_candles": 70,
+                },
                 "transition_out": {"type": "fade", "duration_ms": 250},
             },
         })
@@ -225,6 +232,7 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertEqual(len(request.visual_timeline["overlay_plan"]), 1)
         self.assertEqual(request.visual_facts[0]["anchor_id"], "level:R1")
         self.assertEqual(request.visual_timeline["scenes"][1]["start_sec"], 1.0)
+        self.assertEqual(request.visual_timeline["continuous_chart"]["global_start_sec"], 2.0)
 
     def test_tool09_request_rejects_missing_visual_plan(self):
         from app import segment_renderer

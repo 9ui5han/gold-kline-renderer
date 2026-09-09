@@ -127,6 +127,7 @@ class SegmentRenderRequest(BaseModel):
     render_duration_sec: float = Field(gt=0, le=306)
     visual_timeline: dict[str, Any]
     visual_facts: list[dict[str, Any]] = Field(default_factory=list)
+    continuous_chart: dict[str, Any] = Field(default_factory=dict)
     video: VideoSpec
     fallback_policy: dict[str, Any]
     transition_out: dict[str, Any] = Field(default_factory=dict)
@@ -209,7 +210,9 @@ def _tool09_request_id(master_request_id: str, segment_id: str) -> str:
     safe_master = re.sub(r"[^A-Za-z0-9_-]+", "-", master_request_id).strip("-") or "tool09"
     safe_segment = re.sub(r"[^A-Za-z0-9_-]+", "-", segment_id).strip("-") or "segment"
     digest = hashlib.sha256(f"{master_request_id}|{segment_id}".encode("utf-8")).hexdigest()[:16]
-    suffix = f"{digest}-{safe_segment}-visual-r0"
+    # The renderer now uses a continuous rolling chart timeline.  Bump the
+    # idempotency revision so a rerun cannot reuse old, reset-per-segment MP4s.
+    suffix = f"{digest}-{safe_segment}-visual-r1"
     return f"{safe_master[: max(1, 120 - len(suffix) - 1)]}-{suffix}"
 
 
@@ -381,6 +384,9 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
     transition = item.get("transition_out") if isinstance(item.get("transition_out"), dict) else {}
     tail_handle = max(0.0, min(3.0, float(transition.get("duration_ms") or 0) / 1000.0))
     timeline, visual_facts = _build_visual_timeline(item, segment_id, base_duration, fps)
+    continuous_chart = item.get("continuous_chart") if isinstance(item.get("continuous_chart"), dict) else {}
+    if continuous_chart.get("schema_version") == "continuous-chart-v1":
+        timeline["continuous_chart"] = continuous_chart
     data_as_of = str(market.get("data_as_of") or normalized.get("data_as_of") or "").strip()
     request_data = {
         "request_id": _tool09_request_id(payload.master_request_id, segment_id),
@@ -398,6 +404,7 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
         "render_duration_sec": base_duration + tail_handle,
         "visual_timeline": timeline,
         "visual_facts": visual_facts,
+        "continuous_chart": continuous_chart,
         "video": {
             "width": int(video.get("width") or 1080),
             "height": int(video.get("height") or 1920),
@@ -720,6 +727,51 @@ def _active_event(events: list[dict[str, Any]], elapsed_sec: float) -> tuple[dic
     return candidate, _clamp((elapsed_sec - start) / max(end - start, 1e-6))
 
 
+def _rolling_chart_window(
+    candles: list[dict[str, Any]],
+    progress: float,
+    window_candles: int = 70,
+) -> tuple[list[tuple[int, dict[str, Any]]], float, int]:
+    """Keep a fixed chart window and move old candles out through the left."""
+    maximum = max(1, min(int(window_candles), len(candles)))
+    if not candles:
+        return [], 0.0, maximum
+    reveal = maximum + (len(candles) - maximum) * _clamp(progress)
+    left_position = max(0.0, reveal - maximum)
+    first = max(0, int(math.floor(left_position)))
+    last = min(len(candles), max(first + 1, int(math.ceil(reveal))))
+    return list(enumerate(candles[first:last], start=first)), left_position, maximum
+
+
+def _ema(closes: list[float], period: int) -> list[float]:
+    """Deterministic exponential moving average over the real candle closes."""
+    if not closes:
+        return []
+    alpha = 2.0 / (max(1, int(period)) + 1.0)
+    values = [float(closes[0])]
+    for close in closes[1:]:
+        values.append(round(alpha * float(close) + (1.0 - alpha) * values[-1], 6))
+    return values
+
+
+def _camera_view(motion: str, progress: float) -> tuple[float, float]:
+    """Return a deliberately visible camera crop for the reference-video pace."""
+    progress = _clamp(progress)
+    if motion == "focus_zoom":
+        return 1.34, 0.68
+    if motion in {"slow_zoom_in", "light_zoom", "cross_zoom", "blur_zoom"}:
+        return 1.0 + 0.24 * progress, 0.58
+    if motion == "slow_zoom_out":
+        return 1.24 - 0.20 * progress, 0.42
+    if motion in {"pan_left", "whip_left"}:
+        return 1.22, 1.0 - progress
+    if motion in {"pan_right", "whip_right"}:
+        return 1.22, progress
+    if motion == "micro_drift":
+        return 1.08, 0.5 + math.sin(progress * math.pi * 2.0) * 0.18
+    return 1.0, 0.5
+
+
 def _render_dynamic_frame(
     candles: list[dict[str, Any]],
     width: int,
@@ -736,16 +788,7 @@ def _render_dynamic_frame(
     if motion not in SUPPORTED_CAMERA_MOTIONS:
         motion = "micro_drift"
 
-    if motion in {"slow_zoom_in", "focus_zoom", "light_zoom", "cross_zoom", "blur_zoom"}:
-        scale = 1.0 + (0.08 if motion == "light_zoom" else 0.14) * camera_progress
-    elif motion == "slow_zoom_out":
-        scale = 1.14 - 0.14 * camera_progress
-    elif motion in {"pan_left", "pan_right", "whip_left", "whip_right"}:
-        scale = 1.10
-    elif motion == "micro_drift":
-        scale = 1.04
-    else:
-        scale = 1.0
+    scale, horizontal = _camera_view(motion, camera_progress)
     canvas_width = max(width, int(round(width * scale)))
     canvas_height = max(height, int(round(height * scale)))
     image = Image.new("RGB", (canvas_width, canvas_height), (8, 13, 24))
@@ -761,22 +804,27 @@ def _render_dynamic_frame(
         y = top + int(chart_height * step / 5)
         draw.line((margin_x, y, canvas_width - margin_x, y), fill=(28, 39, 58, 255), width=1)
 
-    usable = candles[-min(len(candles), 80):]
-    visible_count = max(1, min(len(usable), int(round(1 + (len(usable) - 1) * (0.35 + 0.65 * _clamp(elapsed / base_duration))))))
-    visible = usable[:visible_count]
-    highs = [float(x["high"]) for x in usable]
-    lows = [float(x["low"]) for x in usable]
+    continuous = timeline.get("continuous_chart") if isinstance(timeline.get("continuous_chart"), dict) else {}
+    global_start = float(continuous.get("global_start_sec") or 0.0)
+    global_duration = float(continuous.get("global_duration_sec") or base_duration)
+    chart_progress = _clamp((global_start + elapsed) / max(global_duration, 1e-6))
+    window_candles = int(continuous.get("window_candles") or 70)
+    visible, left_position, visible_capacity = _rolling_chart_window(
+        candles, chart_progress, window_candles,
+    )
+    highs = [float(x["high"]) for x in candles]
+    lows = [float(x["low"]) for x in candles]
     high = max(highs)
     low = min(lows)
     span = max(high - low, 1e-9)
-    slot = chart_width / max(len(usable), 1)
+    slot = chart_width / visible_capacity
     body_width = max(2, int(slot * 0.55))
 
     def y_for(price: float) -> int:
         return top + int((high - price) / span * chart_height)
 
-    for index, candle in enumerate(visible):
-        x = margin_x + int((index + 0.5) * slot)
+    for candle_index, candle in visible:
+        x = margin_x + int((candle_index - left_position + 0.5) * slot)
         open_y = y_for(float(candle["open"]))
         close_y = y_for(float(candle["close"]))
         high_y = y_for(float(candle["high"]))
@@ -785,10 +833,26 @@ def _render_dynamic_frame(
         draw.line((x, high_y, x, low_y), fill=color, width=max(1, body_width // 3))
         draw.rectangle((x - body_width // 2, min(open_y, close_y), x + body_width // 2, max(open_y, close_y)), fill=color)
 
+    closes = [float(candle["close"]) for candle in candles]
+    for period, color in ((20, (245, 194, 66, 255)), (50, (154, 120, 255, 255))):
+        average = _ema(closes, period)
+        points = [
+            (
+                margin_x + int((candle_index - left_position + 0.5) * slot),
+                y_for(average[candle_index]),
+            )
+            for candle_index, _candle in visible
+            if candle_index < len(average)
+        ]
+        if len(points) >= 2:
+            draw.line(points, fill=color, width=max(2, body_width // 2), joint="curve")
+    draw.text((margin_x + 6, top + 6), "EMA20", fill=(245, 194, 66, 230), font=font)
+    draw.text((margin_x + 54, top + 6), "EMA50", fill=(154, 120, 255, 230), font=font)
+
     if timeline.get("show_volume"):
         volume_max = max((float(x.get("volume") or 0.0) for x in visible), default=1.0) or 1.0
-        for index, candle in enumerate(visible):
-            x = margin_x + int((index + 0.5) * slot)
+        for candle_index, candle in visible:
+            x = margin_x + int((candle_index - left_position + 0.5) * slot)
             bar_height = int((float(candle.get("volume") or 0.0) / volume_max) * max(12, chart_height * 0.12))
             draw.rectangle((x - body_width // 2, bottom - bar_height, x + body_width // 2, bottom), fill=(83, 120, 180, 90))
 
@@ -845,12 +909,7 @@ def _render_dynamic_frame(
     if canvas_width == width and canvas_height == height:
         crop = image
     else:
-        horizontal = _clamp(camera_progress)
-        if motion in {"pan_left", "whip_left"}:
-            horizontal = 1.0 - horizontal
-        elif motion not in {"pan_right", "whip_right"}:
-            horizontal = 0.5
-        left = int((canvas_width - width) * horizontal)
+        left = int((canvas_width - width) * _clamp(horizontal))
         top_crop = int((canvas_height - height) * 0.5)
         crop = image.crop((left, top_crop, left + width, top_crop + height))
     return crop.tobytes()
