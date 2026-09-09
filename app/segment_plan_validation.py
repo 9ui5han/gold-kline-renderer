@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from math import isclose
 from typing import Any
@@ -72,12 +73,196 @@ def _edge_duration_requirement(
         minimum = DEFAULT_EDGE_MIN_SEC
 
     raw_sections = policy.get("sections")
-    sections = {
-        str(item)
-        for item in raw_sections
-        if str(item) in {"intro", "outro"}
-    } if isinstance(raw_sections, list) else {"intro", "outro"}
+    if isinstance(raw_sections, list):
+        sections = {
+            str(item)
+            for item in raw_sections
+            if str(item) in {"intro", "outro"}
+        }
+        if not sections:
+            sections = {"intro", "outro"}
+    else:
+        sections = {"intro", "outro"}
     return ratio, minimum, sections
+
+
+def _rescale_plan_segment(segment: dict[str, Any], new_duration: float) -> None:
+    """Resize a segment and its visual timeline without changing its content."""
+    old_duration = float(segment.get("duration_target_sec") or 0.0)
+    if old_duration <= EPSILON:
+        return
+    scale = new_duration / old_duration
+    scenes = segment.get("scenes")
+    if isinstance(scenes, list) and scenes:
+        scaled_durations: list[float] = []
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                scaled_durations.append(0.0)
+                continue
+            old_scene_duration = float(scene.get("duration_sec") or 0.0)
+            scaled_durations.append(old_scene_duration * scale)
+        scaled_total = sum(scaled_durations)
+        if scaled_durations:
+            scaled_durations[-1] += new_duration - scaled_total
+
+        cursor = 0.0
+        for scene, scaled_scene_duration in zip(scenes, scaled_durations):
+            if not isinstance(scene, dict):
+                continue
+            old_scene_duration = float(scene.get("duration_sec") or 0.0)
+            scene["start_sec"] = round(cursor, 3)
+            scene_duration = max(0.0, scaled_scene_duration)
+            scene["duration_sec"] = round(scene_duration, 3)
+            scene_scale = (
+                scene_duration / old_scene_duration
+                if old_scene_duration > EPSILON else 1.0
+            )
+            for event in scene.get("overlay_events") or []:
+                if not isinstance(event, dict):
+                    continue
+                event_start = max(
+                    0.0,
+                    min(
+                        scene_duration,
+                        float(event.get("start_sec") or 0.0) * scene_scale,
+                    ),
+                )
+                event_duration = max(
+                    0.001,
+                    min(
+                        scene_duration - event_start,
+                        float(event.get("duration_sec") or 0.0) * scene_scale,
+                    ),
+                )
+                event["start_sec"] = round(event_start, 3)
+                event["duration_sec"] = round(event_duration, 3)
+            cursor += float(scene["duration_sec"])
+    segment["duration_target_sec"] = round(new_duration, 3)
+
+
+def _reallocate_edge_duration(
+    candidate: dict[str, Any],
+    segment_budget: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    """Move edge-duration overflow into eligible middle segments deterministically."""
+    segments = candidate.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return candidate, []
+    try:
+        target = float(segment_budget.get("target_duration_sec"))
+    except (TypeError, ValueError):
+        return candidate, []
+    if target <= 0:
+        return candidate, []
+    current_total = sum(
+        float(item.get("duration_target_sec") or 0.0)
+        for item in segments
+        if isinstance(item, dict)
+    )
+    if not isclose(current_total, target, abs_tol=EPSILON):
+        return candidate, []
+
+    policy = segment_budget.get("edge_duration_policy")
+    if not isinstance(policy, dict):
+        policy = {}
+    mode = str(
+        policy.get("reallocation")
+        or "average_from_eligible_middle_segments"
+    )
+    if mode in {"none", "disabled"}:
+        return candidate, []
+
+    edge_ratio, edge_min_sec, edge_sections = _edge_duration_requirement(
+        segment_budget,
+        target,
+    )
+    required_edge = max(target * edge_ratio, edge_min_sec)
+    edge_indexes = [
+        index for index, item in enumerate(segments)
+        if isinstance(item, dict)
+        and str(item.get("section") or "") in edge_sections
+    ]
+    if not edge_indexes:
+        return candidate, []
+
+    edge_extra = sum(
+        max(
+            0.0,
+            required_edge - float(segments[index].get("duration_target_sec") or 0.0),
+        )
+        for index in edge_indexes
+    )
+    if edge_extra <= EPSILON:
+        return candidate, []
+
+    ratio_policy = segment_budget.get("section_ratio_policy") or {}
+    protected = policy.get("protected_sections")
+    protected_sections = (
+        {str(item) for item in protected}
+        if isinstance(protected, list)
+        else {"analysis"}
+    )
+    middle_indexes = [
+        index for index, item in enumerate(segments)
+        if isinstance(item, dict)
+        and str(item.get("section") or "") not in edge_sections
+        and str(item.get("section") or "") not in protected_sections
+    ]
+    capacities: dict[int, float] = {}
+    for index in middle_indexes:
+        item = segments[index]
+        section = str(item.get("section") or "")
+        floor = 2.0
+        policy_range = ratio_policy.get(section)
+        if isinstance(policy_range, list) and policy_range:
+            try:
+                floor = max(floor, target * float(policy_range[0]))
+            except (TypeError, ValueError):
+                pass
+        duration = float(item.get("duration_target_sec") or 0.0)
+        capacity = max(0.0, duration - floor)
+        if capacity > EPSILON:
+            capacities[index] = capacity
+
+    if sum(capacities.values()) + EPSILON < edge_extra:
+        return candidate, [
+            "EDGE_DURATION_INFEASIBLE_MIDDLE_REALLOCATION:中间分段没有足够可扣减时长"
+        ]
+
+    deductions = {index: 0.0 for index in capacities}
+    active = list(capacities)
+    remaining = edge_extra
+    while active and remaining > EPSILON:
+        share = remaining / len(active)
+        next_active: list[int] = []
+        allocated = 0.0
+        for index in active:
+            available = capacities[index] - deductions[index]
+            take = min(share, available)
+            deductions[index] += take
+            allocated += take
+            if available - take > EPSILON:
+                next_active.append(index)
+        if allocated <= EPSILON:
+            break
+        remaining -= allocated
+        active = next_active
+
+    adjusted = copy.deepcopy(candidate)
+    for index in edge_indexes:
+        item = adjusted["segments"][index]
+        current = float(item.get("duration_target_sec") or 0.0)
+        if current < required_edge:
+            _rescale_plan_segment(item, required_edge)
+    for index, deduction in deductions.items():
+        item = adjusted["segments"][index]
+        current = float(item.get("duration_target_sec") or 0.0)
+        _rescale_plan_segment(item, max(2.0, current - deduction))
+    adjusted["estimated_final_duration_sec"] = round(
+        sum(float(item.get("duration_target_sec") or 0.0) for item in adjusted["segments"]),
+        3,
+    )
+    return adjusted, []
 
 
 def _check_anchor_ids(
@@ -524,10 +709,18 @@ def process_segment_plan_step(
     count = int(repair_count)
     if count < 0:
         raise ValueError("REPAIR_COUNT_INVALID")
+    candidate, reallocation_errors = _reallocate_edge_duration(
+        candidate, segment_budget
+    )
     validation = validate_segment_plan(
         candidate, segment_budget, technical_facts, market_analysis,
         validated_levels, structure_paths, forecast_framework, macro_timing,
     )
+    if reallocation_errors:
+        validation["segment_plan_errors"] = (
+            reallocation_errors + validation["segment_plan_errors"]
+        )
+        validation["segment_plan_valid"] = False
     valid = bool(validation["segment_plan_valid"])
     action = "pass" if valid else ("fail" if count >= max_repairs else "repair")
     done = action != "repair"

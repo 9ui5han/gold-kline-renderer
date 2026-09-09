@@ -25,6 +25,7 @@ BUDGET = {
         "min_sec": 5.5,
         "sections": ["intro", "outro"],
         "reallocation": "average_from_eligible_middle_segments",
+        "protected_sections": ["analysis"],
     },
     "visual_modes": ["chart_intro", "technical_analysis", "scenario_animation", "summary"],
     "camera_motions": ["static_hold", "micro_drift"],
@@ -172,9 +173,58 @@ class SegmentPlanValidationTests(unittest.TestCase):
         candidate["segments"][2]["duration_target_sec"] = 72.1
         candidate["segments"][2]["scenes"][0]["duration_sec"] = 72.1
         result = self._step(candidate, 0)
-        self.assertEqual(result["action"], "repair")
-        prompt = json.loads(result["repair_prompt_json"])
-        self.assertTrue(any("至少为5.5秒" in item for item in prompt["validator_errors"]))
+        self.assertEqual(result["action"], "pass")
+        contract = json.loads(json.loads(result["result_json"])["segment_plan_v1_json"])
+        segments = contract["segment_plan"]["segments"]
+        self.assertEqual(segments[0]["duration_target_sec"], 5.5)
+        self.assertEqual(segments[-1]["duration_target_sec"], 5.5)
+
+    def test_edge_reallocation_updates_middle_scenes(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["segments"][0]["duration_target_sec"] = 3
+        candidate["segments"][0]["scenes"][0]["duration_sec"] = 3
+        candidate["segments"][1]["duration_target_sec"] = 10
+        candidate["segments"][1]["scenes"][0]["duration_sec"] = 10
+        candidate["segments"][2]["duration_target_sec"] = 24
+        candidate["segments"][2]["scenes"][0]["duration_sec"] = 24
+        candidate["segments"][3] = _segment(
+            4, "primary_path", "primary_forecast", 20, "path_reveal"
+        )
+        candidate["segments"].append(
+            _segment(5, "outro", "closing_question", 3, "closing_card", "closing_question")
+        )
+        candidate["target_duration_sec"] = 60
+        candidate["estimated_final_duration_sec"] = 60
+        budget = json.loads(json.dumps(BUDGET))
+        budget.update({
+            "target_duration_sec": 60,
+            "preferred_min_sec": 50,
+            "preferred_max_sec": 70,
+            "hard_min_sec": 40,
+            "hard_max_sec": 80,
+        })
+        result = process_segment_plan_step(
+            candidate,
+            budget,
+            CONTEXT["technical_facts"],
+            CONTEXT["market_analysis"],
+            CONTEXT["validated_levels"],
+            CONTEXT["structure_paths"],
+            CONTEXT["forecast_framework"],
+            CONTEXT["macro_timing"],
+            0,
+        )
+        self.assertEqual(result["action"], "pass")
+        contract = json.loads(json.loads(result["result_json"])["segment_plan_v1_json"])
+        durations = [
+            segment["duration_target_sec"]
+            for segment in contract["segment_plan"]["segments"]
+        ]
+        self.assertEqual(durations, [5.5, 10.0, 21.5, 17.5, 5.5])
+        self.assertEqual(
+            contract["segment_plan"]["segments"][2]["scenes"][0]["duration_sec"],
+            21.5,
+        )
 
     def test_edge_floor_uses_target_ratio_for_longer_video(self):
         budget = json.loads(json.dumps(BUDGET))
