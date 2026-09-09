@@ -44,6 +44,8 @@ VOICE_DURATION_CALIBRATIONS = {
     "mm_finance_male_02": {
         "base_chars_per_second": 20.0,
         "base_words_per_second": 2.6,
+        # Median actual/estimated ratio from completed TOOL-08 audio.
+        "duration_factor": 0.83,
     },
 }
 TRADE_DIRECTIVE_PATTERNS = (
@@ -249,6 +251,8 @@ def _duration_repair_budget(
         "duration_overrun_sec": round(max(0.0, estimated_total_sec - target_duration), 3),
         "duration_margin_sec": round(target_duration - estimated_total_sec, 3),
         "max_spoken_word_budget": max_spoken_words,
+        "min_spoken_word_budget": 0,
+        "target_spoken_word_budget": 0,
         "repair_speed": 1.05,
         "repair_pause_after_ms": pause_after_ms,
     }
@@ -387,6 +391,9 @@ def _voice_duration_profile(narrator_profile_id: str) -> dict[str, Any]:
         "base_chars_per_second": float(calibration.get("base_chars_per_second", 14.0)),
         "base_words_per_second": float(
             calibration.get("base_words_per_second", MIN_ENGLISH_WORDS_PER_SECOND)
+        ),
+        "duration_calibration_factor": float(
+            calibration.get("duration_factor", 1.0)
         ),
         "safe_speed_min": float(profile.get("speed_min") or 0.90),
         "safe_speed_max": float(profile.get("speed_max") or 1.05),
@@ -610,42 +617,78 @@ def _numeric_spoken_costs(value: Any) -> dict[str, int]:
     return costs
 
 
+def _duration_factor(voice_profile: dict[str, Any]) -> float:
+    return (
+        _as_float(voice_profile.get("duration_calibration_factor"), 1.0)
+        or 1.0
+    )
+
+
 def _draft_spoken_budget(
     item: dict[str, Any],
     voice_profile: dict[str, Any],
     numeric_sources: Any = None,
 ) -> dict[str, Any]:
-    """Build a conservative pre-generation word budget for T8-05."""
+    """Build a fixed delivery preset and two-sided word budget for T8-05."""
     target = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
-    speed_min = _as_float(voice_profile.get("safe_speed_min"), 0.90) or 0.90
-    speed_max = _as_float(voice_profile.get("safe_speed_max"), 1.05) or 1.05
-    speed_assumption = min(speed_max, max(speed_min, 1.0))
+    minimum = _as_float(item.get("duration_min_sec"), target) or target
+    maximum = _as_float(item.get("duration_max_sec"), target) or target
     words_per_second = _profile_words_per_second(voice_profile)
     pause_model = voice_profile.get("pause_model") or {}
     role = str(item.get("planning_role") or "")
-    sentence_count = 1 if role in {"opening_hook", "closing_question"} else 2
+    presets = {
+        "opening_hook": ("compact", "neutral", 1.0, 1, 0),
+        "technical_context": ("calm_analysis", "neutral", 0.98, 2, 120),
+        "macro_context": ("calm_analysis", "serious", 0.98, 2, 120),
+        "primary_forecast": ("calm_analysis", "serious", 0.98, 2, 120),
+        "alternate_forecast": ("caution", "serious", 0.98, 2, 120),
+        "closing_question": ("compact", "calm", 1.0, 1, 0),
+    }
+    delivery, emotion, speed, sentence_count, sentence_pause_ms = presets.get(
+        role,
+        ("calm_analysis", "neutral", 0.98, 2, 120),
+    )
+    speed_min = _as_float(voice_profile.get("safe_speed_min"), 0.90) or 0.90
+    speed_max = _as_float(voice_profile.get("safe_speed_max"), 1.05) or 1.05
+    speed = min(speed_max, max(speed_min, speed))
+    duration_factor = _duration_factor(voice_profile)
     punctuation_ms = (
         float(pause_model.get("question_ms", 360))
         if role == "closing_question"
         else sentence_count * float(pause_model.get("period_ms", 320))
     )
     punctuation_sec = punctuation_ms / 1000.0
-    sentence_pause_sec = max(0, sentence_count - 1) * 0.20
+    sentence_pause_sec = max(0, sentence_count - 1) * sentence_pause_ms / 1000.0
     safety_margin_sec = 0.30
-    usable_seconds = max(
-        0.1,
-        target - punctuation_sec - sentence_pause_sec - safety_margin_sec,
-    )
-    max_spoken_words = max(
-        1,
-        math.floor(usable_seconds * words_per_second * speed_assumption),
-    )
+
+    def words_for_duration(duration: float, rounding: str) -> int:
+        raw_total = duration / duration_factor
+        usable = max(0.1, raw_total - punctuation_sec - sentence_pause_sec)
+        value = usable * words_per_second * speed
+        return max(1, math.ceil(value) if rounding == "ceil" else math.floor(value))
+
+    accepted_min = min(maximum, minimum + safety_margin_sec)
+    accepted_max = max(accepted_min, maximum - safety_margin_sec)
+    min_spoken_words = words_for_duration(accepted_min, "ceil")
+    target_spoken_words = words_for_duration(target, "ceil")
+    max_spoken_words = words_for_duration(accepted_max, "floor")
+    max_spoken_words = max(min_spoken_words, max_spoken_words)
+    target_spoken_words = min(max_spoken_words, max(min_spoken_words, target_spoken_words))
     return {
         "draft_duration_cap_sec": round(target, 3),
-        "draft_speed_assumption": round(speed_assumption, 3),
+        "draft_delivery": delivery,
+        "draft_emotion": emotion,
+        "draft_speed": round(speed, 3),
+        "draft_sentence_count": sentence_count,
+        "draft_sentence_pause_ms": sentence_pause_ms,
+        "duration_calibration_factor": round(duration_factor, 3),
+        "accepted_min_estimated_sec": round(accepted_min, 3),
+        "accepted_max_estimated_sec": round(accepted_max, 3),
         "draft_punctuation_sec": round(punctuation_sec, 3),
         "draft_sentence_pause_sec": round(sentence_pause_sec, 3),
         "draft_safety_margin_sec": round(safety_margin_sec, 3),
+        "draft_min_spoken_words": min_spoken_words,
+        "draft_target_spoken_words": target_spoken_words,
         "draft_max_spoken_words": max_spoken_words,
         "numeric_spoken_costs": _numeric_spoken_costs(
             numeric_sources
@@ -723,8 +766,9 @@ def _sentence_level_estimate(
             pause_after_ms,
             words_per_second,
         )
-        total += sentence_total
-        word_total += sentence_words
+        factor = _duration_factor(voice_profile)
+        total += sentence_total * factor
+        word_total += sentence_words * factor
     return total, word_total
 
 
@@ -795,6 +839,7 @@ def rebalance_tool08(
                 int(spoken_performance.get("pause_after_ms", 0)),
                 _profile_words_per_second(profile),
             )
+            estimated *= _duration_factor(profile)
             prepared.append({
                 "item": item,
                 "segment_narration": narration,
@@ -1055,6 +1100,9 @@ def _validate_candidate(
             int(spoken_performance.get("pause_after_ms", 0)),
             _profile_words_per_second(profile),
         )
+        factor = _duration_factor(profile)
+        estimated *= factor
+        word_estimated *= factor
         try:
             sentence_estimate = _sentence_level_estimate(
                 narration,
@@ -1208,6 +1256,32 @@ def process_step(
 
     result = _validate_candidate(item, segment_narration, segment_performance, voice_duration_profile)
     errors = result["errors"]
+    band_enabled = all(
+        _as_float(item.get(key)) is not None
+        for key in (
+            "accepted_min_estimated_sec",
+            "accepted_max_estimated_sec",
+            "draft_min_spoken_words",
+            "draft_target_spoken_words",
+            "draft_max_spoken_words",
+        )
+    )
+    band_min = _as_float(item.get("accepted_min_estimated_sec"), 0.0) or 0.0
+    band_max = _as_float(item.get("accepted_max_estimated_sec"), 0.0) or 0.0
+    candidate_under_band = (
+        band_enabled and result["estimated_total_sec"] < band_min - 0.001
+    )
+    candidate_over_band = (
+        band_enabled and result["estimated_total_sec"] > band_max + 0.001
+    )
+    if candidate_under_band or candidate_over_band:
+        errors.append(
+            "PRE_TTS_DURATION_UNDER_RANGE"
+            if candidate_under_band else "PRE_TTS_DURATION_OUT_OF_RANGE"
+        )
+        result["narration_violation"] = True
+        item["_duration_repair_authorized"] = True
+        item["_force_duration_repair"] = True
     duration_repair_authorized = bool(item.get("_duration_repair_authorized"))
     duration_repair_forced = bool(item.get("_force_duration_repair"))
     target_duration = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
@@ -1323,6 +1397,28 @@ def process_step(
         ),
         "duration_repair_authorized": bool(
             item.get("_duration_repair_authorized", False)
+        ),
+        "accepted_min_estimated_sec": round(
+            _as_float(item.get("accepted_min_estimated_sec"), 0.0) or 0.0,
+            3,
+        ),
+        "accepted_max_estimated_sec": round(
+            _as_float(item.get("accepted_max_estimated_sec"), 0.0) or 0.0,
+            3,
+        ),
+        "min_spoken_word_budget": int(
+            _as_float(item.get("draft_min_spoken_words"), 0.0) or 0
+        ),
+        "target_spoken_word_budget": int(
+            _as_float(item.get("draft_target_spoken_words"), 0.0) or 0
+        ),
+        "max_spoken_word_budget": int(
+            _as_float(item.get("draft_max_spoken_words"), 0.0) or 0
+        ),
+        "repair_direction": (
+            "expand"
+            if candidate_under_band
+            else ("compress" if candidate_over_band else "performance")
         ),
     })
     repair_prompt = {
