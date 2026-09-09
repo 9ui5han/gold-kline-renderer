@@ -666,6 +666,41 @@ def test_duration_repair_prompt_contains_provider_spoken_budget():
     assert budget["duration_repair_authorized"] is True
 
 
+def test_authorized_repair_allows_reduced_candidate_above_segment_target():
+    item = {
+        **_item(),
+        "duration_target_sec": 3.0,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+        "_force_duration_repair": True,
+        "_duration_repair_authorized": True,
+        "_segment_overrun_sec": 1.876,
+        "_pre_repair_estimated_sec": 4.876,
+    }
+    repaired_text = "Gold 4403.71."
+    repaired = _narration(repaired_text)
+    performance = _performance(repaired_text)
+    performance["segment_id"] = item["segment_id"]
+
+    result = process_step(
+        item,
+        None,
+        None,
+        _profile(),
+        "mm_finance_male_02",
+        "master_01",
+        repair_candidate={
+            "state_json": '{"repair_count":1,"narration_revision":1}',
+            "segment_narration": repaired,
+            "segment_performance": performance,
+        },
+    )
+
+    assert result["action"] == "pass"
+    assert result["done"] is True
+    assert result["step_error"] == ""
+
+
 def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
     item = {
         "segment_id": "seg_01_intro",
@@ -965,6 +1000,7 @@ def load_tests(loader, tests, pattern):
         test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded,
         test_step_requests_narration_repair_before_paid_tts,
         test_duration_repair_prompt_contains_provider_spoken_budget,
+        test_authorized_repair_allows_reduced_candidate_above_segment_target,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,

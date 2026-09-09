@@ -698,6 +698,7 @@ def rebalance_tool08(
         item["_global_overrun_sec"] = round(total_overrun, 3)
         item["_global_tolerance_sec"] = round(global_tolerance, 3)
         item["_segment_overrun_sec"] = round(overrun, 3)
+        item["_pre_repair_estimated_sec"] = round(entry["estimated_spoken_sec"], 3)
         item["_duration_repair_authorized"] = requires_global_repair
         if requires_global_repair:
             item["_force_duration_repair"] = True
@@ -899,14 +900,27 @@ def process_step(
 
     result = _validate_candidate(item, segment_narration, segment_performance, voice_duration_profile)
     errors = result["errors"]
-    if (
-        bool(item.get("_force_duration_repair"))
-        and bool(item.get("_duration_repair_authorized"))
-        and result["estimated_total_sec"]
-        > (_as_float(item.get("duration_target_sec"), 0.0) or 0.0) + 0.001
-    ):
-        errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
-        result["narration_violation"] = True
+    duration_repair_authorized = bool(item.get("_duration_repair_authorized"))
+    duration_repair_forced = bool(item.get("_force_duration_repair"))
+    target_duration = _as_float(item.get("duration_target_sec"), 0.0) or 0.0
+    candidate_over_target = result["estimated_total_sec"] > target_duration + 0.001
+    if duration_repair_forced and duration_repair_authorized and candidate_over_target:
+        if repair_candidate is None:
+            # The initial candidate starts the one-shot repair.  After the
+            # repair, the global tolerance owns acceptance; a segment may
+            # remain above its authored target when its spoken number tokens
+            # make the target unreachable.
+            errors.append("PRE_TTS_DURATION_OUT_OF_RANGE")
+            result["narration_violation"] = True
+        else:
+            baseline = _as_float(item.get("_pre_repair_estimated_sec"))
+            if baseline is None:
+                baseline = target_duration + (
+                    _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0
+                )
+            if result["estimated_total_sec"] >= baseline - 0.001:
+                errors.append("PRE_TTS_DURATION_REPAIR_NO_IMPROVEMENT")
+                result["narration_violation"] = True
     errors = list(dict.fromkeys(errors))
     base_result = {
         "performance_valid": not errors,
