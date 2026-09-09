@@ -573,6 +573,71 @@ def _as_candidate_object(value: Any, field_name: str) -> dict[str, Any]:
     raise ValueError(f"{field_name}_OBJECT_REQUIRED")
 
 
+def _sentence_level_estimate(
+    narration: dict[str, Any],
+    performance: dict[str, Any],
+    voice_profile: dict[str, Any],
+) -> tuple[float, float] | None:
+    """Estimate each sentence with its own speed and trailing pause."""
+    narration_sentences = narration.get("sentences")
+    performance_sentences = performance.get("sentences")
+    if narration_sentences is None and performance_sentences is None:
+        return None
+    if (
+        not isinstance(narration_sentences, list)
+        or not narration_sentences
+        or not isinstance(performance_sentences, list)
+        or len(narration_sentences) != len(performance_sentences)
+    ):
+        raise ValueError("SENTENCE_PLAN_INVALID")
+
+    pause_model = voice_profile.get("pause_model") or {}
+    chars_per_second = _as_float(voice_profile.get("base_chars_per_second"))
+    words_per_second = _profile_words_per_second(voice_profile)
+    if chars_per_second is None or chars_per_second <= 0:
+        raise ValueError("DURATION_MODEL_INVALID")
+    total = 0.0
+    word_total = 0.0
+    for index, (narration_sentence, performance_sentence) in enumerate(
+        zip(narration_sentences, performance_sentences), start=1
+    ):
+        if not isinstance(narration_sentence, dict) or not isinstance(
+            performance_sentence, dict
+        ):
+            raise ValueError(f"SENTENCE_{index}_OBJECT_INVALID")
+        narration_index = int(narration_sentence.get("index") or index)
+        performance_index = int(performance_sentence.get("index") or index)
+        if narration_index != performance_index:
+            raise ValueError(f"SENTENCE_{index}_INDEX_MISMATCH")
+        display_sentence = str(narration_sentence.get("text") or "").strip()
+        performance_text = str(performance_sentence.get("text") or "").strip()
+        if not display_sentence or display_sentence != performance_text:
+            raise ValueError(f"SENTENCE_{index}_TEXT_MISMATCH")
+        plan = performance_sentence.get("performance_plan")
+        if not isinstance(plan, dict):
+            plan = performance_sentence
+        speed = _as_float(plan.get("speed"))
+        pause_after_ms = plan.get("pause_after_ms")
+        if speed is None or not 0.90 <= speed <= 1.05:
+            raise ValueError(f"SENTENCE_{index}_SPEED_INVALID")
+        if isinstance(pause_after_ms, bool) or not isinstance(pause_after_ms, int):
+            raise ValueError(f"SENTENCE_{index}_PAUSE_INVALID")
+        if not 0 <= pause_after_ms <= 650:
+            raise ValueError(f"SENTENCE_{index}_PAUSE_INVALID")
+        spoken_sentence = _spoken_tts_text(display_sentence)
+        sentence_total, sentence_words = _estimated_spoken_seconds(
+            spoken_sentence,
+            chars_per_second,
+            speed,
+            pause_model,
+            pause_after_ms,
+            words_per_second,
+        )
+        total += sentence_total
+        word_total += sentence_words
+    return total, word_total
+
+
 def rebalance_tool08(
     candidates: list[Any],
     voice_duration_profile: dict[str, Any],
@@ -900,6 +965,17 @@ def _validate_candidate(
             int(spoken_performance.get("pause_after_ms", 0)),
             _profile_words_per_second(profile),
         )
+        try:
+            sentence_estimate = _sentence_level_estimate(
+                narration,
+                performance,
+                profile,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+        else:
+            if sentence_estimate is not None:
+                estimated, word_estimated = sentence_estimate
     errors = list(dict.fromkeys(errors))
     return {
         "errors": errors,
@@ -930,17 +1006,74 @@ def _tts_request(
     ).hexdigest()[:12]
     request_id = f"{_safe_id(master_request_id, 'tool08')}-{segment_id}-r{revision}-{digest}"[:100]
     text = str(narration.get("text") or "")
+    tts_narration = copy.deepcopy(narration)
+    tts_performance = copy.deepcopy(performance)
+    tts_narration["text"] = text
+    tts_performance["text"] = text
+
+    # Preserve the sentence-level plan at the paid-TTS boundary.  The
+    # MiniMax worker uses one request per sentence; dropping this field here
+    # silently falls back to one request per segment.
+    raw_narration_sentences = tts_narration.get("sentences")
+    raw_performance_sentences = tts_performance.get("sentences")
+    if isinstance(raw_narration_sentences, list) and raw_narration_sentences:
+        sentence_entries: list[dict[str, Any]] = []
+        for index, sentence in enumerate(raw_narration_sentences, start=1):
+            if not isinstance(sentence, dict):
+                continue
+            sentence_text = str(sentence.get("text") or "").strip()
+            if not sentence_text:
+                continue
+            sentence_text = _spoken_tts_text(sentence_text)
+            perf_item: dict[str, Any] = {}
+            if isinstance(raw_performance_sentences, list):
+                for candidate in raw_performance_sentences:
+                    if not isinstance(candidate, dict):
+                        continue
+                    if int(candidate.get("index") or index) == int(
+                        sentence.get("index") or index
+                    ):
+                        perf_item = copy.deepcopy(
+                            candidate.get("performance_plan")
+                            if isinstance(candidate.get("performance_plan"), dict)
+                            else candidate
+                        )
+                        break
+            perf_item["text"] = sentence_text
+            sentence_entries.append(
+                {
+                    "index": int(sentence.get("index") or index),
+                    "text": sentence_text,
+                    "performance_plan": perf_item,
+                }
+            )
+        if sentence_entries:
+            tts_narration["sentences"] = [
+                {"index": entry["index"], "text": entry["text"]}
+                for entry in sentence_entries
+            ]
+            tts_performance["sentences"] = [
+                {
+                    "index": entry["index"],
+                    "text": entry["text"],
+                    "performance_plan": entry["performance_plan"],
+                }
+                for entry in sentence_entries
+            ]
+    segment_payload: dict[str, Any] = {
+        "segment_id": segment_id,
+        "text": text,
+        "performance_plan": tts_performance,
+    }
+    if isinstance(tts_narration.get("sentences"), list) and tts_narration["sentences"]:
+        segment_payload["sentences"] = tts_narration["sentences"]
     return {
         "request_id": request_id,
         "narrator_profile_id": str(narrator_profile_id or "").strip(),
         "text": text,
         "narration_json": {
             "schema_version": "narration-tts-v2",
-            "segments": [{
-                "segment_id": segment_id,
-                "text": text,
-                "performance_plan": performance,
-            }],
+            "segments": [segment_payload],
         },
     }
 
