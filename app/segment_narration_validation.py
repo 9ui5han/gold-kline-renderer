@@ -270,6 +270,11 @@ def _compact_repair_item(item: dict[str, Any]) -> dict[str, Any]:
         "segment_id", "order", "section", "planning_role", "scenario_id",
         "fact_anchor_ids", "content_goal", "importance", "speech_style",
         "duration_target_sec", "duration_min_sec", "duration_max_sec",
+        "draft_delivery", "draft_emotion", "draft_speed",
+        "draft_sentence_count", "draft_sentence_pause_ms",
+        "duration_calibration_factor", "accepted_min_estimated_sec",
+        "accepted_max_estimated_sec", "draft_min_spoken_words",
+        "draft_target_spoken_words", "draft_max_spoken_words",
         "resolved_visual_facts", "_video_hard_max_sec",
         "_video_preferred_max_sec", "_global_overrun_sec",
         "_global_tolerance_sec", "_segment_overrun_sec",
@@ -1060,6 +1065,47 @@ def _validate_candidate(
     except ProfileError as exc:
         errors.append(str(exc))
         display_performance = {}
+
+    preset_speed = _as_float(item.get("draft_speed"))
+    if preset_speed is not None:
+        preset_mismatch = (
+            display_performance.get("delivery") != item.get("draft_delivery")
+            or display_performance.get("emotion") != item.get("draft_emotion")
+            or not math.isclose(
+                _as_float(display_performance.get("speed"), 0.0) or 0.0,
+                preset_speed,
+                rel_tol=0.0,
+                abs_tol=0.0005,
+            )
+            or (_as_float(display_performance.get("pause_after_ms"), 0.0) or 0.0) != 0
+        )
+        sentence_plans = display_performance.get("sentences")
+        if isinstance(sentence_plans, list):
+            preset_pause = int(item.get("draft_sentence_pause_ms") or 0)
+            for index, sentence_plan in enumerate(sentence_plans):
+                if not isinstance(sentence_plan, dict):
+                    preset_mismatch = True
+                    break
+                plan = sentence_plan.get("performance_plan")
+                if not isinstance(plan, dict):
+                    plan = sentence_plan
+                expected_pause = 0 if index == len(sentence_plans) - 1 else preset_pause
+                if (
+                    plan.get("delivery") != item.get("draft_delivery")
+                    or plan.get("emotion") != item.get("draft_emotion")
+                    or not math.isclose(
+                        _as_float(plan.get("speed"), 0.0) or 0.0,
+                        preset_speed,
+                        rel_tol=0.0,
+                        abs_tol=0.0005,
+                    )
+                    or (_as_float(plan.get("pause_after_ms"), -1.0) or 0.0)
+                    != expected_pause
+                ):
+                    preset_mismatch = True
+                    break
+        if preset_mismatch:
+            errors.append("PRESET_PERFORMANCE_MISMATCH")
 
     # Prices stay numeric in the display/subtitle contract, while the paid
     # TTS request uses an explicit English pronunciation.  Estimating the

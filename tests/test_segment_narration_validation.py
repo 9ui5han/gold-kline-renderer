@@ -210,11 +210,40 @@ def test_step_repairs_a_candidate_below_the_pregeneration_duration_band():
     assert step["action"] == "repair_narration"
     repair = json.loads(step["repair_prompt_json"])
     assert "PRE_TTS_DURATION_UNDER_RANGE" in repair["validator_errors"]
+    assert repair["item"]["draft_delivery"] == item["draft_delivery"]
+    assert repair["item"]["draft_emotion"] == item["draft_emotion"]
+    assert repair["item"]["draft_speed"] == item["draft_speed"]
+    assert repair["item"]["draft_sentence_pause_ms"] == item["draft_sentence_pause_ms"]
     budget = repair["segment_duration_budget"]
     assert budget["min_spoken_word_budget"] == item["draft_min_spoken_words"]
     assert budget["target_spoken_word_budget"] == item["draft_target_spoken_words"]
     assert budget["max_spoken_word_budget"] == item["draft_max_spoken_words"]
     assert budget["accepted_min_estimated_sec"] > 0
+
+
+def test_step_rejects_performance_that_changes_pregeneration_preset():
+    contracts = _init_contracts()
+    result = initialize_tool08(**contracts)
+    item = result["segments"][0]
+    narration = _narration()
+    performance = _performance(narration["text"])
+    performance["delivery"] = "compact"
+    performance["emotion"] = "calm"
+    performance["speed"] = 1.05
+    performance["pause_after_ms"] = 0
+
+    step = process_step(
+        item,
+        narration,
+        performance,
+        result["voice_duration_profile"],
+        "mm_finance_male_02",
+        "master_01",
+    )
+
+    assert step["action"] == "repair_performance"
+    repair = json.loads(step["repair_prompt_json"])
+    assert "PRESET_PERFORMANCE_MISMATCH" in repair["validator_errors"]
 
 
 def test_init_exposes_two_decimal_kline_values_to_narration_llm():
@@ -1313,6 +1342,7 @@ def load_tests(loader, tests, pattern):
         test_init_returns_direct_iteration_array_and_profile,
         test_init_adds_conservative_draft_spoken_word_budget,
         test_step_repairs_a_candidate_below_the_pregeneration_duration_band,
+        test_step_rejects_performance_that_changes_pregeneration_preset,
         test_init_rejects_missing_master_request_id,
         test_init_rejects_missing_visual_fact_catalog,
         test_init_maps_visual_level_ids_to_catalog_level_anchors,
