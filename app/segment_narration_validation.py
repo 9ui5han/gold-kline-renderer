@@ -35,6 +35,9 @@ SPOKEN_NUMBER_PATTERN = re.compile(r"(?<![A-Za-z0-9])([+-]?)(\d+)(?:\.(\d+))?(?!
 # character-only model predicts.  This is a conservative lower-bound rate
 # used before creating a paid TTS job.
 MIN_ENGLISH_WORDS_PER_SECOND = 2.2
+# TOOL-08's global default matches the upstream 60-second plan: the complete
+# spoken timeline may exceed its authored total by at most three seconds.
+DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC = 3.0
 # Calibrated against completed MiniMax segment audio.  Unknown voices retain
 # the conservative fallback until they have their own measured profile.
 VOICE_DURATION_CALIBRATIONS = {
@@ -214,6 +217,7 @@ def _duration_repair_budget(
     voice_profile: dict[str, Any],
 ) -> dict[str, Any]:
     """Expose deterministic provider-facing duration facts to the repair LLM."""
+    target_duration = _as_float(budget.get("target_duration_sec"), 0.0) or 0.0
     duration_max = _as_float(budget.get("duration_max_sec"), 0.0) or 0.0
     safe_max = max(0.1, duration_max - 0.30)
     pause_model = voice_profile.get("pause_model") or {}
@@ -237,8 +241,13 @@ def _duration_repair_budget(
         "punctuation_pause_sec": round(punctuation_pause_sec, 3),
         "estimated_spoken_duration_sec": round(estimated_total_sec, 3),
         "safe_duration_max_sec": round(safe_max, 3),
-        "duration_overrun_sec": round(max(0.0, estimated_total_sec - safe_max), 3),
-        "duration_margin_sec": round(safe_max - estimated_total_sec, 3),
+        # The repair decision is based on the original segment proportion,
+        # not on the wider display-duration range.  Keep the old safe-max
+        # field for compatibility, but expose the target-based values used by
+        # the aggregate budget gate explicitly.
+        "repair_target_sec": round(target_duration, 3),
+        "duration_overrun_sec": round(max(0.0, estimated_total_sec - target_duration), 3),
+        "duration_margin_sec": round(target_duration - estimated_total_sec, 3),
         "max_spoken_word_budget": max_spoken_words,
         "repair_speed": 1.05,
         "repair_pause_after_ms": pause_after_ms,
@@ -535,50 +544,17 @@ def _as_candidate_object(value: Any, field_name: str) -> dict[str, Any]:
     raise ValueError(f"{field_name}_OBJECT_REQUIRED")
 
 
-def _reschedule_item(item: dict[str, Any], target_sec: float, tolerance_sec: float) -> dict[str, Any]:
-    """Update a segment's time budget and keep its visual timeline proportional."""
-    result = copy.deepcopy(item)
-    old_target = _as_float(result.get("duration_target_sec"), 0.0) or 0.0
-    ratio = target_sec / old_target if old_target > 0 else 1.0
-    result["duration_target_sec"] = round(target_sec, 3)
-    result["duration_min_sec"] = round(max(0.5, target_sec - tolerance_sec), 3)
-    result["duration_max_sec"] = round(target_sec + tolerance_sec, 3)
-    scenes = result.get("scenes")
-    if not isinstance(scenes, list):
-        return result
-    cursor = 0.0
-    for scene in scenes:
-        if not isinstance(scene, dict):
-            continue
-        original_duration = _as_float(scene.get("duration_sec"), 0.0) or 0.0
-        duration = original_duration * ratio
-        scene["start_sec"] = round(cursor, 3)
-        scene["duration_sec"] = round(duration, 3)
-        cursor += duration
-        events = scene.get("overlay_events")
-        if not isinstance(events, list):
-            continue
-        for event in events:
-            if not isinstance(event, dict):
-                continue
-            event_start = _as_float(event.get("start_sec"), 0.0) or 0.0
-            event_duration = _as_float(event.get("duration_sec"), 0.0) or 0.0
-            event["start_sec"] = round(event_start * ratio, 3)
-            event["duration_sec"] = round(event_duration * ratio, 3)
-    return result
-
-
 def rebalance_tool08(
     candidates: list[Any],
     voice_duration_profile: dict[str, Any],
 ) -> dict[str, Any]:
     """Prepare all drafts against one global spoken-duration budget.
 
-    The estimate is calculated from the provider-facing spoken text.  Segment
-    targets are expanded only when the spoken draft needs more room; if the
-    combined estimate cannot fit the video's hard maximum, the available
-    extra time is allocated proportionally and the affected segment is marked
-    for the existing one-shot narration repair before paid TTS.
+    The estimate is calculated from the provider-facing spoken text. Segment
+    targets remain at their authored proportions. The positive overrun of
+    every segment is summed against the video's single global tolerance; only
+    when that total exceeds the tolerance are segments with positive overruns
+    marked for the existing one-shot narration repair before paid TTS.
     """
     profile = voice_duration_profile if isinstance(voice_duration_profile, dict) else {}
     cps = _as_float(profile.get("base_chars_per_second"))
@@ -635,7 +611,6 @@ def rebalance_tool08(
                 int(spoken_performance.get("pause_after_ms", 0)),
                 _profile_words_per_second(profile),
             )
-            tolerance = max(0.5, float(budget["duration_tolerance_sec"]))
             prepared.append({
                 "item": item,
                 "segment_narration": narration,
@@ -643,10 +618,7 @@ def rebalance_tool08(
                 "display_text": display_text,
                 "spoken_text": spoken_text,
                 "estimated_spoken_sec": estimated,
-                "tolerance_sec": tolerance,
                 "original_target_sec": budget["target_duration_sec"],
-                "lower_target_sec": max(0.5, estimated - tolerance),
-                "upper_target_sec": estimated + tolerance,
             })
     except (ValueError, ProfileError) as exc:
         return {
@@ -679,7 +651,11 @@ def rebalance_tool08(
         ),
         None,
     )
-    hard_max = explicit_hard_max if explicit_hard_max is not None else original_total + 10.0
+    hard_max = (
+        explicit_hard_max
+        if explicit_hard_max is not None
+        else original_total + DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC
+    )
     hard_max = max(original_total, hard_max)
 
     overruns = [
@@ -688,27 +664,41 @@ def rebalance_tool08(
     ]
     total_overrun = sum(overruns)
     estimated_total = sum(entry["estimated_spoken_sec"] for entry in prepared)
-    # Keep the authored total when the whole draft already fits inside it.
-    # Only the amount by which the spoken draft exceeds that total may consume
-    # the video's extra hard-budget allowance.
-    available_extra = max(
-        0.0,
-        min(hard_max, estimated_total) - original_total,
+    # Keep the authored total and segment proportions.  The global tolerance
+    # is checked against the sum of positive per-segment overruns below; it is
+    # not converted into independent segment tolerances.
+    explicit_tolerance = next(
+        (
+            _as_float(entry["item"].get("_video_duration_tolerance_sec"))
+            for entry in prepared
+            if _as_float(entry["item"].get("_video_duration_tolerance_sec")) is not None
+        ),
+        None,
     )
-    allocation_ratio = (
-        min(1.0, available_extra / total_overrun)
-        if total_overrun > 0
-        else 0.0
+    global_tolerance = (
+        max(0.0, explicit_tolerance)
+        if explicit_tolerance is not None
+        else (
+            max(0.0, hard_max - original_total)
+            if explicit_hard_max is not None
+            else DEFAULT_GLOBAL_DURATION_TOLERANCE_SEC
+        )
     )
+    global_overrun_exceeded = total_overrun > global_tolerance + 0.001
 
     scheduled_items: list[dict[str, Any]] = []
     scheduled_total = 0.0
     for entry, overrun in zip(prepared, overruns):
-        allocated_extra = overrun * allocation_ratio
-        target = entry["original_target_sec"] + allocated_extra
-        tolerance = entry["tolerance_sec"]
-        item = _reschedule_item(entry["item"], target, tolerance)
-        requires_global_repair = entry["estimated_spoken_sec"] > target + 0.001
+        # Preserve the authored segment proportions.  The global tolerance is
+        # consumed by the sum of positive per-segment overruns; it is not
+        # distributed into new per-segment targets.
+        target = entry["original_target_sec"]
+        requires_global_repair = global_overrun_exceeded and overrun > 0.001
+        item = copy.deepcopy(entry["item"])
+        item["_global_overrun_sec"] = round(total_overrun, 3)
+        item["_global_tolerance_sec"] = round(global_tolerance, 3)
+        item["_segment_overrun_sec"] = round(overrun, 3)
+        item["_duration_repair_authorized"] = requires_global_repair
         if requires_global_repair:
             item["_force_duration_repair"] = True
         scheduled_total += target
@@ -720,6 +710,9 @@ def rebalance_tool08(
             "spoken_text": entry["spoken_text"],
             "estimated_spoken_sec": round(entry["estimated_spoken_sec"], 3),
             "original_target_sec": round(entry["original_target_sec"], 3),
+            "segment_overrun_sec": round(overrun, 3),
+            "global_overrun_sec": round(total_overrun, 3),
+            "global_tolerance_sec": round(global_tolerance, 3),
             "needs_narration_repair": requires_global_repair,
             "content_fit_error": (
                 "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
@@ -737,6 +730,9 @@ def rebalance_tool08(
         "estimated_spoken_total_sec": round(
             sum(entry["estimated_spoken_sec"] for entry in prepared), 3
         ),
+        "global_overrun_sec": round(total_overrun, 3),
+        "global_tolerance_sec": round(global_tolerance, 3),
+        "duration_repair_required": global_overrun_exceeded,
         "video_hard_max_sec": round(hard_max, 3),
     }
 
@@ -905,6 +901,7 @@ def process_step(
     errors = result["errors"]
     if (
         bool(item.get("_force_duration_repair"))
+        and bool(item.get("_duration_repair_authorized"))
         and result["estimated_total_sec"]
         > (_as_float(item.get("duration_target_sec"), 0.0) or 0.0) + 0.001
     ):
@@ -966,6 +963,20 @@ def process_step(
         result["estimated_total_sec"],
         voice_duration_profile,
     ) if narration_repair_required else copy.deepcopy(result["budget"])
+    repair_budget.update({
+        "global_overrun_sec": round(
+            _as_float(item.get("_global_overrun_sec"), 0.0) or 0.0, 3
+        ),
+        "global_tolerance_sec": round(
+            _as_float(item.get("_global_tolerance_sec"), 0.0) or 0.0, 3
+        ),
+        "segment_overrun_sec": round(
+            _as_float(item.get("_segment_overrun_sec"), 0.0) or 0.0, 3
+        ),
+        "duration_repair_authorized": bool(
+            item.get("_duration_repair_authorized", False)
+        ),
+    })
     repair_prompt = {
         "repair_kind": kind,
         "validator_errors": errors,

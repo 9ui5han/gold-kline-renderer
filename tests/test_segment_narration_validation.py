@@ -446,8 +446,8 @@ def test_rebalance_marks_unfit_global_budget_for_narration_repair():
     assert result["scheduled_items"][0]["content_fit_error"] == (
         "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
     )
-    assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 13.0
-    assert result["scheduled_total_sec"] == 13.0
+    assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 3.0
+    assert result["scheduled_total_sec"] == 3.0
 
     scheduled = result["scheduled_items"][0]
     step = process_step(
@@ -499,9 +499,9 @@ def test_rebalance_expands_budget_for_spoken_overrun():
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
         "fact_anchor_ids": ["level.current"],
-        "duration_target_sec": 4,
-        "duration_min_sec": 2.5,
-        "duration_max_sec": 5.5,
+        "duration_target_sec": 5,
+        "duration_min_sec": 3.5,
+        "duration_max_sec": 6.5,
     }
     narration = {
         "schema_version": "segment-narration-v2",
@@ -524,8 +524,96 @@ def test_rebalance_expands_budget_for_spoken_overrun():
 
     assert result["schedule_valid"] is True
     scheduled_item = result["scheduled_items"][0]
-    assert scheduled_item["item"]["duration_target_sec"] > 4.0
-    assert result["scheduled_total_sec"] == scheduled_item["item"]["duration_target_sec"]
+    assert scheduled_item["item"]["duration_target_sec"] == 5.0
+    assert scheduled_item["needs_narration_repair"] is False
+    assert result["scheduled_total_sec"] == 5.0
+
+
+def test_rebalance_allows_individual_overrun_within_global_tolerance():
+    item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 5,
+        "duration_min_sec": 3.5,
+        "duration_max_sec": 6.5,
+        "_video_hard_max_sec": 8.0,
+    }
+    narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold closed at 4434.88, while confirmation remains important.",
+    }
+    performance = _performance(narration["text"])
+    performance.update(segment_id="seg_01_intro", speed=1.0, pause_after_ms=0)
+
+    result = rebalance_tool08(
+        [{"item": item, "segment_narration": narration, "segment_performance": performance}],
+        _profile(),
+    )
+
+    scheduled = result["scheduled_items"][0]
+    assert result["global_tolerance_sec"] == 3.0
+    assert result["global_overrun_sec"] > 0
+    assert result["global_overrun_sec"] <= result["global_tolerance_sec"]
+    assert scheduled["needs_narration_repair"] is False
+    assert "_force_duration_repair" not in scheduled["item"]
+    assert scheduled["item"]["duration_target_sec"] == 5.0
+
+
+def test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded():
+    within_item = {
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    within_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_01_intro",
+        "planning_role": "opening_hook",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold holds.",
+    }
+    within_performance = _performance(within_narration["text"])
+    within_performance.update(segment_id="seg_01_intro", speed=1.05, pause_after_ms=0)
+
+    over_item = {
+        "segment_id": "seg_02_analysis",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.current"],
+        "duration_target_sec": 3,
+        "duration_min_sec": 1.5,
+        "duration_max_sec": 4.5,
+    }
+    over_narration = {
+        "schema_version": "segment-narration-v2",
+        "segment_id": "seg_02_analysis",
+        "planning_role": "technical_context",
+        "fact_anchor_ids": ["level.current"],
+        "text": "Gold closed at 4434.88 while 4452.44 and 4417.32 remain important conditions for confirmation and invalidation.",
+    }
+    over_performance = _performance(over_narration["text"])
+    over_performance.update(segment_id="seg_02_analysis", speed=1.0, pause_after_ms=0)
+
+    result = rebalance_tool08(
+        [
+            {"item": within_item, "segment_narration": within_narration, "segment_performance": within_performance},
+            {"item": over_item, "segment_narration": over_narration, "segment_performance": over_performance},
+        ],
+        _profile(),
+    )
+
+    assert result["global_overrun_sec"] > result["global_tolerance_sec"]
+    scheduled = result["scheduled_items"]
+    assert scheduled[0]["needs_narration_repair"] is False
+    assert "_force_duration_repair" not in scheduled[0]["item"]
+    assert scheduled[1]["needs_narration_repair"] is True
+    assert scheduled[1]["item"]["_force_duration_repair"] is True
 
 
 def test_step_requests_narration_repair_before_paid_tts():
@@ -547,6 +635,10 @@ def test_duration_repair_prompt_contains_provider_spoken_budget():
         "duration_target_sec": 4.0,
         "duration_min_sec": 2.5,
         "duration_max_sec": 4.5,
+        "_global_overrun_sec": 3.2,
+        "_global_tolerance_sec": 3.0,
+        "_segment_overrun_sec": 0.649,
+        "_duration_repair_authorized": True,
         "_force_duration_repair": True,
     }
     narration = _narration("Gold 4403.71 mixed.")
@@ -566,8 +658,12 @@ def test_duration_repair_prompt_contains_provider_spoken_budget():
     )
     assert budget["estimated_spoken_duration_sec"] == 4.649
     assert budget["safe_duration_max_sec"] == 4.2
-    assert budget["duration_overrun_sec"] == 0.449
+    assert budget["duration_overrun_sec"] == 0.649
     assert budget["spoken_word_count"] == 10
+    assert budget["global_overrun_sec"] == 3.2
+    assert budget["global_tolerance_sec"] == 3.0
+    assert budget["segment_overrun_sec"] == 0.649
+    assert budget["duration_repair_authorized"] is True
 
 
 def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
@@ -753,6 +849,10 @@ def test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budg
         "duration_target_sec": 3,
         "duration_min_sec": 1.5,
         "duration_max_sec": 4.5,
+        "_global_overrun_sec": 2.0,
+        "_global_tolerance_sec": 3.0,
+        "_duration_repair_authorized": False,
+        "_force_duration_repair": True,
     }
     narration = _narration(
         "Gold holds near 4434.88 while 4452.44 and 4417.32 remain important conditions."
@@ -861,6 +961,8 @@ def load_tests(loader, tests, pattern):
         test_rebalance_marks_unfit_global_budget_for_narration_repair,
         test_spoken_word_duration_estimate_scales_with_speed,
         test_rebalance_expands_budget_for_spoken_overrun,
+        test_rebalance_allows_individual_overrun_within_global_tolerance,
+        test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded,
         test_step_requests_narration_repair_before_paid_tts,
         test_duration_repair_prompt_contains_provider_spoken_budget,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
