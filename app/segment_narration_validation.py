@@ -1302,6 +1302,32 @@ def process_step(
 
     result = _validate_candidate(item, segment_narration, segment_performance, voice_duration_profile)
     errors = result["errors"]
+    band_enabled = all(
+        _as_float(item.get(key)) is not None
+        for key in (
+            "accepted_min_estimated_sec",
+            "accepted_max_estimated_sec",
+        )
+    )
+    band_min = _as_float(item.get("accepted_min_estimated_sec"), 0.0) or 0.0
+    band_max = _as_float(item.get("accepted_max_estimated_sec"), 0.0) or 0.0
+    candidate_under_band = (
+        repair_candidate is None
+        and band_enabled
+        and result["estimated_total_sec"] < band_min - 0.001
+    )
+    candidate_over_band = (
+        repair_candidate is None
+        and band_enabled
+        and result["estimated_total_sec"] > band_max + 0.001
+    )
+    duration_repair_requested = candidate_under_band or candidate_over_band
+    if duration_repair_requested:
+        # Duration is a soft optimization request.  It may start one repair,
+        # but it must never become a validation error or block paid TTS.
+        result["narration_violation"] = True
+        item["_duration_repair_authorized"] = True
+        item["_force_duration_repair"] = True
     errors = list(dict.fromkeys(errors))
     base_result = {
         "performance_valid": not errors,
@@ -1315,7 +1341,7 @@ def process_step(
         "tts_narration": result["tts_narration"],
         "tts_performance": result["tts_performance"],
     }
-    if not errors:
+    if not errors and not duration_repair_requested:
         try:
             tts_request = _tts_request(
                 master_request_id,
