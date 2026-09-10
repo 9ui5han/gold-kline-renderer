@@ -16,6 +16,52 @@ from app.tts_profiles import (
 
 
 class TtsProfileTests(unittest.TestCase):
+    def test_minimax_passes_every_documented_emotion_without_rewriting(self):
+        supported = (
+            "happy",
+            "sad",
+            "angry",
+            "fearful",
+            "disgusted",
+            "surprised",
+            "calm",
+            "fluent",
+        )
+        for emotion in supported:
+            with self.subTest(emotion=emotion):
+                result = compile_provider_settings(
+                    resolve_profile("mm_finance_male_01", allow_documented=True),
+                    {
+                        "text": "Gold holds support.",
+                        "emotion": emotion,
+                        "speed": 1.0,
+                        "pitch": 0,
+                        "energy": 0.7,
+                        "pause_after_ms": 0,
+                        "cues": [],
+                    },
+                )
+                self.assertEqual(result["emotion"], emotion)
+
+    def test_minimax_rejects_unsupported_emotions_instead_of_falling_back(self):
+        for emotion in ("neutral", "serious", "confident"):
+            with self.subTest(emotion=emotion):
+                with self.assertRaisesRegex(
+                    ProfileError, "MINIMAX_EMOTION_UNSUPPORTED"
+                ):
+                    compile_provider_settings(
+                        resolve_profile("mm_finance_male_01", allow_documented=True),
+                        {
+                            "text": "Gold holds support.",
+                            "emotion": emotion,
+                            "speed": 1.0,
+                            "pitch": 0,
+                            "energy": 0.7,
+                            "pause_after_ms": 0,
+                            "cues": [],
+                        },
+                    )
+
     def test_compiler_only_emits_documented_provider_controls(self):
         plan = {
             "text": "Gold holds support.",

@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import main
+from app.tts_profiles import ProfileError
 
 
 def payload_for(segments, target_duration_sec=None):
@@ -121,6 +122,55 @@ class MiniMaxSentenceContractTests(unittest.TestCase):
         self.assertEqual(body["output_format"], "url")
         download.assert_called_once_with("https://file.302.ai/minimax.mp3", output)
 
+    def test_segment_request_preserves_every_supported_emotion(self):
+        supported = (
+            "happy",
+            "sad",
+            "angry",
+            "fearful",
+            "disgusted",
+            "surprised",
+            "calm",
+            "fluent",
+        )
+        for emotion in supported:
+            with self.subTest(emotion=emotion):
+                response = main.httpx.Response(
+                    200,
+                    request=main.httpx.Request("POST", "https://api.302.ai"),
+                    json={
+                        "data": {"audio": "https://file.302.ai/minimax.mp3"},
+                        "base_resp": {"status_code": 0},
+                    },
+                )
+                with tempfile.TemporaryDirectory() as directory, patch.object(
+                    main.httpx, "post", return_value=response
+                ) as post, patch.object(main, "download_audio"):
+                    main.generate_minimax_tts_segment(
+                        "Gold holds support.",
+                        "English_Trustworthy_Man",
+                        1.0,
+                        Path(directory) / "sentence.mp3",
+                        {"emotion": emotion, "vol": 1, "pitch": 0},
+                    )
+                self.assertEqual(post.call_args.kwargs["json"]["voice_setting"]["emotion"], emotion)
+
+    def test_segment_request_rejects_unsupported_emotion_before_paid_call(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            main.httpx, "post"
+        ) as post:
+            with self.assertRaisesRegex(
+                ProfileError, "MINIMAX_EMOTION_UNSUPPORTED"
+            ):
+                main.generate_minimax_tts_segment(
+                    "Gold holds support.",
+                    "English_Trustworthy_Man",
+                    1.0,
+                    Path(directory) / "sentence.mp3",
+                    {"emotion": "neutral", "vol": 1, "pitch": 0},
+                )
+        post.assert_not_called()
+
     def test_wav_normalization_adds_short_fades_at_both_ends(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(
             main, "run_command"
@@ -148,7 +198,7 @@ class MiniMaxSentenceContractTests(unittest.TestCase):
         }])
         calls = []
 
-        def fake_generate(text, voice, speed, output_path):
+        def fake_generate(text, voice, speed, output_path, **kwargs):
             calls.append((text, voice, speed))
             output_path.write_bytes(b"audio")
 

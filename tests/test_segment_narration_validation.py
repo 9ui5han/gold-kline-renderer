@@ -10,6 +10,7 @@ sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
 from app.segment_narration_validation import (
     _estimated_spoken_seconds,
+    _draft_spoken_budget,
     complete_tool08,
     confirm_tts_result,
     finalize_tool08,
@@ -19,6 +20,38 @@ from app.segment_narration_validation import (
     resolve_render_step,
     segment_render_success,
 )
+
+
+def test_draft_emotion_uses_only_the_302_minimax_enum():
+    allowed = {
+        "happy",
+        "sad",
+        "angry",
+        "fearful",
+        "disgusted",
+        "surprised",
+        "calm",
+        "fluent",
+    }
+    voice_profile = {
+        "base_words_per_second": 2.6,
+        "duration_calibration_factor": 1.0,
+        "pause_model": {"period_ms": 320, "question_ms": 360},
+    }
+    for role in (
+        "opening_hook",
+        "technical_context",
+        "macro_context",
+        "primary_forecast",
+        "alternate_forecast",
+        "closing_question",
+    ):
+        result = _draft_spoken_budget(
+            {"planning_role": role, "duration_target_sec": 4},
+            voice_profile,
+        )
+        assert result["draft_emotion"] in allowed
+        assert result["draft_emotion"] not in {"neutral", "serious", "confident"}
 
 
 INDICATOR_PROFILE = {
@@ -446,7 +479,7 @@ def test_init_adds_conservative_draft_spoken_word_budget():
     item = result["segments"][0]
     assert item["draft_duration_cap_sec"] == 4.0
     assert item["draft_delivery"] == "calm_analysis"
-    assert item["draft_emotion"] == "neutral"
+    assert item["draft_emotion"] == "calm"
     assert item["draft_speed"] == 0.98
     assert item["draft_sentence_count"] == 2
     assert item["draft_sentence_pause_ms"] == 120
@@ -1627,6 +1660,7 @@ def load_tests(loader, tests, pattern):
     """Make these compact function-style contract tests runnable by unittest."""
     suite = unittest.TestSuite()
     for test in (
+        test_draft_emotion_uses_only_the_302_minimax_enum,
         test_init_returns_direct_iteration_array_and_profile,
         test_init_filters_indicator_facts_by_segment_role,
         test_init_rejects_indicator_context_that_differs_from_technical_contract,

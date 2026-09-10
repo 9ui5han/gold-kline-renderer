@@ -44,6 +44,7 @@ from .segment_narration_validation import (
 )
 from .segment_plan_validation import process_segment_plan_step
 from .tts_profiles import (
+    MINIMAX_DEFAULT_EMOTION,
     PERFORMANCE_SCHEMA_VERSION,
     PROFILE_SCHEMA_VERSION,
     ProfileError,
@@ -51,6 +52,7 @@ from .tts_profiles import (
     check_profile_sources,
     compile_provider_settings,
     resolve_profile,
+    validate_minimax_emotion,
     validate_performance_plan,
 )
 
@@ -1288,7 +1290,7 @@ def resolve_tts_request_profile(
         performance = {
             "text": payload.text,
             "delivery": "calm_analysis",
-            "emotion": profile.get("default_emotion") or "neutral",
+            "emotion": profile.get("default_emotion") or MINIMAX_DEFAULT_EMOTION,
             "speed": payload.speed_ratio,
             "pitch": 0,
             "energy": 0.7,
@@ -2356,6 +2358,8 @@ def generate_minimax_tts_segment(
 ) -> None:
     """按302.AI当前MiniMax Speech 2.8 Turbo格式生成单句音频。"""
     settings = provider_settings or {}
+    request_emotion = settings.get("emotion", emotion or MINIMAX_DEFAULT_EMOTION)
+    request_emotion = validate_minimax_emotion(request_emotion)
     response = httpx.post(
         "https://api.302.ai/minimaxi/v1/t2a_v2",
         headers=ai302_headers(),
@@ -2368,7 +2372,7 @@ def generate_minimax_tts_segment(
                 "speed": speed,
                 "vol": settings.get("vol", 1),
                 "pitch": settings.get("pitch", pitch if pitch is not None else 0),
-                "emotion": settings.get("emotion", emotion or "calm"),
+                "emotion": request_emotion,
                 "text_normalization": True,
             },
             "audio_setting": {

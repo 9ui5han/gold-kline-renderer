@@ -24,7 +24,12 @@ from .indicator_style import (
     validate_narration_indicators,
 )
 from .kline_precision import normalize_kline_numbers
-from .tts_profiles import ProfileError, resolve_profile, validate_performance_plan
+from .tts_profiles import (
+    MINIMAX_DEFAULT_EMOTION,
+    ProfileError,
+    resolve_profile,
+    validate_performance_plan,
+)
 
 
 NARRATION_SCHEMA_VERSION = "segment-narration-v2"
@@ -745,16 +750,16 @@ def _draft_spoken_budget(
     pause_model = voice_profile.get("pause_model") or {}
     role = str(item.get("planning_role") or "")
     presets = {
-        "opening_hook": ("compact", "neutral", 1.0, 1, 0),
-        "technical_context": ("calm_analysis", "neutral", 0.98, 2, 120),
-        "macro_context": ("calm_analysis", "serious", 0.98, 2, 120),
-        "primary_forecast": ("calm_analysis", "serious", 0.98, 2, 120),
-        "alternate_forecast": ("caution", "serious", 0.98, 2, 120),
-        "closing_question": ("compact", "calm", 1.0, 1, 0),
+        "opening_hook": ("compact", "fluent", 1.0, 1, 0),
+        "technical_context": ("calm_analysis", "calm", 0.98, 2, 120),
+        "macro_context": ("calm_analysis", "calm", 0.98, 2, 120),
+        "primary_forecast": ("calm_analysis", "fluent", 0.98, 2, 120),
+        "alternate_forecast": ("caution", "calm", 0.98, 2, 120),
+        "closing_question": ("compact", MINIMAX_DEFAULT_EMOTION, 1.0, 1, 0),
     }
     delivery, emotion, speed, sentence_count, sentence_pause_ms = presets.get(
         role,
-        ("calm_analysis", "neutral", 0.98, 2, 120),
+        ("calm_analysis", MINIMAX_DEFAULT_EMOTION, 0.98, 2, 120),
     )
     speed_min = _as_float(voice_profile.get("safe_speed_min"), 0.90) or 0.90
     speed_max = _as_float(voice_profile.get("safe_speed_max"), 1.05) or 1.05

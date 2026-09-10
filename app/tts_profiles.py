@@ -14,10 +14,29 @@ import httpx
 AI302_BASE_URL = "https://api.302.ai"
 PROFILE_SCHEMA_VERSION = "tts-profile-catalog-v1"
 PERFORMANCE_SCHEMA_VERSION = "tts-performance-v1"
+MINIMAX_EMOTION_VALUES: tuple[str, ...] = (
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "disgusted",
+    "surprised",
+    "calm",
+    "fluent",
+)
+MINIMAX_EMOTION_SET = frozenset(MINIMAX_EMOTION_VALUES)
+MINIMAX_DEFAULT_EMOTION = "calm"
 
 
 class ProfileError(ValueError):
     """Raised before a paid TTS request when a profile contract is invalid."""
+
+
+def validate_minimax_emotion(value: Any) -> str:
+    emotion = str(value or "").strip()
+    if emotion not in MINIMAX_EMOTION_SET:
+        raise ProfileError("MINIMAX_EMOTION_UNSUPPORTED")
+    return emotion
 
 
 _DEFAULT_PROFILES: tuple[dict[str, Any], ...] = (
@@ -130,9 +149,7 @@ def compile_provider_settings(
     )
     provider = profile["provider"]
     if provider == "minimax":
-        emotion = plan.get("emotion")
-        if emotion not in {"calm", "fluent"}:
-            emotion = profile.get("default_emotion") or "calm"
+        emotion = validate_minimax_emotion(plan.get("emotion"))
         return {
             "voice_id": profile["voice_id"],
             "speed": plan["speed"],
