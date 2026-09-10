@@ -14,6 +14,15 @@ import math
 import re
 from typing import Any
 
+from .indicator_style import (
+    IndicatorStyleError,
+    detect_narrated_indicator_ids,
+    filter_indicator_context,
+    filter_technical_base,
+    indicator_ids_for_role,
+    normalize_indicator_profile,
+    validate_narration_indicators,
+)
 from .kline_precision import normalize_kline_numbers
 from .tts_profiles import ProfileError, resolve_profile, validate_performance_plan
 
@@ -276,6 +285,8 @@ def _compact_repair_item(item: dict[str, Any]) -> dict[str, Any]:
         "accepted_max_estimated_sec", "draft_min_spoken_words",
         "draft_target_spoken_words", "draft_max_spoken_words",
         "resolved_visual_facts", "_video_hard_max_sec",
+        "indicator_profile", "indicator_context",
+        "allowed_indicator_ids", "required_indicator_ids",
         "_video_preferred_max_sec", "_global_overrun_sec",
         "_global_tolerance_sec", "_segment_overrun_sec",
         "_duration_reduction_required_sec", "_accepted_max_estimated_sec",
@@ -287,6 +298,74 @@ def _compact_repair_item(item: dict[str, Any]) -> dict[str, Any]:
         for key in allowed_keys
         if key in item
     }
+
+
+def _indicator_context_for_role(
+    indicator_context: dict[str, Any],
+    allowed_indicator_ids: list[str],
+) -> dict[str, Any]:
+    """Hide indicator facts from narration segments that cannot mention them."""
+    if allowed_indicator_ids:
+        return copy.deepcopy(indicator_context)
+    return {
+        "schema_version": "indicator-context-v1",
+        "style_id": str(indicator_context.get("style_id") or ""),
+        "primary_timeframe": str(indicator_context.get("primary_timeframe") or ""),
+        "indicator_ids": [],
+        "facts": {},
+    }
+
+
+def _unsupported_indicator_value_error(
+    text: str,
+    item: dict[str, Any],
+) -> str:
+    """Reject explicit EMA values that are absent from the supplied context."""
+    context = item.get("indicator_context")
+    facts = context.get("facts") if isinstance(context, dict) else None
+    if not isinstance(facts, dict):
+        return ""
+    component_patterns = {
+        "ema20": r"EMA\s*20",
+        "ema50": r"EMA\s*50",
+    }
+    for component, label_pattern in component_patterns.items():
+        if component not in facts:
+            continue
+        expected = _as_float(facts.get(component))
+        if expected is None:
+            continue
+        patterns = (
+            rf"\b{label_pattern}\b\s*(?:is|at|near|around|holds?\s+at|sits?\s+at|=|:)?\s*(\d+(?:\.\d+)?)",
+            rf"(?<![A-Za-z0-9])(\d+(?:\.\d+)?)\s*(?:at|on|for)?\s*\b{label_pattern}\b",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+                value = _as_float(match.group(1))
+                # The digits in the component name itself are never a fact value.
+                if value in (20.0, 50.0):
+                    continue
+                if value is None or not math.isclose(
+                    value, expected, rel_tol=0.0, abs_tol=0.005
+                ):
+                    return "NARRATION_INDICATOR_VALUE_UNSUPPORTED"
+    supplied_values = {
+        value
+        for component in component_patterns
+        if (value := _as_float(facts.get(component))) is not None
+    }
+    for match in re.finditer(
+        r"\bEMA\b\s*(?:is|at|near|around|holds?\s+at|sits?\s+at|=|:)\s*(\d+(?:\.\d+)?)",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        value = _as_float(match.group(1))
+        if value is None or not any(
+            math.isclose(value, expected, rel_tol=0.0, abs_tol=0.005)
+            for expected in supplied_values
+        ):
+            return "NARRATION_INDICATOR_VALUE_UNSUPPORTED"
+    return ""
 
 
 def _visual_fact_catalog_map(catalog: Any) -> dict[str, dict[str, Any]]:
@@ -439,6 +518,16 @@ def initialize_tool08(
         segment_plan_contract = normalize_kline_numbers(segment_plan_contract)
         if segment_plan_contract.get("segment_plan_valid") is not True:
             raise ValueError("SEGMENT_PLAN_NOT_VALID")
+        indicator_profile = normalize_indicator_profile(
+            segment_plan_contract.get("indicator_profile")
+        )
+        supplied_indicator_context = segment_plan_contract.get("indicator_context")
+        if not isinstance(supplied_indicator_context, dict):
+            raise IndicatorStyleError("INDICATOR_CONTEXT_REQUIRED")
+        indicator_context = filter_indicator_context(technical, indicator_profile)
+        if supplied_indicator_context != indicator_context:
+            raise IndicatorStyleError("INDICATOR_CONTEXT_MISMATCH")
+        technical_base = filter_technical_base(technical)
         segment_plan = segment_plan_contract.get("segment_plan")
         if not isinstance(segment_plan, dict):
             raise ValueError("SEGMENT_PLAN_OBJECT_REQUIRED")
@@ -465,7 +554,9 @@ def initialize_tool08(
             "schema_version": CONTEXT_SCHEMA_VERSION,
             "market_input": market_input,
             "levels": levels,
-            "technical": technical,
+            "technical_base": technical_base,
+            "indicator_profile": indicator_profile,
+            "indicator_context": indicator_context,
             "macro_context": macro,
             "market_analysis": analysis,
             "forecast": forecast,
@@ -500,6 +591,17 @@ def initialize_tool08(
                 raise ValueError(f"{segment_id}:VISUAL_PLAN_REQUIRED")
             if not isinstance(item.get("scenes"), list) or not item.get("scenes"):
                 raise ValueError(f"{segment_id}:SCENES_REQUIRED")
+            permissions = indicator_ids_for_role(
+                indicator_profile,
+                item.get("planning_role"),
+            )
+            item["indicator_profile"] = copy.deepcopy(indicator_profile)
+            item["allowed_indicator_ids"] = permissions["allowed"]
+            item["required_indicator_ids"] = permissions["required"]
+            item["indicator_context"] = _indicator_context_for_role(
+                indicator_context,
+                permissions["allowed"],
+            )
             item["resolved_visual_facts"] = _resolve_visual_facts(item, visual_fact_catalog)
             item.update(
                 _draft_spoken_budget(
@@ -522,7 +624,8 @@ def initialize_tool08(
                 "item": item,
                 "segment_duration_budget": budget,
                 "voice_duration_profile": profile,
-                "technical": technical,
+                "technical_base": technical_base,
+                "indicator_context": item["indicator_context"],
                 "market_analysis": analysis,
                 "levels": levels,
                 "forecast": forecast,
@@ -543,7 +646,7 @@ def initialize_tool08(
             "segments": segments,
             "context_json": _compact_json(context),
         }
-    except (ValueError, ProfileError) as exc:
+    except (ValueError, ProfileError, IndicatorStyleError) as exc:
         return {
             "schema_version": "segment-narration-init-v1",
             "init_valid": False,
@@ -1051,6 +1154,20 @@ def _validate_candidate(
     narration_violation = any(pattern.search(text) for pattern in TRADE_DIRECTIVE_PATTERNS)
     if narration_violation:
         errors.append("PERSONALIZED_TRADE_DIRECTIVE")
+    narrated_indicator_ids = detect_narrated_indicator_ids(text)
+    try:
+        narrated_indicator_ids = validate_narration_indicators(
+            text,
+            allowed_indicator_ids=item.get("allowed_indicator_ids") or [],
+            required_indicator_ids=item.get("required_indicator_ids") or [],
+        )
+    except IndicatorStyleError as exc:
+        errors.append(str(exc))
+        narration_violation = True
+    indicator_value_error = _unsupported_indicator_value_error(text, item)
+    if indicator_value_error:
+        errors.append(indicator_value_error)
+        narration_violation = True
 
     if performance.get("schema_version") != PERFORMANCE_SCHEMA_VERSION:
         errors.append("PERFORMANCE_SCHEMA_INVALID")
@@ -1164,6 +1281,7 @@ def _validate_candidate(
     return {
         "errors": errors,
         "narration_violation": narration_violation,
+        "narrated_indicator_ids": narrated_indicator_ids,
         "estimated_total_sec": round(estimated, 3),
         "display_text": text,
         "spoken_text": spoken_text,
@@ -1340,6 +1458,7 @@ def process_step(
         "validated_performance": result["validated_performance"],
         "tts_narration": result["tts_narration"],
         "tts_performance": result["tts_performance"],
+        "narrated_indicator_ids": result["narrated_indicator_ids"],
     }
     if not errors and not duration_repair_requested:
         try:
@@ -1525,6 +1644,16 @@ def confirm_tts_result(
         "content_goal": item.get("content_goal"),
         "importance": item.get("importance"),
         "speech_style": item.get("speech_style"),
+        "indicator_profile": copy.deepcopy(item.get("indicator_profile") or {}),
+        "allowed_indicator_ids": copy.deepcopy(
+            item.get("allowed_indicator_ids") or []
+        ),
+        "required_indicator_ids": copy.deepcopy(
+            item.get("required_indicator_ids") or []
+        ),
+        "narrated_indicator_ids": copy.deepcopy(
+            result.get("narrated_indicator_ids") or []
+        ),
         "duration_target_sec": budget["target_duration_sec"],
         "duration_min_sec": budget["duration_min_sec"],
         "duration_max_sec": budget["duration_max_sec"],
@@ -1652,13 +1781,26 @@ def complete_tool08(
         plan_contract = _load_contract(segment_plan_v1_json, "SEGMENT_PLAN", "segment-plan-contract-v1")
         if plan_contract.get("segment_plan_valid") is not True:
             raise ValueError("SEGMENT_PLAN_NOT_VALID")
+        indicator_profile = normalize_indicator_profile(
+            plan_contract.get("indicator_profile")
+        )
+        indicator_context = plan_contract.get("indicator_context")
+        if (
+            not isinstance(indicator_context, dict)
+            or indicator_context.get("schema_version") != "indicator-context-v1"
+            or indicator_context.get("style_id") != indicator_profile["style_id"]
+            or indicator_context.get("indicator_ids")
+            != indicator_profile["indicator_ids"]
+            or not isinstance(indicator_context.get("facts"), dict)
+        ):
+            raise IndicatorStyleError("INDICATOR_CONTEXT_MISMATCH")
         plan = plan_contract.get("segment_plan")
         if not isinstance(plan, dict):
             raise ValueError("SEGMENT_PLAN_OBJECT_REQUIRED")
         planned = plan.get("segments")
         if not isinstance(planned, list):
             raise ValueError("SEGMENT_PLAN_SEGMENTS_REQUIRED")
-    except ValueError as exc:
+    except (ValueError, IndicatorStyleError) as exc:
         return _complete_failure([], voice_duration_profile, str(exc))
     if any(not isinstance(item, dict) for item in planned):
         return _complete_failure([], voice_duration_profile, "SEGMENT_PLAN_ITEM_OBJECT_REQUIRED", segment_media_inputs)
@@ -1687,6 +1829,8 @@ def complete_tool08(
         if isinstance(item, dict)
     }
     bad_ids: list[str] = []
+    indicator_errors: list[str] = []
+    narrated_union: list[str] = []
     duration_validations: list[dict[str, Any]] = []
     for expected_id in expected_ids:
         media = media_by_id.get(expected_id) or {}
@@ -1706,12 +1850,72 @@ def complete_tool08(
             and isinstance(media.get("resolved_visual_facts"), list)
             and bool(media.get("resolved_visual_facts"))
         )
+        try:
+            permissions = indicator_ids_for_role(
+                indicator_profile,
+                (planned_by_id.get(expected_id) or {}).get("planning_role"),
+            )
+        except IndicatorStyleError as exc:
+            permissions = {"allowed": [], "required": [], "rendered": []}
+            indicator_errors.append(str(exc))
+        media_profile = media.get("indicator_profile")
+        allowed_ids = media.get("allowed_indicator_ids")
+        required_ids = media.get("required_indicator_ids")
+        narrated_ids = media.get("narrated_indicator_ids")
+        narration = media.get("narration") if isinstance(media.get("narration"), dict) else {}
+        detected_ids = detect_narrated_indicator_ids(
+            narration.get("display_text") or narration.get("text") or ""
+        )
+        indicator_valid = True
+        indicator_error = ""
+        if media_profile != indicator_profile:
+            indicator_valid = False
+            indicator_error = "INDICATOR_PROFILE_MISMATCH"
+        elif allowed_ids != permissions["allowed"] or required_ids != permissions["required"]:
+            indicator_valid = False
+            indicator_error = "INDICATOR_ROLE_CONTRACT_MISMATCH"
+        elif (
+            not isinstance(narrated_ids, list)
+            or any(not isinstance(value, str) for value in narrated_ids)
+            or len(narrated_ids) != len(set(narrated_ids))
+            or narrated_ids != detected_ids
+        ):
+            indicator_valid = False
+            indicator_error = "NARRATED_INDICATOR_IDS_MISMATCH"
+        else:
+            try:
+                validate_narration_indicators(
+                    narration.get("display_text") or narration.get("text") or "",
+                    allowed_indicator_ids=allowed_ids,
+                    required_indicator_ids=required_ids,
+                )
+            except IndicatorStyleError as exc:
+                indicator_valid = False
+                indicator_error = str(exc)
+            if indicator_valid:
+                indicator_error = _unsupported_indicator_value_error(
+                    narration.get("display_text") or narration.get("text") or "",
+                    {
+                        "indicator_context": _indicator_context_for_role(
+                            indicator_context,
+                            permissions["allowed"],
+                        )
+                    },
+                )
+                indicator_valid = not indicator_error
+        if not indicator_valid:
+            indicator_errors.append(indicator_error)
+        else:
+            for indicator_id in narrated_ids:
+                if indicator_id not in narrated_union:
+                    narrated_union.append(indicator_id)
         valid = (
             bool(audio.get("url"))
             and actual_duration > 0
             and actual_duration_valid
             and validation.get("valid") is True
             and visual_valid
+            and indicator_valid
         )
         duration_validations.append(copy.deepcopy(validation) if validation else {"segment_id": expected_id, "valid": False})
         if not valid:
@@ -1720,6 +1924,24 @@ def complete_tool08(
         for media_id in media_by_id:
             if media_id not in expected_ids and media_id not in bad_ids:
                 bad_ids.append(media_id)
+    missing_indicators = [
+        indicator_id
+        for indicator_id in indicator_profile["indicator_ids"]
+        if indicator_id not in narrated_union
+    ]
+    if missing_indicators:
+        indicator_errors.extend(
+            f"NARRATION_INDICATOR_REQUIRED:{indicator_id}"
+            for indicator_id in missing_indicators
+        )
+        for expected_id in expected_ids:
+            role = str((planned_by_id.get(expected_id) or {}).get("planning_role") or "")
+            if role in {"primary_forecast", "primary_wait", "primary_wait_path", "primary_conditions", "primary_path"}:
+                if expected_id not in bad_ids:
+                    bad_ids.append(expected_id)
+                break
+        if not bad_ids:
+            bad_ids.extend(expected_ids)
     planned_total_duration = sum(
         _as_float((planned_by_id.get(segment_id) or {}).get("duration_target_sec"), 0.0) or 0.0
         for segment_id in expected_ids
@@ -1740,7 +1962,13 @@ def complete_tool08(
         "valid": True,
     }
     if bad_ids:
-        return _complete_failure(bad_ids, voice_duration_profile, "SEGMENT_MEDIA_INVALID", segment_media_inputs, duration_validations)
+        return _complete_failure(
+            bad_ids,
+            voice_duration_profile,
+            indicator_errors[0] if indicator_errors else "SEGMENT_MEDIA_INVALID",
+            segment_media_inputs,
+            duration_validations,
+        )
     ordered_media = [media_by_id[segment_id] for segment_id in expected_ids]
     # Every rendered segment is a slice of one continuous chart timeline.
     # The renderer uses this shared cursor to keep candles moving left across
@@ -1762,6 +1990,8 @@ def complete_tool08(
     payload = {
         "schema_version": "segment-media-contract-v1",
         "voice_duration_profile": voice_duration_profile if isinstance(voice_duration_profile, dict) else {},
+        "indicator_profile": indicator_profile,
+        "indicator_context": indicator_context,
         "segment_media_inputs": ordered_media,
         "segment_audio_valid": True,
         "bad_segment_ids": [],

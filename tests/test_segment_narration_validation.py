@@ -21,6 +21,56 @@ from app.segment_narration_validation import (
 )
 
 
+INDICATOR_PROFILE = {
+    "schema_version": "indicator-profile-v1",
+    "style_id": "dual_ema_trend",
+    "indicator_ids": ["dual_ema"],
+    "max_indicators": 2,
+    "components": ["ema20", "ema50"],
+    "allowed_fact_ids": [
+        "ema_alignment", "ema_cross", "close_vs_ema20", "close_vs_ema50",
+    ],
+    "show_from_role": "primary_forecast",
+    "continue_to_end": True,
+    "fade_in_ms": 250,
+}
+
+INDICATOR_CONTEXT = {
+    "schema_version": "indicator-context-v1",
+    "style_id": "dual_ema_trend",
+    "primary_timeframe": "1h",
+    "indicator_ids": ["dual_ema"],
+    "facts": {
+        "closed_count": 80,
+        "last_close": 2400.0,
+        "ema20": 2401.25,
+        "ema50": 2398.75,
+        "ema_alignment": "ema20_above_ema50",
+        "close_vs_ema20": "below",
+        "close_vs_ema50": "above",
+    },
+}
+
+
+def _technical_contract() -> dict:
+    return {
+        "schema_version": "technical-contract-v1",
+        "indicator_facts": {
+            "primary_timeframe": "1h",
+            "last_real_candle": {"time": "2026-09-10T10:00:00Z"},
+            "timeframes": {
+                "1h": {
+                    "closed_count": 80,
+                    "last_close": 2400.0,
+                    "ema20": 2401.25,
+                    "ema50": 2398.75,
+                    "structure": "range",
+                }
+            },
+        },
+    }
+
+
 def _item() -> dict:
     return {
         "segment_id": "seg_01",
@@ -32,6 +82,16 @@ def _item() -> dict:
         "content_goal": "Explain the current level.",
         "importance": "high",
         "speech_style": "calm_analysis",
+        "indicator_profile": INDICATOR_PROFILE,
+        "indicator_context": {
+            "schema_version": "indicator-context-v1",
+            "style_id": "dual_ema_trend",
+            "primary_timeframe": "1h",
+            "indicator_ids": [],
+            "facts": {},
+        },
+        "allowed_indicator_ids": [],
+        "required_indicator_ids": [],
         "duration_target_sec": 4,
         "duration_min_sec": 2,
         "duration_max_sec": 8,
@@ -115,7 +175,7 @@ def _init_contracts() -> dict:
     return {
         "market_input_v1_json": json.dumps({"schema_version": "market-input-contract-v1"}),
         "levels_v1_json": json.dumps({"schema_version": "levels-contract-v1"}),
-        "technical_v1_json": json.dumps({"schema_version": "technical-contract-v1"}),
+        "technical_v1_json": json.dumps(_technical_contract()),
         "macro_context_v1_json": json.dumps({"schema_version": "macro-context-contract-v1"}),
         "market_analysis_v1_json": json.dumps({"schema_version": "market-analysis-contract-v1"}),
         "forecast_v1_json": json.dumps({"schema_version": "forecast-contract-v1"}),
@@ -133,11 +193,30 @@ def _init_contracts() -> dict:
                 ],
             },
             "segment_plan_valid": True,
+            "indicator_profile": INDICATOR_PROFILE,
+            "indicator_context": INDICATOR_CONTEXT,
             "segment_plan": {"segments": [_item()]},
         }),
         "narrator_profile_id": "mm_finance_male_02",
         "master_request_id": "master_01",
     }
+
+
+def _primary_contracts_and_media(duration: float = 4.2) -> tuple[dict, dict]:
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["segment_plan"]["segments"][0]["planning_role"] = "primary_forecast"
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+    item = initialize_tool08(**contracts)["segments"][0]
+    text = "EMA20 remains above EMA50 while price holds near 2400."
+    media = {
+        **item,
+        "audio": {"url": "https://example.test/audio.mp3", "duration_sec": duration},
+        "narration": {"text": text, "display_text": text},
+        "narrated_indicator_ids": ["dual_ema"],
+        "duration_validation": {"actual_duration_sec": duration, "valid": True},
+    }
+    return contracts, media
 
 
 def test_init_returns_direct_iteration_array_and_profile():
@@ -151,6 +230,203 @@ def test_init_returns_direct_iteration_array_and_profile():
     assert result["segments"][0]["segment_id"] == "seg_01"
     assert isinstance(result["segments"][0]["narration_prompt_json"], str)
     assert result["master_request_id"].startswith("master_01")
+
+
+def test_init_filters_indicator_facts_by_segment_role():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    before = plan["segment_plan"]["segments"][0]
+    forecast = json.loads(json.dumps(before))
+    forecast.update(
+        segment_id="seg_02",
+        order=2,
+        planning_role="primary_forecast",
+    )
+    plan["segment_plan"]["segments"] = [before, forecast]
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is True
+    before_prompt = json.loads(result["segments"][0]["narration_prompt_json"])
+    forecast_prompt = json.loads(result["segments"][1]["narration_prompt_json"])
+    assert "technical" not in before_prompt
+    assert set(before_prompt["technical_base"]) == {
+        "schema_version", "primary_timeframe", "data_as_of", "closed_count",
+        "last_close", "market_structure",
+    }
+    assert before_prompt["item"]["allowed_indicator_ids"] == []
+    assert before_prompt["item"]["required_indicator_ids"] == []
+    assert before_prompt["item"]["indicator_context"]["facts"] == {}
+    assert forecast_prompt["item"]["allowed_indicator_ids"] == ["dual_ema"]
+    assert forecast_prompt["item"]["required_indicator_ids"] == ["dual_ema"]
+    assert forecast_prompt["item"]["indicator_context"] == INDICATOR_CONTEXT
+
+
+def test_init_rejects_indicator_context_that_differs_from_technical_contract():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["indicator_context"]["facts"]["ema20"] = 9999.0
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+
+    result = initialize_tool08(**contracts)
+
+    assert result["init_valid"] is False
+    assert result["init_error"] == "INDICATOR_CONTEXT_MISMATCH"
+
+
+def test_step_repairs_forbidden_indicator_and_second_failure_stops():
+    initialized = initialize_tool08(**_init_contracts())
+    item = initialized["segments"][0]
+    narration = _narration("MACD remains positive while price holds near 2400.")
+    performance = _performance(narration["text"])
+    performance.update(
+        delivery=item["draft_delivery"], emotion=item["draft_emotion"],
+        speed=item["draft_speed"], pause_after_ms=0,
+    )
+
+    first = process_step(
+        item, narration, performance, initialized["voice_duration_profile"],
+        "mm_finance_male_02", "master_01",
+    )
+    second = process_step(
+        item, narration, performance, initialized["voice_duration_profile"],
+        "mm_finance_male_02", "master_01", repair_count=1,
+        narration_revision=1,
+    )
+
+    assert first["action"] == "repair_narration"
+    assert "NARRATION_INDICATOR_FORBIDDEN:macd" in json.loads(
+        first["repair_prompt_json"]
+    )["validator_errors"]
+    assert second["action"] == "fail"
+    assert "NARRATION_INDICATOR_FORBIDDEN:macd" in second["step_error"]
+
+
+def test_step_rejects_indicator_value_absent_from_supplied_context():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["segment_plan"]["segments"][0]["planning_role"] = "primary_forecast"
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+    initialized = initialize_tool08(**contracts)
+    item = initialized["segments"][0]
+    text = "EMA20 at 2500 remains above EMA50 at 2398.75."
+    narration = {**_narration(text), "planning_role": "primary_forecast"}
+    performance = _performance(text)
+    performance.update(
+        delivery=item["draft_delivery"], emotion=item["draft_emotion"],
+        speed=item["draft_speed"], pause_after_ms=0,
+    )
+
+    result = process_step(
+        item, narration, performance, initialized["voice_duration_profile"],
+        "mm_finance_male_02", "master_01",
+    )
+
+    assert result["action"] == "repair_narration"
+    assert "NARRATION_INDICATOR_VALUE_UNSUPPORTED" in json.loads(
+        result["repair_prompt_json"]
+    )["validator_errors"]
+
+
+def test_confirm_preserves_code_derived_indicator_audit_fields():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan_item = plan["segment_plan"]["segments"][0]
+    plan_item["planning_role"] = "primary_forecast"
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+    initialized = initialize_tool08(**contracts)
+    item = initialized["segments"][0]
+    item.pop("accepted_min_estimated_sec", None)
+    item.pop("accepted_max_estimated_sec", None)
+    text = "EMA20 remains above EMA50 while price holds near 2400."
+    narration = {**_narration(text), "planning_role": "primary_forecast"}
+    performance = _performance(text)
+    performance.update(
+        delivery=item["draft_delivery"], emotion=item["draft_emotion"],
+        speed=item["draft_speed"], pause_after_ms=0,
+    )
+    step = process_step(
+        item, narration, performance, initialized["voice_duration_profile"],
+        "mm_finance_male_02", "master_01",
+    )
+
+    confirmed = confirm_tts_result(
+        item,
+        step["result_json"],
+        {"wait_status": "completed", "job": {
+            "status": "completed", "audio_url": "https://example.test/a.mp3",
+            "duration_sec": 4.2,
+        }},
+    )
+    media = json.loads(confirmed["result_json"])["segment_media_input"]
+
+    assert step["action"] == "pass"
+    assert media["indicator_profile"] == INDICATOR_PROFILE
+    assert media["allowed_indicator_ids"] == ["dual_ema"]
+    assert media["required_indicator_ids"] == ["dual_ema"]
+    assert media["narrated_indicator_ids"] == ["dual_ema"]
+
+
+def test_complete_rejects_full_video_that_never_mentions_selected_indicator():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["segment_plan"]["segments"][0]["planning_role"] = "primary_forecast"
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+    item = initialize_tool08(**contracts)["segments"][0]
+    media = {
+        **item,
+        "audio": {"url": "https://example.test/a.mp3", "duration_sec": 4.2},
+        "narration": {"text": "Price holds near 2400.", "display_text": "Price holds near 2400."},
+        "narrated_indicator_ids": [],
+        "duration_validation": {"valid": True},
+    }
+
+    result = complete_tool08(
+        [media], contracts["segment_plan_v1_json"], _profile()
+    )
+
+    assert result["complete_valid"] is False
+    assert result["complete_error"] == "NARRATION_INDICATOR_REQUIRED:dual_ema"
+    assert json.loads(result["bad_segment_ids_json"]) == ["seg_01"]
+
+
+def test_complete_accepts_consistent_indicator_audit_contract():
+    contracts = _init_contracts()
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["segment_plan"]["segments"][0]["planning_role"] = "primary_forecast"
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
+    item = initialize_tool08(**contracts)["segments"][0]
+    text = "EMA20 remains above EMA50 while price holds near 2400."
+    media = {
+        **item,
+        "audio": {"url": "https://example.test/a.mp3", "duration_sec": 4.2},
+        "narration": {"text": text, "display_text": text},
+        "narrated_indicator_ids": ["dual_ema"],
+        "duration_validation": {"valid": True},
+    }
+
+    result = complete_tool08(
+        [media], contracts["segment_plan_v1_json"], _profile()
+    )
+    payload = json.loads(result["segment_media_v1_json"])
+
+    assert result["complete_valid"] is True
+    assert payload["indicator_profile"] == INDICATOR_PROFILE
+    assert payload["indicator_context"] == INDICATOR_CONTEXT
+
+
+def test_complete_rejects_media_with_changed_indicator_profile():
+    contracts, media = _primary_contracts_and_media()
+    media["indicator_profile"] = {**INDICATOR_PROFILE, "style_id": "changed"}
+
+    result = complete_tool08(
+        [media], contracts["segment_plan_v1_json"], _profile()
+    )
+
+    assert result["complete_valid"] is False
+    assert result["complete_error"] == "INDICATOR_PROFILE_MISMATCH"
+    assert json.loads(result["bad_segment_ids_json"]) == ["seg_01"]
 
 
 def test_init_adds_conservative_draft_spoken_word_budget():
@@ -240,15 +516,27 @@ def test_step_rejects_performance_that_changes_pregeneration_preset():
     assert "PRESET_PERFORMANCE_MISMATCH" in repair["validator_errors"]
 
 
-def test_init_exposes_two_decimal_kline_values_to_narration_llm():
+def test_init_exposes_two_decimal_base_prices_without_leaking_indicator_facts():
     contracts = _init_contracts()
-    contracts["technical_v1_json"] = json.dumps({
-        "schema_version": "technical-contract-v1",
-        "technical_facts": {
-            "last_close": 4434.876,
-            "timeframes": {"1h": {"ema20": 4444.0351, "closed_count": 199}},
-        },
-    })
+    technical = _technical_contract()
+    technical["indicator_facts"]["timeframes"]["1h"].update(
+        last_close=4434.876,
+        ema20=4444.0351,
+        ema50=4400.004,
+        closed_count=199,
+    )
+    contracts["technical_v1_json"] = json.dumps(technical)
+    plan = json.loads(contracts["segment_plan_v1_json"])
+    plan["indicator_context"]["facts"].update(
+        closed_count=199,
+        last_close=4434.88,
+        ema20=4444.04,
+        ema50=4400.0,
+        ema_alignment="ema20_above_ema50",
+        close_vs_ema20="below",
+        close_vs_ema50="above",
+    )
+    contracts["segment_plan_v1_json"] = json.dumps(plan)
     contracts["forecast_v1_json"] = json.dumps({
         "schema_version": "forecast-contract-v1",
         "active_levels": {
@@ -260,8 +548,9 @@ def test_init_exposes_two_decimal_kline_values_to_narration_llm():
     prompt = json.loads(result["segments"][0]["narration_prompt_json"])
     assert prompt["voice_duration_profile"]["base_words_per_second"] == 2.6
 
-    assert prompt["technical"]["technical_facts"]["last_close"] == 4434.88
-    assert prompt["technical"]["technical_facts"]["timeframes"]["1h"]["ema20"] == 4444.04
+    assert "technical" not in prompt
+    assert prompt["technical_base"]["last_close"] == 4434.88
+    assert prompt["indicator_context"]["facts"] == {}
     assert prompt["forecast"]["active_levels"]["authoritative_price_map"]["OPEN_UPSIDE"] == 4452.44
 
 
@@ -501,7 +790,7 @@ def test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audi
     assert scheduled[1]["original_target_sec"] == 10.0
 
 
-def test_rebalance_marks_unfit_global_budget_for_narration_repair():
+def test_rebalance_keeps_audio_authoritative_without_explicit_video_limit():
     item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -529,10 +818,8 @@ def test_rebalance_marks_unfit_global_budget_for_narration_repair():
     assert result["content_fit_valid"] is True
     assert result["content_fit_error"] == ""
     assert len(result["scheduled_items"]) == 1
-    assert result["scheduled_items"][0]["needs_narration_repair"] is True
-    assert result["scheduled_items"][0]["content_fit_error"] == (
-        "TOTAL_SPOKEN_DURATION_EXCEEDS_VIDEO_BUDGET"
-    )
+    assert result["scheduled_items"][0]["needs_narration_repair"] is False
+    assert result["scheduled_items"][0]["content_fit_error"] == ""
     assert result["scheduled_items"][0]["item"]["duration_target_sec"] == 3.0
     assert result["scheduled_total_sec"] == 3.0
 
@@ -545,10 +832,7 @@ def test_rebalance_marks_unfit_global_budget_for_narration_repair():
         "mm_finance_male_02",
         "master_01",
     )
-    assert step["action"] == "repair_narration"
-    assert "PRE_TTS_DURATION_OUT_OF_RANGE" in json.loads(
-        step["repair_prompt_json"]
-    )["validator_errors"]
+    assert step["action"] == "pass"
 
     second_step = process_step(
         scheduled["item"],
@@ -563,9 +847,7 @@ def test_rebalance_marks_unfit_global_budget_for_narration_repair():
             "segment_performance": scheduled["segment_performance"],
         },
     )
-    assert second_step["action"] == "fail"
-    assert second_step["step_error"].startswith("REPAIR_LIMIT_EXCEEDED;")
-    assert "PRE_TTS_DURATION" in second_step["step_error"]
+    assert second_step["action"] == "pass"
 
 
 def test_spoken_word_duration_estimate_scales_with_speed():
@@ -651,7 +933,7 @@ def test_rebalance_allows_individual_overrun_within_global_tolerance():
     assert scheduled["item"]["duration_target_sec"] == 5.0
 
 
-def test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded():
+def test_rebalance_keeps_segments_when_default_audio_tolerance_is_not_exceeded():
     within_item = {
         "segment_id": "seg_01_intro",
         "planning_role": "opening_hook",
@@ -696,15 +978,13 @@ def test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_excee
         _profile(),
     )
 
-    assert result["global_overrun_sec"] > result["global_tolerance_sec"]
+    assert result["global_overrun_sec"] <= result["global_tolerance_sec"]
     scheduled = result["scheduled_items"]
     assert scheduled[0]["needs_narration_repair"] is False
     assert "_force_duration_repair" not in scheduled[0]["item"]
-    assert scheduled[1]["needs_narration_repair"] is True
-    assert scheduled[1]["item"]["_force_duration_repair"] is True
-    assert round(sum(
-        item["duration_reduction_required_sec"] for item in scheduled
-    ), 3) == result["duration_reduction_required_sec"]
+    assert scheduled[1]["needs_narration_repair"] is False
+    assert "_force_duration_repair" not in scheduled[1]["item"]
+    assert result["duration_reduction_required_sec"] == 0
 
 
 def test_rebalance_offsets_middle_overrun_with_other_segments_spare_time():
@@ -872,6 +1152,8 @@ def test_duration_repair_prompt_contains_provider_spoken_budget():
         "_segment_overrun_sec": 0.649,
         "_duration_repair_authorized": True,
         "_force_duration_repair": True,
+        "accepted_min_estimated_sec": 2.5,
+        "accepted_max_estimated_sec": 4.2,
     }
     narration = _narration("Gold 4403.71 mixed.")
     performance = _performance(narration["text"])
@@ -908,6 +1190,8 @@ def test_duration_repair_prompt_omits_duplicated_generation_context():
         "performance_context_json": "{" + "y" * 20000 + "}",
         "_duration_repair_authorized": True,
         "_force_duration_repair": True,
+        "accepted_min_estimated_sec": 2.5,
+        "accepted_max_estimated_sec": 4.2,
     }
     narration = _narration("Gold 4403.71 mixed.")
     performance = _performance(narration["text"])
@@ -992,7 +1276,7 @@ def test_authorized_repair_reads_baseline_from_repair_state():
     assert result["done"] is True
 
 
-def test_authorized_repair_must_meet_backend_assigned_maximum():
+def test_repaired_candidate_uses_audio_as_authoritative_duration():
     item = {
         **_item(),
         "duration_target_sec": 3.0,
@@ -1023,12 +1307,8 @@ def test_authorized_repair_must_meet_backend_assigned_maximum():
         },
     )
 
-    assert result["action"] == "fail"
-    assert result["step_error"].startswith("REPAIR_LIMIT_EXCEEDED;")
-    assert "PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET" in result["step_error"]
-    assert "PRE_TTS_DURATION_REPAIR_TARGET_NOT_MET" in json.loads(
-        result["result_json"]
-    )["performance_error"]
+    assert result["action"] == "pass"
+    assert result["step_error"] == ""
 
 
 def test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate():
@@ -1212,21 +1492,11 @@ def test_confirm_accepts_actual_audio_outside_segment_duration_budget():
 
 
 def test_complete_accepts_segment_outside_its_budget_when_video_total_is_within_tolerance():
-    item = _item()
-    forged_media = {
-        **item,
-        "audio": {"url": "https://example.test/audio.mp3", "duration_sec": 16.5},
-        "duration_validation": {
-            "duration_min_sec": 2.0,
-            "duration_max_sec": 8.0,
-            "actual_duration_sec": 16.5,
-            "valid": True,
-        },
-    }
+    contracts, forged_media = _primary_contracts_and_media(16.5)
 
     result = complete_tool08(
         [forged_media],
-        _init_contracts()["segment_plan_v1_json"],
+        contracts["segment_plan_v1_json"],
         _profile(),
     )
 
@@ -1234,27 +1504,24 @@ def test_complete_accepts_segment_outside_its_budget_when_video_total_is_within_
     payload = json.loads(result["segment_media_v1_json"])
     assert payload["video_duration_validation"]["target_duration_sec"] == 4.0
     assert payload["video_duration_validation"]["actual_duration_sec"] == 16.5
-    assert payload["video_duration_validation"]["tolerance_sec"] == 13.0
+    assert payload["video_duration_validation"]["tolerance_sec"] is None
+    assert payload["video_duration_validation"]["enforced"] is False
     assert payload["video_duration_validation"]["valid"] is True
 
 
-def test_complete_rejects_video_total_outside_thirteen_second_tolerance():
-    item = _item()
-    forged_media = {
-        **item,
-        "audio": {"url": "https://example.test/audio.mp3", "duration_sec": 17.1},
-        "duration_validation": {"valid": True},
-    }
+def test_complete_accepts_video_total_outside_old_thirteen_second_tolerance():
+    contracts, forged_media = _primary_contracts_and_media(17.1)
 
     result = complete_tool08(
         [forged_media],
-        _init_contracts()["segment_plan_v1_json"],
+        contracts["segment_plan_v1_json"],
         _profile(),
     )
 
-    assert result["complete_valid"] is False
-    assert result["complete_error"] == "ACTUAL_VIDEO_DURATION_OUT_OF_RANGE"
-    assert json.loads(result["bad_segment_ids_json"]) == ["seg_01"]
+    assert result["complete_valid"] is True
+    payload = json.loads(result["segment_media_v1_json"])
+    assert payload["video_duration_validation"]["actual_duration_sec"] == 17.1
+    assert payload["video_duration_validation"]["enforced"] is False
 
 
 def test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget():
@@ -1315,17 +1582,17 @@ def test_complete_rejects_duplicate_iteration_output_ids():
 
 
 def test_finalize_preserves_master_request_id_and_success_contract():
-    step = process_step(
-        _item(), _narration(), _performance(), _profile(), "mm_finance_male_02", "master_01"
-    )
-    confirm = confirm_tts_result(
-        _item(), step["result_json"],
-        {"wait_status": "completed", "job": {"status": "completed", "audio_url": "https://example.test/a.mp3", "duration_sec": 4.2}},
-    )
-    rendered = segment_render_success(_item(), confirm)
+    contracts, media = _primary_contracts_and_media()
+    rendered = {
+        "schema_version": "segment-render-result-v1",
+        "segment_valid": True,
+        "segment_error": "",
+        "segment_id": "seg_01",
+        "segment_media_input": media,
+    }
     result = finalize_tool08(
         [json.dumps(rendered)],
-        _init_contracts()["segment_plan_v1_json"],
+        contracts["segment_plan_v1_json"],
         _profile(),
         "master_01",
     )
@@ -1361,6 +1628,14 @@ def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
     for test in (
         test_init_returns_direct_iteration_array_and_profile,
+        test_init_filters_indicator_facts_by_segment_role,
+        test_init_rejects_indicator_context_that_differs_from_technical_contract,
+        test_step_repairs_forbidden_indicator_and_second_failure_stops,
+        test_step_rejects_indicator_value_absent_from_supplied_context,
+        test_confirm_preserves_code_derived_indicator_audit_fields,
+        test_complete_rejects_full_video_that_never_mentions_selected_indicator,
+        test_complete_accepts_consistent_indicator_audit_contract,
+        test_complete_rejects_media_with_changed_indicator_profile,
         test_init_adds_conservative_draft_spoken_word_budget,
         test_step_soft_triggers_repair_for_candidate_outside_duration_band,
         test_step_rejects_performance_that_changes_pregeneration_preset,
@@ -1375,11 +1650,11 @@ def load_tests(loader, tests, pattern):
         test_step_uses_spoken_forms_for_prices_percentages_times_timeframes_and_levels,
         test_price_spoken_duration_does_not_trigger_repair_when_two_prices_exceed_visual_budget,
         test_rebalance_preserves_original_segment_budgets_instead_of_stretching_audio,
-        test_rebalance_marks_unfit_global_budget_for_narration_repair,
+        test_rebalance_keeps_audio_authoritative_without_explicit_video_limit,
         test_spoken_word_duration_estimate_scales_with_speed,
         test_rebalance_expands_budget_for_spoken_overrun,
         test_rebalance_allows_individual_overrun_within_global_tolerance,
-        test_rebalance_repairs_only_overrun_segments_after_global_tolerance_is_exceeded,
+        test_rebalance_keeps_segments_when_default_audio_tolerance_is_not_exceeded,
         test_rebalance_offsets_middle_overrun_with_other_segments_spare_time,
         test_rebalance_assigns_one_explicit_repair_target_for_real_global_overrun,
         test_rebalance_uses_preferred_video_maximum_before_hard_maximum,
@@ -1389,7 +1664,7 @@ def load_tests(loader, tests, pattern):
         test_duration_repair_prompt_omits_duplicated_generation_context,
         test_authorized_repair_allows_reduced_candidate_above_segment_target,
         test_authorized_repair_reads_baseline_from_repair_state,
-        test_authorized_repair_must_meet_backend_assigned_maximum,
+        test_repaired_candidate_uses_audio_as_authoritative_duration,
         test_step_does_not_repair_short_segment_only_to_meet_a_word_duration_estimate,
         test_step_does_not_pad_a_short_draft_to_match_an_authored_visual_budget,
         test_second_invalid_candidate_fails_after_one_repair,
@@ -1398,7 +1673,7 @@ def load_tests(loader, tests, pattern):
         test_confirm_rejects_unresolved_visual_facts,
         test_confirm_accepts_actual_audio_outside_segment_duration_budget,
         test_complete_accepts_segment_outside_its_budget_when_video_total_is_within_tolerance,
-        test_complete_rejects_video_total_outside_thirteen_second_tolerance,
+        test_complete_accepts_video_total_outside_old_thirteen_second_tolerance,
         test_step_does_not_repair_a_long_narration_only_for_an_authored_segment_budget,
         test_complete_rejects_missing_iteration_media_and_returns_external_contract,
         test_init_rejects_invalid_upstream_contract_version,
