@@ -31,13 +31,21 @@ class JobStore:
         self.root.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._request_index: dict[str, str] = {}
+        request_versions: dict[str, tuple[int, str, str]] = {}
         for path in self.root.glob("*.json"):
             try:
                 job = json.loads(path.read_text(encoding="utf-8"))
                 request_id = str(job.get("request_id") or "")
                 job_id = str(job.get("job_id") or "")
                 if request_id and job_id:
-                    self._request_index[request_id] = job_id
+                    version = (
+                        int(job.get("replacement_generation") or 0),
+                        str(job.get("created_at") or ""),
+                        job_id,
+                    )
+                    if version >= request_versions.get(request_id, (-1, "", "")):
+                        request_versions[request_id] = version
+                        self._request_index[request_id] = job_id
             except (OSError, ValueError, TypeError):
                 continue
 
@@ -78,6 +86,43 @@ class JobStore:
                 "created_at": now,
                 "updated_at": now,
             }
+            self._request_index[request_id] = str(job["job_id"])
+            self._write(job)
+            return deepcopy(job), True
+
+    def create_or_replace(
+        self,
+        request_id: str,
+        payload: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        """Reuse an identical request or atomically replace a conflicting one."""
+        payload_hash = _fingerprint(payload)
+        with self._lock:
+            existing_id = self._request_index.get(request_id)
+            if existing_id:
+                existing = self.get(existing_id)
+                if existing.get("payload_hash") == payload_hash:
+                    return existing, False
+            generation = (
+                int(existing.get("replacement_generation") or 0) + 1
+                if existing_id
+                else 0
+            )
+            now = utc_now()
+            job = {
+                "job_id": self.job_prefix + uuid.uuid4().hex,
+                "request_id": request_id,
+                "payload_hash": payload_hash,
+                "payload": deepcopy(payload),
+                "status": "queued",
+                "result": None,
+                "error": None,
+                "created_at": now,
+                "updated_at": now,
+                "replacement_generation": generation,
+            }
+            if existing_id:
+                job["replaces_job_id"] = existing_id
             self._request_index[request_id] = str(job["job_id"])
             self._write(job)
             return deepcopy(job), True

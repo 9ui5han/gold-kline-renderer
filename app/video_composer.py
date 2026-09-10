@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from app.job_store import IdempotencyConflict, JobStore
+from app.job_store import JobStore
 
 
 def now_iso() -> str:
@@ -85,7 +85,7 @@ class ComposeSegment(BaseModel):
 class ComposeVideoConfig(BaseModel):
     width: int = Field(default=1080, ge=320, le=3840)
     height: int = Field(default=1920, ge=320, le=3840)
-    fps: int = Field(default=30, ge=24, le=60)
+    fps: int = Field(default=60, ge=24, le=60)
     format: str = Field(default="mp4", pattern=r"^mp4$")
 
 
@@ -811,10 +811,7 @@ def create_compose_job(
     payload: ComposeRequest,
 ) -> dict[str, Any]:
     payload_dict = payload.model_dump()
-    try:
-        stored, created = JOB_STORE.create_or_get(payload.request_id, payload_dict)
-    except IdempotencyConflict as exc:
-        raise HTTPException(409, "IDEMPOTENCY_CONFLICT") from exc
+    stored, created = JOB_STORE.create_or_replace(payload.request_id, payload_dict)
     job_id = str(stored["job_id"])
 
     if not created:

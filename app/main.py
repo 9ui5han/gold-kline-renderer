@@ -194,7 +194,7 @@ class Candle(BaseModel):
 class VideoOptions(BaseModel):
     width: int = Field(default=1080, ge=720, le=2160)
     height: int = Field(default=1920, ge=1280, le=3840)
-    fps: int = Field(default=30, ge=24, le=60)
+    fps: int = Field(default=60, ge=24, le=60)
     format: Literal["mp4"] = "mp4"
 
 
@@ -4436,9 +4436,9 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
                 "-threads",
                 "2",
                 "-preset",
-                "ultrafast",
+                "medium",
                 "-crf",
-                "24",
+                "18",
                 "-c:a",
                 "aac",
                 "-b:a",
@@ -4488,8 +4488,8 @@ def render_job(job_id: str, payload: dict[str, Any]) -> None:
             "-i", str(chinese_subtitle_free_concat_path), "-i", str(audio_path),
             "-t", f"{duration:.3f}",
             "-vf", f"fps={payload['video']['fps']},format=yuv420p",
-            "-c:v", "libx264", "-threads", "2", "-preset", "ultrafast",
-            "-crf", "24", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
+            "-c:v", "libx264", "-threads", "2", "-preset", "medium",
+            "-crf", "18", "-c:a", "aac", "-b:a", "160k", "-ar", "48000",
             "-shortest", "-movflags", "+faststart", str(chinese_subtitle_free_output_path),
         ])
         chinese_subtitle_free_duration = round(
@@ -4601,9 +4601,9 @@ def render_single_test_video(payload: dict[str, Any]) -> dict[str, Any]:
             "-threads",
             "2",
             "-preset",
-            "ultrafast",
+            "medium",
             "-crf",
-            "24",
+            "18",
         ]
     )
     if audio_url:

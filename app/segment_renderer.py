@@ -113,7 +113,7 @@ _start_cleanup_worker()
 class VideoSpec(BaseModel):
     width: int = Field(default=1080, ge=320, le=3840)
     height: int = Field(default=1920, ge=320, le=3840)
-    fps: int = Field(default=30, ge=24, le=60)
+    fps: int = Field(default=60, ge=24, le=60)
     format: str = "mp4"
 
 
@@ -867,6 +867,12 @@ def _clamp(value: float, lower: float = 0.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
 
+def _smoothstep(progress: float) -> float:
+    """Ease a 0..1 animation so its start and end do not snap."""
+    normalized = _clamp(float(progress))
+    return normalized * normalized * (3.0 - 2.0 * normalized)
+
+
 def _active_event(events: list[dict[str, Any]], elapsed_sec: float) -> tuple[dict[str, Any] | None, float]:
     if not events:
         return None, 0.0
@@ -929,8 +935,7 @@ def _indicator_opacity(timeline: dict[str, Any], elapsed_sec: float) -> int:
     if fade_seconds <= 0:
         return 255
     progress = _clamp(float(elapsed_sec) / fade_seconds)
-    eased = progress * progress * (3.0 - 2.0 * progress)
-    return int(round(255 * eased))
+    return int(round(255 * _smoothstep(progress)))
 
 
 def _camera_view(motion: str, progress: float) -> tuple[float, float]:
@@ -1036,7 +1041,7 @@ def _render_dynamic_frame(
     current_reveal_alpha = (
         255
         if reveal_fraction <= 1e-6 or current_reveal_index == 0
-        else int(round(255 * _clamp(reveal_fraction)))
+        else int(round(255 * _smoothstep(reveal_fraction)))
     )
     highs = [float(x["high"]) for x in candles]
     lows = [float(x["low"]) for x in candles]
@@ -1273,18 +1278,15 @@ def _render_dynamic_video(payload: dict[str, Any], audio_path: Path, output_path
     fps = int(video["fps"])
     duration = float(payload["render_duration_sec"])
     frame_count = max(1, int(math.ceil(duration * fps)))
-    command = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-f", "rawvideo", "-pix_fmt", "rgb24",
-        "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
-        "-i", str(audio_path),
-        "-map", "0:v:0", "-map", "1:a:0",
-        "-af", f"adelay={int(round(float(payload['head_handle_sec']) * 1000))}|{int(round(float(payload['head_handle_sec']) * 1000))},apad",
-        "-t", f"{duration:.6f}",
-        "-c:v", "libx264", "-preset", "medium", "-pix_fmt", "yuv420p",
-        "-r", str(fps), "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-        "-movflags", "+faststart", str(output_path),
-    ]
+    command = _dynamic_ffmpeg_command(
+        width=width,
+        height=height,
+        fps=fps,
+        duration=duration,
+        head_handle_sec=float(payload["head_handle_sec"]),
+        audio_path=audio_path,
+        output_path=output_path,
+    )
     process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
         assert process.stdin is not None
@@ -1308,6 +1310,33 @@ def _render_dynamic_video(payload: dict[str, Any], audio_path: Path, output_path
         raise
     if return_code != 0:
         raise RuntimeError(f"FFMPEG_RENDER_FAILED:{stderr[-2000:]}")
+
+
+def _dynamic_ffmpeg_command(
+    *,
+    width: int,
+    height: int,
+    fps: int,
+    duration: float,
+    head_handle_sec: float,
+    audio_path: str | Path,
+    output_path: str | Path,
+) -> list[str]:
+    """Build the loss-controlled encoder command without changing the canvas."""
+    return [
+        "ffmpeg", "-y", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24",
+        "-s", f"{width}x{height}", "-r", str(fps), "-i", "-",
+        "-i", str(audio_path),
+        "-map", "0:v:0", "-map", "1:a:0",
+        "-af", f"adelay={int(round(head_handle_sec * 1000))}|{int(round(head_handle_sec * 1000))},apad",
+        "-t", f"{duration:.6f}",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p",
+        "-r", str(fps),
+        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart", str(output_path),
+    ]
 
 
 def _render_failure_details(exc: Exception, payload: dict[str, Any]) -> dict[str, Any]:

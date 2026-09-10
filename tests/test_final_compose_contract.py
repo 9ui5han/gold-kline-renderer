@@ -1,4 +1,5 @@
 import json
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -50,6 +51,68 @@ def _start_payload(master_request_id="gold-contract-01"):
 
 
 class FinalComposeContractTests(unittest.TestCase):
+    def test_compose_job_replaces_different_payload_with_same_request_id(self):
+        from app import video_composer
+        from app.job_store import JobStore
+
+        first = video_composer.ComposeRequest.model_validate({
+            "request_id": "gold-replace-final-compose",
+            "segments": [{
+                "segment_id": "seg_01",
+                "order": 1,
+                "video_url": "https://example.invalid/old.mp4",
+                "base_duration_sec": 4.0,
+                "head_handle_sec": 0.0,
+                "tail_handle_sec": 0.0,
+                "actual_render_duration_sec": 4.0,
+                "transition_out": {"type": "hard_cut", "duration_ms": 0},
+                "probe_valid": True,
+                "kline_main_visual_present": True,
+            }],
+            "expected_final_duration_sec": 4.0,
+            "narration_timeline_sec": 4.0,
+            "video_target_duration_sec": 4.0,
+            "preferred_duration_min_sec": 3.0,
+            "preferred_duration_max_sec": 5.0,
+            "hard_duration_min_sec": 2.0,
+            "hard_duration_max_sec": 6.0,
+            "fallback_policy": {"transition_failure": ["hard_cut"]},
+            "video": {"width": 1080, "height": 1920, "fps": 30, "format": "mp4"},
+        })
+        second = first.model_copy(deep=True)
+        second.segments[0].video_url = "https://example.invalid/new.mp4"
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = JobStore(directory, job_prefix="compose_")
+            with (
+                patch.object(video_composer, "JOB_STORE", store),
+                patch.object(video_composer.threading.Thread, "start") as start,
+            ):
+                old_job = video_composer.create_compose_job(first)
+                new_job = video_composer.create_compose_job(second)
+                reused_job = video_composer.create_compose_job(second)
+                store.update(old_job["job_id"], status="completed")
+                reloaded_store = JobStore(directory, job_prefix="compose_")
+                reloaded_job, reloaded_created = reloaded_store.create_or_replace(
+                    second.request_id,
+                    second.model_dump(),
+                )
+
+            self.assertNotEqual(old_job["job_id"], new_job["job_id"])
+            self.assertEqual(new_job["job_id"], reused_job["job_id"])
+            self.assertEqual(new_job["job_id"], reloaded_job["job_id"])
+            self.assertFalse(reloaded_created)
+            self.assertEqual(
+                store.get(new_job["job_id"])["replacement_generation"],
+                1,
+            )
+            self.assertEqual(new_job["request_id"], first.request_id)
+            self.assertEqual(
+                store.get(new_job["job_id"])["payload"]["segments"][0]["video_url"],
+                "https://example.invalid/new.mp4",
+            )
+            self.assertEqual(start.call_count, 2)
+
     def test_tool10_rejects_invalid_transition_duration_and_handle_contract(self):
         from app.video_composer import FinalComposeStartRequest, _compose_request_from_tool10
         from fastapi import HTTPException
