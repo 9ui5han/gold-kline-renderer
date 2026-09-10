@@ -859,6 +859,8 @@ class SegmentPlanStepRequest(BaseModel):
     structure_paths: dict[str, Any]
     forecast_framework: dict[str, Any]
     macro_timing: dict[str, Any]
+    indicator_profile: dict[str, Any]
+    indicator_context: dict[str, Any]
     repair_count: int = Field(default=0, ge=0, le=2)
 
 
@@ -984,6 +986,8 @@ def segment_plans_step(payload: SegmentPlanStepRequest) -> dict[str, Any]:
         payload.forecast_framework,
         payload.macro_timing,
         payload.repair_count,
+        payload.indicator_profile,
+        payload.indicator_context,
     )
 
 

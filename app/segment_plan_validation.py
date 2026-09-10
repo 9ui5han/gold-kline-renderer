@@ -8,6 +8,12 @@ from math import isclose
 from typing import Any
 
 from .kline_precision import normalize_kline_numbers
+from .indicator_style import (
+    INDICATOR_REGISTRY,
+    IndicatorStyleError,
+    canonical_planning_role,
+    normalize_indicator_profile,
+)
 from .visual_fact_catalog import (
     VisualFactCatalogError,
     build_visual_fact_catalog,
@@ -31,6 +37,80 @@ ALLOWED_EVENT_TYPES = {
     "hook_text", "technical_label", "price_level", "scenario_path",
     "macro_marker", "risk_notice", "closing_question", "caption",
 }
+
+
+def _validate_indicator_contract(
+    indicator_profile: Any,
+    indicator_context: Any,
+    errors: list[str],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Validate immutable TOOL-07 indicator inputs without deriving LLM data."""
+    try:
+        profile = normalize_indicator_profile(indicator_profile)
+    except IndicatorStyleError as exc:
+        errors.append(str(exc))
+        return None, None
+
+    if not isinstance(indicator_context, dict) or not indicator_context:
+        errors.append("INDICATOR_CONTEXT_REQUIRED")
+        return profile, None
+    if indicator_context.get("schema_version") != "indicator-context-v1":
+        errors.append("INDICATOR_CONTEXT_VERSION_INVALID")
+        return profile, None
+    if indicator_context.get("style_id") != profile["style_id"]:
+        errors.append("INDICATOR_CONTEXT_MISMATCH")
+    if indicator_context.get("indicator_ids") != profile["indicator_ids"]:
+        errors.append("INDICATOR_CONTEXT_MISMATCH")
+
+    facts = indicator_context.get("facts")
+    if not isinstance(facts, dict):
+        errors.append("INDICATOR_CONTEXT_FACTS_INVALID")
+        return profile, None
+    allowed_fact_keys = {
+        "closed_count", "last_close", "ema20", "ema50", "ema_alignment",
+        "close_vs_ema20", "close_vs_ema50",
+    }
+    if set(facts) - allowed_fact_keys:
+        errors.append("INDICATOR_CONTEXT_MISMATCH")
+    try:
+        closed_count = int(facts["closed_count"])
+        float(facts["last_close"])
+        float(facts["ema20"])
+        float(facts["ema50"])
+    except (KeyError, TypeError, ValueError):
+        errors.append("INDICATOR_CONTEXT_FACTS_INVALID")
+        return profile, None
+    if closed_count < INDICATOR_REGISTRY["dual_ema"]["min_closed_candles"]:
+        errors.append("DUAL_EMA_DATA_INSUFFICIENT")
+    return profile, indicator_context
+
+
+def _add_indicator_anchors(
+    visual_fact_catalog: dict[str, Any],
+    indicator_context: dict[str, Any] | None,
+) -> None:
+    """Expose only supplied dual-EMA prices as factual camera anchors."""
+    if not indicator_context:
+        return
+    facts = indicator_context.get("facts")
+    if not isinstance(facts, dict):
+        return
+    catalog_facts = visual_fact_catalog.get("facts")
+    if not isinstance(catalog_facts, list):
+        return
+    for component in ("ema20", "ema50"):
+        try:
+            price = float(facts[component])
+        except (KeyError, TypeError, ValueError):
+            continue
+        catalog_facts.append({
+            "anchor_id": f"indicator:{component}",
+            "fact_type": "indicator_price",
+            "indicator_id": "dual_ema",
+            "component": component,
+            "price": price,
+            "display_text": component.upper(),
+        })
 
 
 def _number(value: Any, label: str, errors: list[str]) -> float:
@@ -330,8 +410,25 @@ def validate_segment_plan(
     structure_paths: dict[str, Any],
     forecast_framework: dict[str, Any],
     macro_timing: dict[str, Any],
+    indicator_profile: Any = None,
+    indicator_context: Any = None,
 ) -> dict[str, Any]:
     errors: list[str] = []
+    normalized_profile, validated_indicator_context = _validate_indicator_contract(
+        indicator_profile,
+        indicator_context,
+        errors,
+    )
+    if (
+        isinstance(segment_plan.get("indicator_profile"), dict)
+        and segment_plan["indicator_profile"] != indicator_profile
+    ):
+        errors.append("INDICATOR_PROFILE_MUTATED")
+    if (
+        isinstance(segment_plan.get("indicator_context"), dict)
+        and segment_plan["indicator_context"] != indicator_context
+    ):
+        errors.append("INDICATOR_CONTEXT_MUTATED")
     try:
         visual_fact_catalog = build_visual_fact_catalog(
             technical_facts,
@@ -347,6 +444,7 @@ def validate_segment_plan(
             "facts": [],
         }
         errors.append(str(exc))
+    _add_indicator_anchors(visual_fact_catalog, validated_indicator_context)
 
     if segment_plan.get("schema_version") != "video-segment-plan-v1":
         errors.append("schema_version必须是video-segment-plan-v1")
@@ -431,6 +529,7 @@ def validate_segment_plan(
 
         section = str(segment.get("section") or "")
         role = str(segment.get("planning_role") or "")
+        canonical_role = canonical_planning_role(role)
         seen_sections.add(section)
         if role != expected_roles.get(section):
             errors.append(f"{segment_id}:planning_role与section不匹配")
@@ -440,6 +539,29 @@ def validate_segment_plan(
             known_anchor_ids,
             errors,
         )
+        if normalized_profile is not None:
+            try:
+                show_role = normalized_profile["show_from_role"]
+                role_is_before_indicator = (
+                    canonical_role in {
+                        "opening_hook", "technical_context", "macro_context"
+                    }
+                )
+                if role_is_before_indicator and any(
+                    anchor.startswith("indicator:") for anchor in segment_anchors
+                ):
+                    errors.append(
+                        f"{segment_id}:INDICATOR_VISIBILITY_BEFORE_ROLE"
+                    )
+                if role_is_before_indicator and any(
+                    key in segment.get("visual", {})
+                    for key in ("indicator_focus", "indicator_label", "show_indicators")
+                ):
+                    errors.append(
+                        f"{segment_id}:INDICATOR_VISIBILITY_BEFORE_ROLE"
+                    )
+            except (KeyError, TypeError):
+                pass
         duration = _number(
             segment.get("duration_target_sec"),
             f"{segment_id}:duration_target_sec",
@@ -574,6 +696,12 @@ def validate_segment_plan(
                     event.get("fact_anchor_ids"), event_label,
                     known_anchor_ids, errors,
                 )
+                if normalized_profile is not None and canonical_role in {
+                    "opening_hook", "technical_context", "macro_context"
+                } and any(anchor.startswith("indicator:") for anchor in event_anchors):
+                    errors.append(
+                        f"{event_label}:INDICATOR_VISIBILITY_BEFORE_ROLE"
+                    )
                 if not has_relevant_macro and (
                     event_type == "macro_marker"
                     or any(item.startswith("macro:") for item in event_anchors)
@@ -684,6 +812,8 @@ def validate_segment_plan(
         "segment_plan_errors": errors,
         "calculated_final_duration_sec": round(estimated, 3),
         "duration_in_preferred": preferred_min <= estimated <= preferred_max,
+        "indicator_profile": indicator_profile,
+        "indicator_context": indicator_context,
     }
 
 
@@ -697,6 +827,8 @@ def process_segment_plan_step(
     forecast_framework: dict[str, Any],
     macro_timing: dict[str, Any],
     repair_count: int,
+    indicator_profile: Any = None,
+    indicator_context: Any = None,
     *,
     max_repairs: int = 2,
 ) -> dict[str, Any]:
@@ -715,6 +847,7 @@ def process_segment_plan_step(
     validation = validate_segment_plan(
         candidate, segment_budget, technical_facts, market_analysis,
         validated_levels, structure_paths, forecast_framework, macro_timing,
+        indicator_profile, indicator_context,
     )
     if reallocation_errors:
         validation["segment_plan_errors"] = (
@@ -728,6 +861,8 @@ def process_segment_plan_step(
     contract = {
         "schema_version": "segment-plan-contract-v1",
         "visual_fact_catalog": validation["visual_fact_catalog"],
+        "indicator_profile": validation["indicator_profile"],
+        "indicator_context": validation["indicator_context"],
         "segment_plan": candidate,
         "segment_plan_valid": valid,
         "segment_plan_errors": errors,
@@ -755,6 +890,8 @@ def process_segment_plan_step(
         "structure_paths": structure_paths,
         "forecast_framework": forecast_framework,
         "macro_timing": macro_timing,
+        "indicator_profile": indicator_profile,
+        "indicator_context": indicator_context,
     }
     next_request_base = {
         "segment_budget": segment_budget,
@@ -764,6 +901,8 @@ def process_segment_plan_step(
         "structure_paths": structure_paths,
         "forecast_framework": forecast_framework,
         "macro_timing": macro_timing,
+        "indicator_profile": indicator_profile,
+        "indicator_context": indicator_context,
         "repair_count": count + 1,
     }
     return {

@@ -1,6 +1,8 @@
 import json
 import unittest
 
+from app.indicator_style import DEFAULT_INDICATOR_PROFILE
+from app.main import SegmentPlanStepRequest
 from app.segment_plan_validation import process_segment_plan_step
 
 
@@ -103,6 +105,22 @@ CONTEXT = {
     "macro_timing": {"events": []},
 }
 
+INDICATOR_CONTEXT = {
+    "schema_version": "indicator-context-v1",
+    "style_id": "dual_ema_trend",
+    "primary_timeframe": "1h",
+    "indicator_ids": ["dual_ema"],
+    "facts": {
+        "closed_count": 80,
+        "last_close": 4616.9,
+        "ema20": 4612.5,
+        "ema50": 4608.0,
+        "ema_alignment": "ema20_above_ema50",
+        "close_vs_ema20": "above",
+        "close_vs_ema50": "above",
+    },
+}
+
 
 class SegmentPlanValidationTests(unittest.TestCase):
     def _step(self, candidate, repair_count):
@@ -116,6 +134,8 @@ class SegmentPlanValidationTests(unittest.TestCase):
             CONTEXT["forecast_framework"],
             CONTEXT["macro_timing"],
             repair_count,
+            indicator_profile=DEFAULT_INDICATOR_PROFILE,
+            indicator_context=INDICATOR_CONTEXT,
         )
 
     def test_valid_plan_passes(self):
@@ -124,6 +144,90 @@ class SegmentPlanValidationTests(unittest.TestCase):
         self.assertTrue(result["done"])
         final = json.loads(result["result_json"])
         self.assertTrue(final["segment_plan_valid"])
+
+    def test_missing_indicator_contract_requests_repair(self):
+        """Removing the new authoritative style contract must block TOOL-07."""
+        result = process_segment_plan_step(
+            VALID_PLAN, CONTEXT["segment_budget"], CONTEXT["technical_facts"],
+            CONTEXT["market_analysis"], CONTEXT["validated_levels"],
+            CONTEXT["structure_paths"], CONTEXT["forecast_framework"],
+            CONTEXT["macro_timing"], 0,
+        )
+
+        self.assertEqual(result["action"], "repair")
+        errors = json.loads(result["repair_prompt_json"])["validator_errors"]
+        self.assertIn("INDICATOR_PROFILE_REQUIRED", errors)
+
+    def test_invalid_indicator_profile_requests_repair(self):
+        profile = dict(DEFAULT_INDICATOR_PROFILE)
+        profile["indicator_ids"] = ["macd"]
+        result = process_segment_plan_step(
+            VALID_PLAN, CONTEXT["segment_budget"], CONTEXT["technical_facts"],
+            CONTEXT["market_analysis"], CONTEXT["validated_levels"],
+            CONTEXT["structure_paths"], CONTEXT["forecast_framework"],
+            CONTEXT["macro_timing"], 0,
+            indicator_profile=profile,
+            indicator_context=INDICATOR_CONTEXT,
+        )
+        errors = json.loads(result["repair_prompt_json"])["validator_errors"]
+        self.assertIn("INDICATOR_NOT_REGISTERED:macd", errors)
+
+    def test_llm_cannot_mutate_indicator_profile(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["indicator_profile"] = {
+            "schema_version": "indicator-profile-v1",
+            "indicator_ids": ["macd"],
+        }
+
+        result = self._step(candidate, 0)
+
+        errors = json.loads(result["repair_prompt_json"])["validator_errors"]
+        self.assertIn("INDICATOR_PROFILE_MUTATED", errors)
+
+    def test_pre_forecast_indicator_anchor_requests_repair(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["segments"][0]["fact_anchor_ids"] = ["indicator:ema20"]
+        candidate["segments"][0]["visual"]["indicator_focus"] = True
+
+        result = self._step(candidate, 0)
+
+        errors = json.loads(result["repair_prompt_json"])["validator_errors"]
+        self.assertTrue(any("INDICATOR_VISIBILITY_BEFORE_ROLE" in item for item in errors))
+
+    def test_repair_loop_and_final_contract_preserve_indicator_inputs(self):
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        candidate["segments"][-1]["scenes"][-1]["template_id"] = "chart_push"
+
+        repair = self._step(candidate, 0)
+        next_request = json.loads(repair["next_request_base_json"])
+        prompt = json.loads(repair["repair_prompt_json"])
+
+        self.assertEqual(next_request["indicator_profile"], DEFAULT_INDICATOR_PROFILE)
+        self.assertEqual(next_request["indicator_context"], INDICATOR_CONTEXT)
+        self.assertEqual(prompt["indicator_profile"], DEFAULT_INDICATOR_PROFILE)
+        self.assertEqual(prompt["indicator_context"], INDICATOR_CONTEXT)
+
+        passed = self._step(VALID_PLAN, 0)
+        contract = json.loads(json.loads(passed["result_json"])["segment_plan_v1_json"])
+        self.assertEqual(contract["indicator_profile"], DEFAULT_INDICATOR_PROFILE)
+        self.assertEqual(contract["indicator_context"], INDICATOR_CONTEXT)
+
+    def test_http_request_model_keeps_indicator_contract_objects(self):
+        payload = SegmentPlanStepRequest.model_validate({
+            "candidate": VALID_PLAN,
+            "segment_budget": BUDGET,
+            "technical_facts": CONTEXT["technical_facts"],
+            "market_analysis": CONTEXT["market_analysis"],
+            "validated_levels": CONTEXT["validated_levels"],
+            "structure_paths": CONTEXT["structure_paths"],
+            "forecast_framework": CONTEXT["forecast_framework"],
+            "macro_timing": CONTEXT["macro_timing"],
+            "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+            "indicator_context": INDICATOR_CONTEXT,
+        })
+
+        self.assertEqual(payload.indicator_profile, DEFAULT_INDICATOR_PROFILE)
+        self.assertEqual(payload.indicator_context, INDICATOR_CONTEXT)
 
     def test_invalid_plan_requests_repair(self):
         candidate = json.loads(json.dumps(VALID_PLAN))
@@ -213,6 +317,8 @@ class SegmentPlanValidationTests(unittest.TestCase):
             CONTEXT["forecast_framework"],
             CONTEXT["macro_timing"],
             0,
+            indicator_profile=DEFAULT_INDICATOR_PROFILE,
+            indicator_context=INDICATOR_CONTEXT,
         )
         self.assertEqual(result["action"], "pass")
         contract = json.loads(json.loads(result["result_json"])["segment_plan_v1_json"])
@@ -250,6 +356,8 @@ class SegmentPlanValidationTests(unittest.TestCase):
             CONTEXT["forecast_framework"],
             CONTEXT["macro_timing"],
             0,
+            indicator_profile=DEFAULT_INDICATOR_PROFILE,
+            indicator_context=INDICATOR_CONTEXT,
         )
         self.assertEqual(result["action"], "pass")
 
