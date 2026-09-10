@@ -5,6 +5,27 @@ from pathlib import Path
 from unittest.mock import patch
 
 class V72VideoJobsTests(unittest.TestCase):
+    def test_focus_zoom_returns_to_overview_after_focus_event(self):
+        from app.segment_renderer import _camera_view, _focus_zoom_progress
+
+        start_scale, start_horizontal = _camera_view("focus_zoom", 0.0)
+        middle_scale, middle_horizontal = _camera_view("focus_zoom", 0.5)
+        end_scale, end_horizontal = _camera_view("focus_zoom", 1.0)
+
+        self.assertAlmostEqual(start_scale, 1.0)
+        self.assertAlmostEqual(end_scale, 1.0)
+        self.assertGreater(middle_scale, 1.0)
+        self.assertEqual(start_horizontal, middle_horizontal)
+        self.assertEqual(middle_horizontal, end_horizontal)
+
+        curve = [_focus_zoom_progress(value) for value in (0.0, 0.1, 0.2, 0.5, 0.8, 0.9, 1.0)]
+        self.assertEqual(curve[0], 0.0)
+        self.assertEqual(curve[-1], 0.0)
+        self.assertGreater(curve[1], curve[0])
+        self.assertEqual(curve[2], curve[3])
+        self.assertEqual(curve[3], curve[4])
+        self.assertGreater(curve[5], curve[6])
+
     def test_new_routes_are_registered(self):
         os.environ.setdefault("RENDER_SERVICE_TOKEN", "test-token-123456789")
         from app.main import app

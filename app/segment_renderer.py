@@ -29,6 +29,7 @@ from app.indicator_style import (
 )
 from app.job_store import IdempotencyConflict, JobStore
 from app.kline_precision import normalize_kline_numbers
+from app.chart_renderer import _draw_segmented_arrow
 
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/tmp/gold-video"))
@@ -395,7 +396,12 @@ def _build_visual_timeline(
             str(anchor)
             for event in scene["overlay_events"]
             if isinstance(event, dict)
-            for anchor in (event.get("fact_anchor_ids") or [])
+            for anchor in (
+                event.get("focus_anchor_ids")
+                if isinstance(event.get("focus_anchor_ids"), list)
+                and event.get("focus_anchor_ids")
+                else event.get("fact_anchor_ids") or []
+            )
         ]
         if not focus_anchor_ids:
             focus_anchor_ids = [
@@ -423,7 +429,8 @@ def _build_visual_timeline(
             if event_start < start - 0.05 or event_end > end + 0.05 or event_end <= event_start:
                 raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_BOUNDS_INVALID"})
             anchors = raw_event.get("fact_anchor_ids") if isinstance(raw_event.get("fact_anchor_ids"), list) else []
-            if any(str(anchor) not in fact_ids for anchor in anchors):
+            draw_anchors = raw_event.get("draw_anchor_ids") if isinstance(raw_event.get("draw_anchor_ids"), list) else []
+            if any(str(anchor) not in fact_ids for anchor in anchors + draw_anchors):
                 raise HTTPException(status_code=422, detail={"code": "RESOLVED_VISUAL_FACT_NOT_FOUND", "event_id": str(raw_event.get("event_id") or "")})
             overlay_plan.append({
                 "event_id": str(raw_event.get("event_id") or f"{scene['scene_id']}:overlay:{event_index}"),
@@ -431,6 +438,14 @@ def _build_visual_timeline(
                 "start_sec": event_start,
                 "end_sec": event_end,
                 "fact_anchor_ids": anchors,
+                "trigger_id": str(raw_event.get("trigger_id") or ""),
+                "trigger_action": str(raw_event.get("trigger_action") or ""),
+                "focus_anchor_ids": raw_event.get("focus_anchor_ids") if isinstance(raw_event.get("focus_anchor_ids"), list) else [],
+                "draw_anchor_ids": raw_event.get("draw_anchor_ids") if isinstance(raw_event.get("draw_anchor_ids"), list) else [],
+                "focus_in_ms": int(raw_event.get("focus_in_ms") or 300),
+                "focus_out_ms": int(raw_event.get("focus_out_ms") or 300),
+                "path_style": str(raw_event.get("path_style") or "single_arrow"),
+                "arrow_heads": str(raw_event.get("arrow_heads") or "endpoint_only"),
             })
         previous_end = end
 
@@ -873,6 +888,16 @@ def _smoothstep(progress: float) -> float:
     return normalized * normalized * (3.0 - 2.0 * normalized)
 
 
+def _focus_zoom_progress(progress: float) -> float:
+    """Return a smooth enter-hold-exit curve for a short focus accent."""
+    normalized = _clamp(float(progress))
+    if normalized <= 0.20:
+        return _smoothstep(normalized / 0.20)
+    if normalized >= 0.80:
+        return _smoothstep((1.0 - normalized) / 0.20)
+    return 1.0
+
+
 def _active_event(events: list[dict[str, Any]], elapsed_sec: float) -> tuple[dict[str, Any] | None, float]:
     if not events:
         return None, 0.0
@@ -943,7 +968,11 @@ def _camera_view(motion: str, progress: float) -> tuple[float, float]:
     progress = _clamp(progress)
     eased = progress * progress * (3.0 - 2.0 * progress)
     if motion == "focus_zoom":
-        return 1.0 + 0.60 * eased, 0.72
+        # A focus event is a short accent, not a one-way zoom.  Enter and
+        # leave quickly, hold the target briefly, then return to the overview
+        # before the next narrated object becomes active.
+        focus_progress = _focus_zoom_progress(progress)
+        return 1.0 + 0.60 * focus_progress, 0.72
     if motion in {"slow_zoom_in", "light_zoom", "cross_zoom", "blur_zoom"}:
         return 1.0 + 0.45 * eased, 0.62
     if motion == "slow_zoom_out":
@@ -1139,7 +1168,7 @@ def _render_dynamic_frame(
             continue
         event_progress = _clamp((elapsed - event_start) / max(event_end - event_start, 1e-6))
         event_type = str(event.get("event_type") or "caption")
-        anchor_ids = event.get("fact_anchor_ids") if isinstance(event.get("fact_anchor_ids"), list) else []
+        anchor_ids = event.get("draw_anchor_ids") if isinstance(event.get("draw_anchor_ids"), list) and event.get("draw_anchor_ids") else event.get("fact_anchor_ids") if isinstance(event.get("fact_anchor_ids"), list) else []
         facts = [facts_by_id[str(anchor)] for anchor in anchor_ids if str(anchor) in facts_by_id]
         if event_type == "scenario_path":
             fact = next((fact for fact in facts if fact.get("fact_type") == "scenario_path"), None)
@@ -1157,7 +1186,17 @@ def _render_dynamic_frame(
                 if len(coords) == 1:
                     coords.append(coords[0])
                 if len(coords) >= 2:
-                    draw.line(coords, fill=(76, 166, 255, 255), width=max(2, canvas_width // 240), joint="curve")
+                    line_width = max(2, canvas_width // 240)
+                    if event.get("path_style") == "segmented_arrow" or event.get("arrow_heads") == "each_segment":
+                        _draw_segmented_arrow(
+                            draw,
+                            coords,
+                            (76, 166, 255, 255),
+                            line_width=line_width,
+                            head_size=max(10, canvas_width // 45),
+                        )
+                    else:
+                        draw.line(coords, fill=(76, 166, 255, 255), width=line_width, joint="curve")
             continue
         # A technical label is already represented by the chart's EMA and
         # level layers.  Do not turn a raw number into a large blue banner at

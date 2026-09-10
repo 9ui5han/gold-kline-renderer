@@ -11,8 +11,21 @@ from app.chart_renderer import (
     _visible_segment_paths,
     _prediction_phase_paths,
     _prediction_arrow_style,
+    _draw_segmented_arrow,
     PREDICTION_SEGMENT_COLORS,
 )
+
+
+class RecordingDraw:
+    def __init__(self):
+        self.lines = []
+        self.polygons = []
+
+    def line(self, points, **kwargs):
+        self.lines.append((points, kwargs))
+
+    def polygon(self, points, **kwargs):
+        self.polygons.append((points, kwargs))
 
 
 def candles(count):
@@ -26,6 +39,15 @@ def candles(count):
 
 
 class SegmentVisualSyncTests(unittest.TestCase):
+    def test_segmented_arrow_has_arrowhead_at_each_segment_end(self):
+        draw = RecordingDraw()
+        points = [(10, 90), (80, 30), (160, 50), (240, 10)]
+
+        _draw_segmented_arrow(draw, points, "#ff5555", line_width=3, head_size=12)
+
+        self.assertEqual(len(draw.lines), 3)
+        self.assertEqual(len(draw.polygons), 3)
+
     def test_prediction_phase_starts_with_every_path_complete(self):
         paths = {"segment_paths": {
             segment_id: [

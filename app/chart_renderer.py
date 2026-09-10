@@ -686,6 +686,30 @@ def _draw_clean_arrow(
     draw.polygon(_arrow_head(end, previous, size=head_size), fill=color)
 
 
+def _draw_segmented_arrow(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[float, float]],
+    color: str,
+    line_width: int,
+    head_size: float,
+) -> None:
+    """Draw a thin arrow on every segment of a multi-point path."""
+    if len(points) < 2:
+        return
+    for start, end in zip(points, points[1:]):
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        length = math.hypot(dx, dy)
+        if length <= 0.01:
+            continue
+        body_end = (
+            end[0] - dx / length * head_size * 0.72,
+            end[1] - dy / length * head_size * 0.72,
+        )
+        draw.line([start, body_end], fill=color, width=line_width)
+        draw.polygon(_arrow_head(end, start, size=head_size), fill=color)
+
+
 def _rank_structure_scenarios(
     forecast_paths: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -2211,7 +2235,7 @@ def render_tradingview_scene(
             and not alternate_duplicates_branch
         ):
             alternate_color = "#e53935"
-            _draw_clean_arrow(
+            _draw_segmented_arrow(
                 draw,
                 visible_alternate,
                 alternate_color,
@@ -2223,7 +2247,7 @@ def render_tradingview_scene(
             primary_color = "#00a86b"
             # The main forecast never changes style. The dashed line is a
             # separate conditional outcome generated from its level touch.
-            _draw_clean_arrow(
+            _draw_segmented_arrow(
                 draw,
                 visible_primary,
                 primary_color,
@@ -2359,7 +2383,7 @@ def render_tradingview_scene(
 
             # The alternate path is lighter and appears just after the primary.
             if len(visible_alternate) >= 2:
-                _draw_clean_arrow(
+                _draw_segmented_arrow(
                     draw,
                     visible_alternate,
                     "#e53935",
@@ -2367,7 +2391,7 @@ def render_tradingview_scene(
                     head_size=23,
                 )
 
-            _draw_clean_arrow(
+            _draw_segmented_arrow(
                 draw,
                 visible_trend,
                 trend_color,
@@ -2426,7 +2450,7 @@ def render_tradingview_scene(
                 active_segment_id,
                 current_time,
             )
-            _draw_clean_arrow(
+            _draw_segmented_arrow(
                 draw,
                 top_points,
                 color,
