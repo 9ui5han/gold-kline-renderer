@@ -128,6 +128,7 @@ class V72VideoJobsTests(unittest.TestCase):
 
     def test_tool09_request_preserves_dynamic_visual_plan(self):
         from app import segment_renderer
+        from app.indicator_style import DEFAULT_INDICATOR_PROFILE
 
         candles = [
             {
@@ -157,6 +158,11 @@ class V72VideoJobsTests(unittest.TestCase):
             "segment_item": {
                 "segment_id": "seg_01",
                 "order": 1,
+                "planning_role": "technical_context",
+                "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                "allowed_indicator_ids": [],
+                "required_indicator_ids": [],
+                "narrated_indicator_ids": [],
                 "visual": {
                     "visual_mode": "scenario_animation",
                     "source_timeframe": "1h",
@@ -233,6 +239,104 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertEqual(request.visual_facts[0]["anchor_id"], "level:R1")
         self.assertEqual(request.visual_timeline["scenes"][1]["start_sec"], 1.0)
         self.assertEqual(request.visual_timeline["continuous_chart"]["global_start_sec"], 2.0)
+        self.assertFalse(request.visual_timeline["indicator_visibility"]["enabled"])
+        self.assertEqual(
+            request.visual_timeline["indicator_visibility"]["rendered_indicator_ids"],
+            [],
+        )
+
+    def test_tool09_prediction_requires_fifty_closed_candles(self):
+        from app import segment_renderer
+        from app.indicator_style import DEFAULT_INDICATOR_PROFILE
+        from fastapi import HTTPException
+
+        candles = [
+            {
+                "time": f"2026-09-{1 + index // 24:02d}T{index % 24:02d}:00:00Z",
+                "open": 4400 + index,
+                "high": 4402 + index,
+                "low": 4398 + index,
+                "close": 4401 + index,
+            }
+            for index in range(49)
+        ]
+        item = {
+            "segment_id": "seg_03",
+            "order": 3,
+            "planning_role": "primary_forecast",
+            "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+            "allowed_indicator_ids": ["dual_ema"],
+            "required_indicator_ids": ["dual_ema"],
+            "narrated_indicator_ids": ["dual_ema"],
+            "visual": {
+                "visual_mode": "scenario_animation",
+                "source_timeframe": "1h",
+                "camera_motion": "focus_zoom",
+            },
+            "scenes": [{
+                "scene_id": "scene_03",
+                "template_id": "path_reveal",
+                "start_sec": 0.0,
+                "duration_sec": 2.0,
+                "camera_motion": "focus_zoom",
+                "overlay_events": [{
+                    "event_id": "focus_03",
+                    "event_type": "scenario_path",
+                    "start_sec": 0.0,
+                    "duration_sec": 2.0,
+                    "fact_anchor_ids": ["scenario:up"],
+                }],
+            }],
+            "resolved_visual_facts": [{
+                "anchor_id": "scenario:up",
+                "fact_type": "scenario_path",
+                "path_points": [
+                    {"price": 4401.0, "time_ratio": 0.0},
+                    {"price": 4450.0, "time_ratio": 1.0},
+                ],
+            }],
+            "audio": {"url": "https://example.invalid/audio.wav", "duration_sec": 2.0},
+            "duration_validation": {"valid": True},
+            "continuous_chart": {
+                "schema_version": "continuous-chart-v1",
+                "mode": "rolling_left",
+                "global_start_sec": 10.0,
+                "global_duration_sec": 30.0,
+                "window_candles": 70,
+            },
+            "transition_out": {"type": "fade", "duration_ms": 250},
+        }
+
+        def payload_for(bars):
+            return segment_renderer.Tool09SegmentRequest.model_validate({
+                "schema_version": "tool09-segment-request-v1",
+                "master_request_id": "gold-indicator-01",
+                "market_input": {
+                    "schema_version": "market-input-contract-v1",
+                    "data_as_of": "2026-09-10T00:00:00Z",
+                    "normalized_market": {
+                        "symbol": "XAUUSD.I",
+                        "timeframes": {"1h": {"closed_bars": bars}},
+                    },
+                    "job_config": {
+                        "forecast": {"timeframe": "1h"},
+                        "video": {"width": 320, "height": 320, "fps": 30},
+                    },
+                },
+                "segment_item": item,
+            })
+
+        with self.assertRaises(HTTPException) as caught:
+            segment_renderer._tool09_render_request(payload_for(candles))
+        self.assertEqual(caught.exception.detail["code"], "DUAL_EMA_DATA_INSUFFICIENT")
+
+        request = segment_renderer._tool09_render_request(
+            payload_for(candles + [{**candles[-1], "time": "2026-09-03T01:00:00Z"}])
+        )
+        visibility = request.visual_timeline["indicator_visibility"]
+        self.assertTrue(visibility["enabled"])
+        self.assertEqual(visibility["fade_in_ms"], 250)
+        self.assertEqual(visibility["rendered_indicator_ids"], ["dual_ema"])
 
     def test_tool09_request_rejects_missing_visual_plan(self):
         from app import segment_renderer
@@ -350,6 +454,7 @@ class V72VideoJobsTests(unittest.TestCase):
 
     def test_tool09_render_adapter_preserves_master_request_id(self):
         from app import segment_renderer
+        from app.indicator_style import DEFAULT_INDICATOR_PROFILE
 
         payload = segment_renderer.Tool09SegmentRequest.model_validate({
             "schema_version": "tool09-segment-request-v1",
@@ -372,8 +477,19 @@ class V72VideoJobsTests(unittest.TestCase):
                 "degraded": False,
             },
         }
+        request = segment_renderer.SegmentRenderRequest.model_construct(
+            visual_timeline={
+                "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                "indicator_visibility": {
+                    "enabled": False,
+                    "allowed_indicator_ids": [],
+                    "narrated_indicator_ids": [],
+                    "rendered_indicator_ids": [],
+                },
+            },
+        )
         with (
-            patch.object(segment_renderer, "_tool09_render_request", return_value=object()),
+            patch.object(segment_renderer, "_tool09_render_request", return_value=request),
             patch.object(segment_renderer, "create_and_await_segment_render_job", return_value=completed),
         ):
             result = segment_renderer.tool09_render_and_await(payload)
@@ -381,6 +497,7 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertTrue(result["segment_result_valid"])
         self.assertEqual(result["master_request_id"], "gold-master-01")
         self.assertEqual(result["rendered_segment"]["master_request_id"], "gold-master-01")
+        self.assertTrue(result["rendered_segment"]["indicator_render_valid"])
 
     def test_tool09_submit_returns_job_ticket_without_waiting(self):
         from app import segment_renderer
@@ -491,6 +608,7 @@ class V72VideoJobsTests(unittest.TestCase):
     def test_tool09_batch_status_packages_final_contract_after_all_jobs_finish(self):
         import json
         from app import segment_renderer
+        from app.indicator_style import DEFAULT_INDICATOR_PROFILE
 
         payload = segment_renderer.Tool09BatchRequest.model_validate({
             "schema_version": "tool09-batch-request-v1",
@@ -499,7 +617,15 @@ class V72VideoJobsTests(unittest.TestCase):
             "market_input": {"schema_version": "market-input-contract-v1"},
             "segment_media": {
                 "schema_version": "segment-media-contract-v1",
-                "segment_media_inputs": [{"segment_id": "seg_01"}],
+                "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                "segment_media_inputs": [{
+                    "segment_id": "seg_01",
+                    "planning_role": "primary_forecast",
+                    "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                    "allowed_indicator_ids": ["dual_ema"],
+                    "required_indicator_ids": ["dual_ema"],
+                    "narrated_indicator_ids": ["dual_ema"],
+                }],
             },
         })
         batch = {
@@ -511,7 +637,19 @@ class V72VideoJobsTests(unittest.TestCase):
         completed = {
             "job_id": "srj_final_01",
             "status": "completed",
-            "payload": {"segment_id": "seg_01", "order": 1},
+            "payload": {
+                "segment_id": "seg_01",
+                "order": 1,
+                "visual_timeline": {
+                    "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                    "indicator_visibility": {
+                        "enabled": True,
+                        "allowed_indicator_ids": ["dual_ema"],
+                        "narrated_indicator_ids": ["dual_ema"],
+                        "rendered_indicator_ids": ["dual_ema"],
+                    },
+                },
+            },
             "result": {
                 "video_url": "https://example.invalid/seg_01.mp4",
                 "base_duration_sec": 5,
@@ -588,6 +726,7 @@ class V72VideoJobsTests(unittest.TestCase):
 
     def test_tool09_finalize_requires_matching_master_request_id(self):
         import json
+        from app.indicator_style import DEFAULT_INDICATOR_PROFILE
         from app.segment_renderer import Tool09FinalizeRequest, tool09_finalize
 
         base = {
@@ -596,7 +735,15 @@ class V72VideoJobsTests(unittest.TestCase):
             "market_input": {"schema_version": "market-input-contract-v1"},
             "segment_media": {
                 "schema_version": "segment-media-contract-v1",
-                "segment_media_inputs": [{"segment_id": "seg_01"}],
+                "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                "segment_media_inputs": [{
+                    "segment_id": "seg_01",
+                    "planning_role": "primary_forecast",
+                    "indicator_profile": DEFAULT_INDICATOR_PROFILE,
+                    "allowed_indicator_ids": ["dual_ema"],
+                    "required_indicator_ids": ["dual_ema"],
+                    "narrated_indicator_ids": ["dual_ema"],
+                }],
             },
         }
         rendered = {
@@ -606,6 +753,10 @@ class V72VideoJobsTests(unittest.TestCase):
             "status": "completed",
             "video_url": "https://example.invalid/seg_01.mp4",
             "probe_valid": True,
+            "allowed_indicator_ids": ["dual_ema"],
+            "narrated_indicator_ids": ["dual_ema"],
+            "rendered_indicator_ids": ["dual_ema"],
+            "indicator_render_valid": True,
         }
         success = tool09_finalize(Tool09FinalizeRequest.model_validate({**base, "rendered_segments": [rendered]}))
         self.assertTrue(success["segment_render_valid"])
@@ -618,6 +769,13 @@ class V72VideoJobsTests(unittest.TestCase):
         }))
         self.assertFalse(mismatch["segment_render_valid"])
         self.assertIn("MASTER_ID_MISMATCH", mismatch["render_errors_json"])
+
+        indicator_mismatch = tool09_finalize(Tool09FinalizeRequest.model_validate({
+            **base,
+            "rendered_segments": [{**rendered, "rendered_indicator_ids": []}],
+        }))
+        self.assertFalse(indicator_mismatch["segment_render_valid"])
+        self.assertIn("INDICATOR_RENDER_MISMATCH", indicator_mismatch["render_errors_json"])
 
     def test_compose_request_rejects_unsafe_values(self):
         from app.video_composer import ComposeRequest

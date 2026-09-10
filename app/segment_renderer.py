@@ -21,6 +21,12 @@ from fastapi.responses import JSONResponse
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.indicator_style import (
+    IndicatorStyleError,
+    canonical_planning_role,
+    indicator_ids_for_role,
+    normalize_indicator_profile,
+)
 from app.job_store import IdempotencyConflict, JobStore
 from app.kline_precision import normalize_kline_numbers
 
@@ -212,7 +218,7 @@ def _tool09_request_id(master_request_id: str, segment_id: str) -> str:
     digest = hashlib.sha256(f"{master_request_id}|{segment_id}".encode("utf-8")).hexdigest()[:16]
     # The renderer now uses a continuous rolling chart timeline.  Bump the
     # idempotency revision so a rerun cannot reuse old, reset-per-segment MP4s.
-    suffix = f"{digest}-{safe_segment}-visual-r4"
+    suffix = f"{digest}-{safe_segment}-visual-r5"
     return f"{safe_master[: max(1, 120 - len(suffix) - 1)]}-{suffix}"
 
 
@@ -245,6 +251,88 @@ def _tool09_candles(market_input: dict[str, Any], timeframe: str) -> list[dict[s
         except (KeyError, TypeError, ValueError) as exc:
             raise HTTPException(status_code=422, detail={"code": "RENDER_CANDLE_INVALID"}) from exc
     return candles
+
+
+def _string_id_list(value: Any, error_code: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or any(not isinstance(item, str) or not item.strip() for item in value)
+    ):
+        raise HTTPException(status_code=422, detail={"code": error_code})
+    normalized = [item.strip() for item in value]
+    if len(normalized) != len(set(normalized)):
+        raise HTTPException(status_code=422, detail={"code": error_code})
+    return normalized
+
+
+def _tool09_indicator_contract(
+    item: dict[str, Any],
+    candle_count: int,
+) -> dict[str, Any]:
+    """Validate TOOL-08's audit fields and derive renderer-owned visibility."""
+    try:
+        profile = normalize_indicator_profile(item.get("indicator_profile"))
+        permissions = indicator_ids_for_role(profile, item.get("planning_role"))
+    except IndicatorStyleError as exc:
+        raise HTTPException(status_code=422, detail={"code": str(exc)}) from exc
+
+    allowed = _string_id_list(
+        item.get("allowed_indicator_ids"), "ALLOWED_INDICATOR_IDS_INVALID"
+    )
+    required = _string_id_list(
+        item.get("required_indicator_ids"), "REQUIRED_INDICATOR_IDS_INVALID"
+    )
+    narrated = _string_id_list(
+        item.get("narrated_indicator_ids"), "NARRATED_INDICATOR_IDS_INVALID"
+    )
+    if allowed != permissions["allowed"] or required != permissions["required"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "INDICATOR_ROLE_CONTRACT_MISMATCH"},
+        )
+    if any(indicator_id not in allowed for indicator_id in narrated):
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "NARRATED_INDICATOR_NOT_ALLOWED"},
+        )
+    missing_required = [
+        indicator_id for indicator_id in required if indicator_id not in narrated
+    ]
+    if missing_required:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": f"NARRATION_INDICATOR_REQUIRED:{missing_required[0]}"},
+        )
+    rendered = permissions["rendered"]
+    if "dual_ema" in rendered and candle_count < 50:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "DUAL_EMA_DATA_INSUFFICIENT"},
+        )
+
+    raw_role = str(item.get("planning_role") or "").strip()
+    show_role = profile["show_from_role"]
+    is_show_role = canonical_planning_role(raw_role) == show_role
+    # The current split forecast uses primary_wait_path before
+    # primary_conditions. Only the first part owns the fade.
+    repeated_primary_part = raw_role in {"primary_conditions", "primary_path"}
+    fade_in_ms = (
+        int(profile["fade_in_ms"])
+        if rendered and is_show_role and not repeated_primary_part
+        else 0
+    )
+    return {
+        "indicator_profile": profile,
+        "allowed_indicator_ids": allowed,
+        "required_indicator_ids": required,
+        "narrated_indicator_ids": narrated,
+        "rendered_indicator_ids": list(rendered),
+        "indicator_render_valid": True,
+        "indicator_visibility": {
+            "enabled": bool(rendered),
+            "fade_in_ms": fade_in_ms,
+        },
+    }
 
 
 def _build_visual_timeline(
@@ -309,6 +397,12 @@ def _build_visual_timeline(
             if isinstance(event, dict)
             for anchor in (event.get("fact_anchor_ids") or [])
         ]
+        if not focus_anchor_ids:
+            focus_anchor_ids = [
+                str(anchor)
+                for anchor in (item.get("fact_anchor_ids") or [])
+                if str(anchor) in fact_ids
+            ]
         camera_plan.append({
             "event_id": f"{scene['scene_id']}:camera",
             "start_sec": start,
@@ -394,6 +488,16 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
     continuous_chart = item.get("continuous_chart") if isinstance(item.get("continuous_chart"), dict) else {}
     if continuous_chart.get("schema_version") == "continuous-chart-v1":
         timeline["continuous_chart"] = continuous_chart
+    candles = _tool09_candles(market, timeframe)
+    indicator_contract = _tool09_indicator_contract(item, len(candles))
+    timeline["indicator_profile"] = indicator_contract["indicator_profile"]
+    timeline["indicator_visibility"] = {
+        **indicator_contract["indicator_visibility"],
+        "allowed_indicator_ids": indicator_contract["allowed_indicator_ids"],
+        "required_indicator_ids": indicator_contract["required_indicator_ids"],
+        "narrated_indicator_ids": indicator_contract["narrated_indicator_ids"],
+        "rendered_indicator_ids": indicator_contract["rendered_indicator_ids"],
+    }
     data_as_of = str(market.get("data_as_of") or normalized.get("data_as_of") or "").strip()
     request_data = {
         "request_id": _tool09_request_id(payload.master_request_id, segment_id),
@@ -403,7 +507,7 @@ def _tool09_render_request(payload: Tool09SegmentRequest) -> SegmentRenderReques
         "symbol": str(normalized.get("symbol") or "XAUUSD"),
         "timeframe": timeframe,
         "data_as_of": data_as_of,
-        "historical_candles": _tool09_candles(market, timeframe),
+        "historical_candles": candles,
         "audio_url": audio_url,
         "base_duration_sec": base_duration,
         "head_handle_sec": 0.0,
@@ -448,7 +552,31 @@ def _tool09_failed_segment(payload: Tool09SegmentRequest, code: str, message: st
         "planned_effects": [],
         "applied_effects": [],
         "visual_timeline_valid": False,
+        "allowed_indicator_ids": list(payload.segment_item.get("allowed_indicator_ids") or []),
+        "narrated_indicator_ids": list(payload.segment_item.get("narrated_indicator_ids") or []),
+        "rendered_indicator_ids": [],
+        "indicator_render_valid": False,
         "transition_out": payload.segment_item.get("transition_out") if isinstance(payload.segment_item.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
+    }
+
+
+def _indicator_audit_from_request(request: dict[str, Any]) -> dict[str, Any]:
+    timeline = request.get("visual_timeline") if isinstance(request.get("visual_timeline"), dict) else {}
+    visibility = timeline.get("indicator_visibility") if isinstance(timeline.get("indicator_visibility"), dict) else {}
+    profile = timeline.get("indicator_profile")
+    valid = (
+        isinstance(profile, dict)
+        and profile.get("schema_version") == "indicator-profile-v1"
+        and isinstance(visibility.get("enabled"), bool)
+        and isinstance(visibility.get("allowed_indicator_ids"), list)
+        and isinstance(visibility.get("narrated_indicator_ids"), list)
+        and isinstance(visibility.get("rendered_indicator_ids"), list)
+    )
+    return {
+        "allowed_indicator_ids": list(visibility.get("allowed_indicator_ids") or []),
+        "narrated_indicator_ids": list(visibility.get("narrated_indicator_ids") or []),
+        "rendered_indicator_ids": list(visibility.get("rendered_indicator_ids") or []),
+        "indicator_render_valid": valid,
     }
 
 
@@ -485,9 +613,12 @@ def _tool09_rendered_from_job(
             "planned_effects": [],
             "applied_effects": [],
             "visual_timeline_valid": False,
+            **_indicator_audit_from_request(request),
+            "indicator_render_valid": False,
             "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
         }
 
+    indicator_audit = _indicator_audit_from_request(request)
     rendered = {
         "master_request_id": master_request_id,
         "segment_id": segment_id,
@@ -508,9 +639,15 @@ def _tool09_rendered_from_job(
         "planned_effects": result.get("planned_effects") if isinstance(result.get("planned_effects"), list) else [],
         "applied_effects": result.get("applied_effects") if isinstance(result.get("applied_effects"), list) else [],
         "visual_timeline_valid": bool(result.get("visual_timeline_valid")),
+        **indicator_audit,
         "transition_out": request.get("transition_out") if isinstance(request.get("transition_out"), dict) else {"type": "hard_cut", "duration_ms": 0},
     }
-    if not (rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"]):
+    if not (
+        rendered["video_url"]
+        and rendered["probe_valid"]
+        and rendered["kline_main_visual_present"]
+        and rendered["indicator_render_valid"]
+    ):
         rendered["status"] = "failed"
         rendered["render_error"] = {
             "code": "SEGMENT_RENDER_RESULT_INVALID",
@@ -591,6 +728,15 @@ def _validate_payload(payload: dict[str, Any]) -> None:
                 raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_TIME_INVALID", "plan": plan_name, "index": index}) from exc
             if start < 0 or end <= start or end > float(payload["base_duration_sec"]) + 0.002:
                 raise HTTPException(status_code=422, detail={"code": "VISUAL_EVENT_BOUNDS_INVALID", "plan": plan_name, "index": index})
+    indicator_audit = _indicator_audit_from_request(payload)
+    if indicator_audit["indicator_render_valid"] is not True:
+        raise HTTPException(status_code=422, detail={"code": "INDICATOR_RENDER_CONTRACT_INVALID"})
+    visibility = timeline.get("indicator_visibility") or {}
+    rendered_ids = indicator_audit["rendered_indicator_ids"]
+    if bool(visibility.get("enabled")) != bool(rendered_ids):
+        raise HTTPException(status_code=422, detail={"code": "INDICATOR_RENDER_MISMATCH"})
+    if "dual_ema" in rendered_ids and len(payload["historical_candles"]) < 50:
+        raise HTTPException(status_code=422, detail={"code": "DUAL_EMA_DATA_INSUFFICIENT"})
     if not isinstance(payload.get("fallback_policy"), dict) or not payload["fallback_policy"]:
         raise HTTPException(status_code=422, detail={"code": "FALLBACK_POLICY_EMPTY"})
 
@@ -752,24 +898,49 @@ def _rolling_chart_window(
     return list(enumerate(candles[first:last], start=first)), left_position, maximum
 
 
-def _ema(closes: list[float], period: int) -> list[float]:
-    """Deterministic exponential moving average over the real candle closes."""
+def _ema(closes: list[float], period: int) -> list[float | None]:
+    """EMA with an SMA seed; the warmup region remains deliberately empty."""
+    normalized_period = max(1, int(period))
     if not closes:
         return []
-    alpha = 2.0 / (max(1, int(period)) + 1.0)
-    values = [float(closes[0])]
-    for close in closes[1:]:
-        values.append(round(alpha * float(close) + (1.0 - alpha) * values[-1], 6))
+    values: list[float | None] = [None] * len(closes)
+    if len(closes) < normalized_period:
+        return values
+    seed_index = normalized_period - 1
+    seed = sum(float(value) for value in closes[:normalized_period]) / normalized_period
+    values[seed_index] = round(seed, 6)
+    alpha = 2.0 / (normalized_period + 1.0)
+    previous = seed
+    for index in range(normalized_period, len(closes)):
+        previous = alpha * float(closes[index]) + (1.0 - alpha) * previous
+        values[index] = round(previous, 6)
     return values
+
+
+def _indicator_opacity(timeline: dict[str, Any], elapsed_sec: float) -> int:
+    visibility = (
+        timeline.get("indicator_visibility")
+        if isinstance(timeline.get("indicator_visibility"), dict)
+        else {}
+    )
+    if visibility.get("enabled") is not True:
+        return 0
+    fade_seconds = max(0.0, float(visibility.get("fade_in_ms") or 0) / 1000.0)
+    if fade_seconds <= 0:
+        return 255
+    progress = _clamp(float(elapsed_sec) / fade_seconds)
+    eased = progress * progress * (3.0 - 2.0 * progress)
+    return int(round(255 * eased))
 
 
 def _camera_view(motion: str, progress: float) -> tuple[float, float]:
     """Return a deliberately visible camera crop for the reference-video pace."""
     progress = _clamp(progress)
+    eased = progress * progress * (3.0 - 2.0 * progress)
     if motion == "focus_zoom":
-        return 1.60, 0.72
+        return 1.0 + 0.60 * eased, 0.72
     if motion in {"slow_zoom_in", "light_zoom", "cross_zoom", "blur_zoom"}:
-        return 1.0 + 0.45 * progress, 0.62
+        return 1.0 + 0.45 * eased, 0.62
     if motion == "slow_zoom_out":
         return 1.45 - 0.38 * progress, 0.38
     if motion in {"pan_left", "whip_left"}:
@@ -816,10 +987,21 @@ def _render_dynamic_frame(
     """Render one RGB frame from the validated TOOL-08 visual timeline."""
     base_duration = max(float(timeline.get("base_duration_sec") or 1.0), 1e-6)
     elapsed = _clamp(float(elapsed_sec), 0.0, base_duration)
+    facts_by_id = {
+        str(fact.get("anchor_id")): fact
+        for fact in visual_facts
+        if isinstance(fact, dict) and fact.get("anchor_id")
+    }
     camera, camera_progress = _active_event(timeline.get("camera_plan") or [], elapsed)
     motion = str((camera or {}).get("motion") or "static_hold")
     if motion not in SUPPORTED_CAMERA_MOTIONS:
         motion = "micro_drift"
+    focus_price = _camera_focus_price(
+        facts_by_id,
+        (camera or {}).get("focus_anchor_ids") or [],
+    ) if motion == "focus_zoom" else None
+    if motion == "focus_zoom" and focus_price is None:
+        motion = "static_hold"
 
     scale, horizontal = _camera_view(motion, camera_progress)
     canvas_width = max(width, int(round(width * scale)))
@@ -845,6 +1027,17 @@ def _render_dynamic_frame(
     visible, left_position, visible_capacity = _rolling_chart_window(
         candles, chart_progress, window_candles,
     )
+    reveal_position = 1.0 + (len(candles) - 1.0) * chart_progress
+    current_reveal_index = min(
+        len(candles) - 1,
+        max(0, int(math.ceil(reveal_position)) - 1),
+    )
+    reveal_fraction = reveal_position - math.floor(reveal_position)
+    current_reveal_alpha = (
+        255
+        if reveal_fraction <= 1e-6 or current_reveal_index == 0
+        else int(round(255 * _clamp(reveal_fraction)))
+    )
     highs = [float(x["high"]) for x in candles]
     lows = [float(x["low"]) for x in candles]
     high = max(highs)
@@ -852,48 +1045,67 @@ def _render_dynamic_frame(
     span = max(high - low, 1e-9)
     slot = chart_width / visible_capacity
     body_width = max(2, int(slot * 0.55))
+    chart_left_px = left_position * slot
+    integer_chart_left_px = math.floor(chart_left_px)
 
     def y_for(price: float) -> int:
         return top + int((high - price) / span * chart_height)
 
     for candle_index, candle in visible:
-        x = margin_x + int((candle_index - left_position + 0.5) * slot)
+        x = margin_x + int((candle_index + 0.5) * slot - integer_chart_left_px)
         open_y = y_for(float(candle["open"]))
         close_y = y_for(float(candle["close"]))
         high_y = y_for(float(candle["high"]))
         low_y = y_for(float(candle["low"]))
-        color = (35, 211, 156, 255) if float(candle["close"]) >= float(candle["open"]) else (245, 92, 92, 255)
+        rgb = (35, 211, 156) if float(candle["close"]) >= float(candle["open"]) else (245, 92, 92)
+        alpha = current_reveal_alpha if candle_index == current_reveal_index else 255
+        color = (*rgb, alpha)
         draw.line((x, high_y, x, low_y), fill=color, width=max(1, body_width // 3))
         draw.rectangle((x - body_width // 2, min(open_y, close_y), x + body_width // 2, max(open_y, close_y)), fill=color)
 
-    closes = [float(candle["close"]) for candle in candles]
-    for period, color in ((20, (245, 194, 66, 255)), (50, (154, 120, 255, 255))):
-        average = _ema(closes, period)
-        points = [
-            (
-                margin_x + int((candle_index - left_position + 0.5) * slot),
-                y_for(average[candle_index]),
-            )
-            for candle_index, _candle in visible
-            if candle_index < len(average)
-        ]
-        if len(points) >= 2:
-            draw.line(points, fill=color, width=max(2, body_width // 2), joint="curve")
-    draw.text((margin_x + 6, top + 6), "EMA20", fill=(245, 194, 66, 230), font=font)
-    draw.text((margin_x + 54, top + 6), "EMA50", fill=(154, 120, 255, 230), font=font)
+    indicator_opacity = _indicator_opacity(timeline, elapsed)
+    rendered_indicator_ids = (
+        (timeline.get("indicator_visibility") or {}).get("rendered_indicator_ids")
+        if isinstance(timeline.get("indicator_visibility"), dict)
+        else []
+    )
+    if indicator_opacity > 0 and "dual_ema" in rendered_indicator_ids:
+        closes = [float(candle["close"]) for candle in candles]
+        for period, color in (
+            (20, (35, 211, 156, indicator_opacity)),
+            (50, (245, 194, 66, indicator_opacity)),
+        ):
+            average = _ema(closes, period)
+            points = [
+                (
+                    margin_x + int((candle_index + 0.5) * slot - integer_chart_left_px),
+                    y_for(float(average[candle_index])),
+                )
+                for candle_index, _candle in visible
+                if candle_index < len(average)
+                and average[candle_index] is not None
+            ]
+            if len(points) >= 2:
+                draw.line(
+                    points,
+                    fill=color,
+                    width=max(2, body_width // 2),
+                    joint="curve",
+                )
 
     if timeline.get("show_volume"):
-        volume_max = max((float(x.get("volume") or 0.0) for x in visible), default=1.0) or 1.0
+        volume_max = max(
+            (float(candle.get("volume") or 0.0) for _index, candle in visible),
+            default=1.0,
+        ) or 1.0
         for candle_index, candle in visible:
-            x = margin_x + int((candle_index - left_position + 0.5) * slot)
+            x = margin_x + int((candle_index + 0.5) * slot - integer_chart_left_px)
             bar_height = int((float(candle.get("volume") or 0.0) / volume_max) * max(12, chart_height * 0.12))
-            draw.rectangle((x - body_width // 2, bottom - bar_height, x + body_width // 2, bottom), fill=(83, 120, 180, 90))
+            volume_alpha = 90
+            if candle_index == current_reveal_index:
+                volume_alpha = int(round(volume_alpha * current_reveal_alpha / 255))
+            draw.rectangle((x - body_width // 2, bottom - bar_height, x + body_width // 2, bottom), fill=(83, 120, 180, volume_alpha))
 
-    facts_by_id = {
-        str(fact.get("anchor_id")): fact
-        for fact in visual_facts
-        if isinstance(fact, dict) and fact.get("anchor_id")
-    }
     for level_id in timeline.get("highlight_levels") or []:
         fact = facts_by_id.get(f"level:{level_id}") or facts_by_id.get(str(level_id))
         if not fact:
@@ -904,6 +1116,16 @@ def _render_dynamic_frame(
             continue
         draw.line((margin_x, y, canvas_width - margin_x, y), fill=(245, 194, 66, 230), width=2)
         draw.text((margin_x + 4, max(0, y - 12)), str(fact.get("display_text") or level_id), fill=(245, 220, 120, 255), font=font)
+
+    fractional_chart_shift_px = chart_left_px - integer_chart_left_px
+    if fractional_chart_shift_px > 1e-6:
+        image = image.transform(
+            image.size,
+            Image.Transform.AFFINE,
+            (1.0, 0.0, fractional_chart_shift_px, 0.0, 1.0, 0.0),
+            resample=Image.Resampling.BILINEAR,
+            fillcolor=(8, 13, 24),
+        )
 
     for event in timeline.get("overlay_plan") or []:
         event_start = float(event.get("start_sec") or 0.0)
@@ -936,7 +1158,7 @@ def _render_dynamic_frame(
         # level layers.  Do not turn a raw number into a large blue banner at
         # the top of the screen; it obscures the chart and has no narration
         # context for the viewer.
-        if event_type == "technical_label":
+        if event_type in {"technical_label", "price_level"}:
             continue
         display = next((str(fact.get("display_text") or "") for fact in facts if fact.get("display_text")), event_type)
         display = display.replace("\n", " ")[:120]
@@ -949,10 +1171,6 @@ def _render_dynamic_frame(
         crop = image
     else:
         left = int((canvas_width - width) * _clamp(horizontal))
-        focus_price = _camera_focus_price(
-            facts_by_id,
-            (camera or {}).get("focus_anchor_ids") or [],
-        ) if motion == "focus_zoom" else None
         if focus_price is None:
             top_crop = int((canvas_height - height) * 0.5)
         else:
@@ -961,6 +1179,14 @@ def _render_dynamic_frame(
                 (target_y - height * 0.5) / max(canvas_height - height, 1),
             ) * (canvas_height - height))
         crop = image.crop((left, top_crop, left + width, top_crop + height))
+    if indicator_opacity > 0 and "dual_ema" in rendered_indicator_ids:
+        viewport_draw = ImageDraw.Draw(crop, "RGBA")
+        viewport_draw.text(
+            (12, 12), "EMA20", fill=(35, 211, 156, indicator_opacity), font=font
+        )
+        viewport_draw.text(
+            (62, 12), "EMA50", fill=(245, 194, 66, indicator_opacity), font=font
+        )
     return crop.tobytes()
 
 
@@ -1398,6 +1624,7 @@ def get_tool09_batch_status(batch_job_id: str) -> dict[str, Any]:
 def tool09_render_and_await(payload: Tool09SegmentRequest) -> dict[str, Any]:
     """Adapt TOOL-09's compact Dify contract to the segment renderer."""
     request = _tool09_render_request(payload)
+    indicator_audit = _indicator_audit_from_request(_dump(request))
     awaited = create_and_await_segment_render_job(request)
     job = awaited.get("job") if isinstance(awaited.get("job"), dict) else {}
     wait_status = str(awaited.get("wait_status") or job.get("status") or "")
@@ -1436,9 +1663,15 @@ def tool09_render_and_await(payload: Tool09SegmentRequest) -> dict[str, Any]:
         "planned_effects": job.get("planned_effects") if isinstance(job.get("planned_effects"), list) else [],
         "applied_effects": job.get("applied_effects") if isinstance(job.get("applied_effects"), list) else [],
         "visual_timeline_valid": bool(job.get("visual_timeline_valid")),
+        **indicator_audit,
         "transition_out": transition,
     }
-    valid = bool(rendered["video_url"] and rendered["probe_valid"] and rendered["kline_main_visual_present"])
+    valid = bool(
+        rendered["video_url"]
+        and rendered["probe_valid"]
+        and rendered["kline_main_visual_present"]
+        and rendered["indicator_render_valid"]
+    )
     error_message = "" if valid else "SEGMENT_RENDER_RESULT_INVALID"
     if not valid:
         rendered["status"] = "failed"
@@ -1458,6 +1691,12 @@ def tool09_finalize(payload: Tool09FinalizeRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail={"code": "MARKET_INPUT_VERSION_INVALID"})
     if payload.segment_media.get("schema_version") != "segment-media-contract-v1":
         raise HTTPException(status_code=422, detail={"code": "SEGMENT_MEDIA_VERSION_INVALID"})
+    try:
+        indicator_profile = normalize_indicator_profile(
+            payload.segment_media.get("indicator_profile")
+        )
+    except IndicatorStyleError:
+        indicator_profile = None
 
     parsed: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -1483,6 +1722,8 @@ def tool09_finalize(payload: Tool09FinalizeRequest) -> dict[str, Any]:
         expected_ids: list[str] = []
     else:
         expected_ids = [str(item.get("segment_id") or "") for item in expected_media if isinstance(item, dict)]
+    if indicator_profile is None:
+        errors.append("INDICATOR_RENDER_MISMATCH")
     rendered_ids = [str(item.get("segment_id") or "") for item in parsed]
     if len(expected_ids) != len(expected_media or []) or not all(expected_ids):
         errors.append("SEGMENT_MEDIA_IDS_INVALID")
@@ -1491,6 +1732,55 @@ def tool09_finalize(payload: Tool09FinalizeRequest) -> dict[str, Any]:
     orders = [int(item.get("order") or 0) for item in parsed]
     if len(orders) != len(set(orders)) or sorted(orders) != list(range(1, len(orders) + 1)):
         errors.append("RENDERED_SEGMENT_ORDER_INVALID")
+
+    expected_by_id = {
+        str(item.get("segment_id") or ""): item
+        for item in (expected_media or [])
+        if isinstance(item, dict)
+    }
+    narrated_union: list[str] = []
+    rendered_union: list[str] = []
+    if indicator_profile is not None:
+        for rendered in parsed:
+            segment_id = str(rendered.get("segment_id") or "")
+            expected_item = expected_by_id.get(segment_id) or {}
+            try:
+                permissions = indicator_ids_for_role(
+                    indicator_profile,
+                    expected_item.get("planning_role"),
+                )
+            except IndicatorStyleError:
+                errors.append("INDICATOR_RENDER_MISMATCH")
+                continue
+            allowed = expected_item.get("allowed_indicator_ids")
+            narrated = expected_item.get("narrated_indicator_ids")
+            expected_rendered = permissions["rendered"]
+            if (
+                expected_item.get("indicator_profile") != indicator_profile
+                or allowed != permissions["allowed"]
+                or not isinstance(narrated, list)
+                or any(
+                    indicator_id not in (allowed if isinstance(allowed, list) else [])
+                    for indicator_id in (narrated if isinstance(narrated, list) else [])
+                )
+                or rendered.get("allowed_indicator_ids") != allowed
+                or rendered.get("narrated_indicator_ids") != narrated
+                or rendered.get("rendered_indicator_ids") != expected_rendered
+                or rendered.get("indicator_render_valid") is not True
+            ):
+                errors.append("INDICATOR_RENDER_MISMATCH")
+                continue
+            for indicator_id in narrated:
+                if indicator_id not in narrated_union:
+                    narrated_union.append(indicator_id)
+            for indicator_id in expected_rendered:
+                if indicator_id not in rendered_union:
+                    rendered_union.append(indicator_id)
+        if (
+            set(narrated_union) != set(indicator_profile["indicator_ids"])
+            or set(rendered_union) != set(indicator_profile["indicator_ids"])
+        ):
+            errors.append("INDICATOR_RENDER_MISMATCH")
 
     order_by_id = {segment_id: index for index, segment_id in enumerate(expected_ids)}
     ordered = sorted(parsed, key=lambda item: order_by_id.get(str(item.get("segment_id") or ""), len(order_by_id)))
