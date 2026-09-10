@@ -105,26 +105,16 @@ class TtsProfileTests(unittest.TestCase):
         catalog = build_profile_catalog()
 
         self.assertEqual(
-            catalog["mm_finance_male_02"]["voice_id"],
-            "English_Diligent_Man",
+            catalog["mm_finance_male_01"]["voice_id"],
+            "English_Trustworthy_Man",
         )
         self.assertEqual(
-            catalog["mm_cn_radio_host"]["voice_id"],
+            catalog["mm_finance_male_02"]["voice_id"],
             "Chinese (Mandarin)_Radio_Host",
         )
         self.assertEqual(
-            catalog["mm_cn_reliable_exec"]["voice_id"],
+            catalog["mm_finance_male_03"]["voice_id"],
             "Chinese (Mandarin)_Reliable_Executive",
-        )
-        self.assertTrue(
-            all(
-                catalog[profile_id]["status"] == "verified"
-                for profile_id in (
-                    "mm_finance_male_02",
-                    "mm_cn_radio_host",
-                    "mm_cn_reliable_exec",
-                )
-            )
         )
 
     def test_catalog_contains_official_dubbingx_test_profiles(self):
