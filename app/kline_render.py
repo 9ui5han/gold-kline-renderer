@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -98,7 +99,8 @@ class KlineRenderResponse(BaseModel):
 class ComposeKlineImage(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    url: str = Field(min_length=1)
+    url: str | None = None
+    source: Literal["multipart", "url"] = "url"
     box: NormalizedBox
 
 
@@ -786,7 +788,11 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     flattened.save(output_path, format="PNG", optimize=True)
 
 
-def render_blank_page(request: BlankPageComposeRequest, output_path: Path) -> None:
+def render_blank_page(
+    request: BlankPageComposeRequest,
+    output_path: Path,
+    image_bytes: bytes | None = None,
+) -> None:
     scale = RENDER_SCALE
     image = Image.new(
         "RGBA",
@@ -794,9 +800,13 @@ def render_blank_page(request: BlankPageComposeRequest, output_path: Path) -> No
         BACKGROUND + (255,),
     )
 
-    response = httpx.get(request.kline_image.url, timeout=30.0)
-    response.raise_for_status()
-    chart = Image.open(BytesIO(response.content)).convert("RGBA")
+    if image_bytes is None:
+        if not request.kline_image.url:
+            raise ValueError("KLINE_IMAGE_REQUIRED")
+        response = httpx.get(request.kline_image.url, timeout=30.0)
+        response.raise_for_status()
+        image_bytes = response.content
+    chart = Image.open(BytesIO(image_bytes)).convert("RGBA")
 
     box = request.kline_image.box
     box_width = round(box.width * CANVAS_WIDTH * scale)
@@ -836,17 +846,41 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
     router = APIRouter(prefix="/v1/kline", tags=["kline"])
 
     @router.post("/render", response_model=KlineRenderResponse)
-    def render_kline(request: KlineRenderRequest | BlankPageComposeRequest) -> KlineRenderResponse:
+    async def render_kline(request: Request) -> KlineRenderResponse:
+        content_type = request.headers.get("content-type", "")
+        upload_bytes = None
+        if content_type.startswith("multipart/form-data"):
+            form = await request.form()
+            raw_request = form.get("compose_request_json")
+            upload = form.get("existing_kline_image")
+            if not isinstance(raw_request, str) or upload is None or not hasattr(upload, "read"):
+                raise HTTPException(status_code=422, detail="MULTIPART_INPUT_REQUIRED")
+            try:
+                parsed = BlankPageComposeRequest.model_validate(json.loads(raw_request))
+                upload_bytes = await upload.read()
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            request_model: KlineRenderRequest | BlankPageComposeRequest = parsed
+        else:
+            try:
+                payload = await request.json()
+                if payload.get("schema_version") == "blank-page-compose-v1":
+                    request_model = BlankPageComposeRequest.model_validate(payload)
+                else:
+                    request_model = KlineRenderRequest.model_validate(payload)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+
         file_name = f"kline-{uuid.uuid4().hex}.png"
         output_path = media_dir / file_name
-        if isinstance(request, BlankPageComposeRequest):
-            render_blank_page(request, output_path)
+        if isinstance(request_model, BlankPageComposeRequest):
+            render_blank_page(request_model, output_path, image_bytes=upload_bytes)
             panel_count = 0
             bar_count = 0
         else:
-            render_kline_image(request, output_path)
-            panel_count = len(request.panels)
-            bar_count = sum(len(panel.bars) for panel in request.panels)
+            render_kline_image(request_model, output_path)
+            panel_count = len(request_model.panels)
+            bar_count = sum(len(panel.bars) for panel in request_model.panels)
         return KlineRenderResponse(
             image_url=f"{public_base_url}/media/{file_name}",
             panel_count=panel_count,

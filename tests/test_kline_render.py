@@ -1,4 +1,5 @@
 import unittest
+import json
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -133,6 +134,37 @@ class KlineRenderTests(unittest.TestCase):
             self.assertEqual(image.size, (1024, 1024))
             self.assertEqual(image.mode, "RGB")
             self.assertEqual(image.getpixel((150, 450)), (240, 10, 20))
+
+    def test_renders_uploaded_kline_image_from_multipart_request(self):
+        source = Image.new("RGB", (200, 100), (10, 40, 220))
+        source_bytes = BytesIO()
+        source.save(source_bytes, format="PNG")
+        compose = {
+            "schema_version": "blank-page-compose-v1",
+            "kline_image": {
+                "source": "multipart",
+                "box": {"x": 0.1, "y": 0.4, "width": 0.8, "height": 0.4},
+            },
+            "text_blocks": [],
+        }
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            data={"compose_request_json": json.dumps(compose)},
+            files={
+                "existing_kline_image": (
+                    "existing-kline.png",
+                    source_bytes.getvalue(),
+                    "image/png",
+                )
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        output_path = Path(main.MEDIA_DIR) / response.json()["image_url"].rsplit("/", 1)[-1]
+        self.addCleanup(output_path.unlink, missing_ok=True)
+        with Image.open(output_path) as image:
+            self.assertEqual(image.getpixel((150, 450)), (10, 40, 220))
 
     def test_renders_text_overlay_in_generated_png(self):
         payload = kline_payload()
