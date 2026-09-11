@@ -260,9 +260,7 @@ def _text_font(
 
 
 def _text_overlay_box(overlay: TextOverlay) -> tuple[float, float, float, float]:
-    """Return the drawing box, reserving a full-width single line for titles."""
-    if overlay.role == "title":
-        return (0.025, 0.068, 0.95, 0.07)
+    """Return the exact reference-image drawing box."""
     return (overlay.x, overlay.y, overlay.width, overlay.height)
 
 
@@ -299,7 +297,6 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         return
     draw = ImageDraw.Draw(image)
     width, height = image.size
-    body_cursor = 0.0
     for overlay in overlays:
         # OB/PB labels are rendered from the generated K-line annotations.
         # Drawing the reference labels again would duplicate them and could
@@ -309,9 +306,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         box_x, box_y, box_width_ratio, box_height_ratio = _text_overlay_box(overlay)
         left = box_x * width
         top = box_y * height
-        # OCR boxes are often too narrow for list/body copy. Expand them to
-        # the available canvas width while keeping the font size unchanged.
-        box_width = max(box_width_ratio * width, width - left - 2 * render_scale)
+        box_width = box_width_ratio * width
         box_height = box_height_ratio * height
         font = (
             _fit_title_font(draw, overlay, width, box_width)
@@ -333,14 +328,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             text_x = left + box_width - text_width
         else:
             text_x = left
-        if overlay.role == "title":
-            # Titles describe the whole canvas, so a slightly inaccurate
-            # detected bbox must not move the heading off the true center.
-            text_x = (width - text_width) / 2
         text_y = top + max(0, (box_height - text_height) / 2)
-        if overlay.role != "title":
-            text_y = max(text_y, body_cursor)
-            body_cursor = text_y + text_height + max(8, font.size * 0.28)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, suffix = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)

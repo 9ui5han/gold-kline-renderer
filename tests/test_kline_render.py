@@ -208,7 +208,23 @@ class KlineRenderTests(unittest.TestCase):
         })
 
         self.assertEqual(getattr(_text_font(title, 1024), "size", 0), 59)
-        self.assertEqual(_text_overlay_box(title), (0.025, 0.068, 0.95, 0.07))
+        self.assertEqual(_text_overlay_box(title), (0.196, 0.079, 0.493, 0.056))
+
+    def test_text_overlay_box_preserves_reference_title_bbox(self):
+        title = TextOverlay.model_validate({
+            "block_id": "title",
+            "text": "Reference title",
+            "role": "title",
+            "x": 0.22,
+            "y": 0.08,
+            "width": 0.56,
+            "height": 0.10,
+            "align": "center",
+            "font_size_ratio": 0.04,
+            "confidence": 1.0,
+        })
+
+        self.assertEqual(_text_overlay_box(title), (0.22, 0.08, 0.56, 0.10))
 
     def test_long_title_is_reduced_until_it_fits_on_one_line(self):
         title = TextOverlay.model_validate({
