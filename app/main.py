@@ -1155,7 +1155,8 @@ class TTSProxyRequest(BaseModel):
     )
     minimax_voice_id: str = Field(
         default="English_Trustworthy_Man",
-        pattern=r"^[A-Za-z0-9_-]+$",
+        min_length=1,
+        max_length=100,
     )
     glm_voice: Literal[
         "tongtong",

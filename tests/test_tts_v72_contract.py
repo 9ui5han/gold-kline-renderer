@@ -100,6 +100,22 @@ class TtsV72ContractTests(unittest.TestCase):
         )
         self.assertEqual(payload.tts_provider, "elevenlabs")
 
+    def test_minimax_voice_name_with_spaces_and_parentheses_survives_worker_revalidation(self):
+        request = main.TTSProxyRequest(
+            request_id="minimax-official-voice-name",
+            text=TEXT,
+            narration_json=NARRATION,
+            tts_provider="minimax",
+            minimax_voice_id="Chinese (Mandarin)_Radio_Host",
+        )
+
+        revalidated = main.TTSProxyRequest.model_validate(request.model_dump())
+
+        self.assertEqual(
+            revalidated.minimax_voice_id,
+            "Chinese (Mandarin)_Radio_Host",
+        )
+
     def test_same_request_id_returns_existing_job_without_second_thread(self):
         request = {
             "request_id": "master-001-segment_01-r0",
