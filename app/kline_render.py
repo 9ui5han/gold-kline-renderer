@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import uuid
+from io import BytesIO
 from pathlib import Path
 from typing import Literal
 
+import httpx
 from fastapi import APIRouter
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -91,6 +93,32 @@ class KlineRenderResponse(BaseModel):
     image_url: str
     panel_count: int
     bar_count: int
+
+
+class ComposeKlineImage(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(min_length=1)
+    box: NormalizedBox
+
+
+class ComposeTextBlock(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    block_id: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=500)
+    role: Literal["title", "body", "label", "list", "unknown"] = "body"
+    bbox: NormalizedBox
+    align: Literal["left", "center", "right", "unknown"] = "left"
+    font_size_ratio: float = Field(gt=0, le=0.2)
+
+
+class BlankPageComposeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["blank-page-compose-v1"]
+    kline_image: ComposeKlineImage
+    text_blocks: list[ComposeTextBlock] = Field(default_factory=list, max_length=40)
 
 
 UP_FILL = (242, 245, 248)
@@ -758,18 +786,71 @@ def render_kline_image(request: KlineRenderRequest, output_path: Path) -> None:
     flattened.save(output_path, format="PNG", optimize=True)
 
 
+def render_blank_page(request: BlankPageComposeRequest, output_path: Path) -> None:
+    scale = RENDER_SCALE
+    image = Image.new(
+        "RGBA",
+        (CANVAS_WIDTH * scale, CANVAS_HEIGHT * scale),
+        BACKGROUND + (255,),
+    )
+
+    response = httpx.get(request.kline_image.url, timeout=30.0)
+    response.raise_for_status()
+    chart = Image.open(BytesIO(response.content)).convert("RGBA")
+
+    box = request.kline_image.box
+    box_width = round(box.width * CANVAS_WIDTH * scale)
+    box_height = round(box.height * CANVAS_HEIGHT * scale)
+    fitted = ImageOps.contain(chart, (box_width, box_height), Image.Resampling.LANCZOS)
+    left = round(box.x * CANVAS_WIDTH * scale + (box_width - fitted.width) / 2)
+    top = round(box.y * CANVAS_HEIGHT * scale + (box_height - fitted.height) / 2)
+    image.alpha_composite(fitted, (left, top))
+
+    overlays = [
+        TextOverlay(
+            block_id=item.block_id,
+            text=item.text,
+            role=item.role,
+            x=item.bbox.x,
+            y=item.bbox.y,
+            width=item.bbox.width,
+            height=item.bbox.height,
+            align=item.align,
+            font_size_ratio=item.font_size_ratio,
+            confidence=1.0,
+        )
+        for item in request.text_blocks
+    ]
+    _draw_text_overlays(image, overlays, scale)
+
+    image = image.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)
+    flattened = Image.alpha_composite(
+        Image.new("RGBA", image.size, BACKGROUND + (255,)),
+        image,
+    ).convert("RGB")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    flattened.save(output_path, format="PNG", optimize=True)
+
+
 def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
     router = APIRouter(prefix="/v1/kline", tags=["kline"])
 
     @router.post("/render", response_model=KlineRenderResponse)
-    def render_kline(request: KlineRenderRequest) -> KlineRenderResponse:
+    def render_kline(request: KlineRenderRequest | BlankPageComposeRequest) -> KlineRenderResponse:
         file_name = f"kline-{uuid.uuid4().hex}.png"
         output_path = media_dir / file_name
-        render_kline_image(request, output_path)
+        if isinstance(request, BlankPageComposeRequest):
+            render_blank_page(request, output_path)
+            panel_count = 0
+            bar_count = 0
+        else:
+            render_kline_image(request, output_path)
+            panel_count = len(request.panels)
+            bar_count = sum(len(panel.bars) for panel in request.panels)
         return KlineRenderResponse(
             image_url=f"{public_base_url}/media/{file_name}",
-            panel_count=len(request.panels),
-            bar_count=sum(len(panel.bars) for panel in request.panels),
+            panel_count=panel_count,
+            bar_count=bar_count,
         )
 
     return router
