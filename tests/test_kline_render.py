@@ -19,6 +19,7 @@ from app.kline_render import (
     _body_width,
     _bar_layout,
     _draw_panel,
+    _fit_overlay_font,
     _fit_title_font,
     _text_font,
     _text_overlay_box,
@@ -225,6 +226,29 @@ class KlineRenderTests(unittest.TestCase):
         })
 
         self.assertEqual(_text_overlay_box(title), (0.22, 0.08, 0.56, 0.10))
+
+    def test_body_font_shrinks_to_fit_multiple_lines_in_reference_box(self):
+        overlay = TextOverlay.model_validate({
+            "block_id": "body",
+            "text": "Emotions get trapped, patience wins always.",
+            "role": "body",
+            "x": 0.2,
+            "y": 0.8,
+            "width": 0.35,
+            "height": 0.06,
+            "align": "center",
+            "font_size_ratio": 0.08,
+            "confidence": 1.0,
+        })
+        draw = ImageDraw.Draw(Image.new("RGBA", (1024, 1024)))
+        font, lines = _fit_overlay_font(draw, overlay, 1024, 1024 * 0.35, 1024 * 0.06)
+        wrapped = "\n".join(lines)
+        bbox = draw.multiline_textbbox(
+            (0, 0), wrapped, font=font, spacing=max(2, round(font.size * 0.22))
+        )
+        self.assertGreaterEqual(len(lines), 2)
+        self.assertLessEqual(bbox[2] - bbox[0], 1024 * 0.35)
+        self.assertLessEqual(bbox[3] - bbox[1], 1024 * 0.06)
 
     def test_long_title_is_reduced_until_it_fits_on_one_line(self):
         title = TextOverlay.model_validate({

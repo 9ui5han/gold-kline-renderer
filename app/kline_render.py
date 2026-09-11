@@ -137,6 +137,7 @@ ZONE_LABEL_DISCOUNT = (25, 85, 150)
 STRUCTURE_COLOR = (55, 55, 65)
 SWEEP_COLOR = (190, 70, 50)
 TITLE_ACCENT = DOWN_FILL
+TITLE_BACKGROUND = (190, 211, 226, 155)
 BODY_TEXT = (28, 31, 36)
 RENDER_SCALE = 4
 TEXT_RENDER_SCALE = RENDER_SCALE
@@ -292,6 +293,39 @@ def _fit_title_font(
     return fitted
 
 
+def _fit_overlay_font(
+    draw: ImageDraw.ImageDraw,
+    overlay: TextOverlay,
+    canvas_width: int,
+    box_width: float,
+    box_height: float,
+) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, list[str]]:
+    """Fit every text block to its reference box, including wrapped lines."""
+    target_size = max(1, round(canvas_width * overlay.font_size_ratio))
+    minimum_size = 1
+    while target_size >= minimum_size:
+        candidate = _text_font(
+            overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
+            canvas_width,
+            minimum_size=minimum_size,
+        )
+        lines = _wrap_text(draw, overlay.text, candidate, box_width)
+        wrapped = "\n".join(lines)
+        spacing = max(2, round(candidate.size * 0.22))
+        bbox = draw.multiline_textbbox((0, 0), wrapped, font=candidate, spacing=spacing)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+        if text_width <= box_width and text_height <= box_height:
+            return candidate, lines
+        target_size -= 1
+    fallback = _text_font(
+        overlay.model_copy(update={"font_size_ratio": minimum_size / canvas_width}),
+        canvas_width,
+        minimum_size=minimum_size,
+    )
+    return fallback, _wrap_text(draw, overlay.text, fallback, box_width)
+
+
 def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_scale: int) -> None:
     if not overlays:
         return
@@ -308,27 +342,42 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         top = box_y * height
         box_width = box_width_ratio * width
         box_height = box_height_ratio * height
-        font = (
-            _fit_title_font(draw, overlay, width, box_width)
-            if overlay.role == "title"
-            else _text_font(overlay, width)
-        )
-        lines = (
-            [overlay.text]
-            if overlay.role == "title"
-            else _wrap_text(draw, overlay.text, font, box_width)
-        )
+        if overlay.role == "title":
+            radius = max(8, round(min(box_width, box_height) * 0.22))
+            draw.rounded_rectangle(
+                (left, top, left + box_width, top + box_height),
+                radius=radius,
+                fill=TITLE_BACKGROUND,
+            )
+            padding_x = max(4, round(box_width * 0.06))
+            padding_y = max(2, round(box_height * 0.12))
+            font = _fit_title_font(
+                draw, overlay, width, max(1, box_width - padding_x * 2)
+            )
+            lines = [overlay.text]
+            text_left = left + padding_x
+            text_top = top + padding_y
+            available_width = max(1, box_width - padding_x * 2)
+            available_height = max(1, box_height - padding_y * 2)
+        else:
+            font, lines = _fit_overlay_font(
+                draw, overlay, width, box_width, box_height
+            )
+            text_left = left
+            text_top = top
+            available_width = box_width
+            available_height = box_height
         wrapped_text = "\n".join(lines)
         text_box = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=max(2, round(font.size * 0.22)))
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
         if overlay.align == "center":
-            text_x = left + (box_width - text_width) / 2
+            text_x = text_left + (available_width - text_width) / 2
         elif overlay.align == "right":
-            text_x = left + box_width - text_width
+            text_x = text_left + available_width - text_width
         else:
-            text_x = left
-        text_y = top + max(0, (box_height - text_height) / 2)
+            text_x = text_left
+        text_y = text_top + max(0, (available_height - text_height) / 2)
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, suffix = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)
