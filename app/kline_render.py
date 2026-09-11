@@ -475,12 +475,20 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
         if overlay.role == "title" or overlay.align == "center":
-            text_x = text_left + (available_width - text_width) / 2
+            text_x = (
+                text_left
+                + (available_width - text_width) / 2
+                - text_box[0]
+            )
         elif overlay.align == "right":
             text_x = text_left + available_width - text_width
         else:
             text_x = text_left
-        text_y = text_top + max(0, (available_height - text_height) / 2)
+        text_y = (
+            text_top
+            + max(0, (available_height - text_height) / 2)
+            - text_box[1]
+        )
         if overlay.role == "title" and "PROPULSION BLOCK" in wrapped_text and "\n" not in wrapped_text:
             prefix, suffix = wrapped_text.split("PROPULSION BLOCK", 1)
             prefix_width = draw.textlength(prefix, font=font)
