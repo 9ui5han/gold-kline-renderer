@@ -3,7 +3,7 @@ import unittest
 
 from app.indicator_style import DEFAULT_INDICATOR_PROFILE
 from app.main import SegmentPlanStepRequest
-from app.segment_plan_validation import process_segment_plan_step
+from app.segment_plan_validation import _rescale_plan_segment, process_segment_plan_step
 
 
 BUDGET = {
@@ -123,6 +123,69 @@ INDICATOR_CONTEXT = {
 
 
 class SegmentPlanValidationTests(unittest.TestCase):
+    def test_rescale_preserves_scene_total_after_three_decimal_rounding(self):
+        """The rounded scene timeline must still equal its segment duration."""
+        segment = _segment(3, "primary_path", "primary_forecast", 20, "path_reveal")
+        segment["scenes"] = [
+            {
+                **segment["scenes"][0],
+                "scene_id": "scene-3a",
+                "start_sec": 0,
+                "duration_sec": 10,
+            },
+            {
+                **segment["scenes"][0],
+                "scene_id": "scene-3b",
+                "start_sec": 10,
+                "duration_sec": 5,
+            },
+            {
+                **segment["scenes"][0],
+                "scene_id": "scene-3c",
+                "start_sec": 15,
+                "duration_sec": 5,
+            },
+        ]
+
+        _rescale_plan_segment(segment, 19.375)
+
+        scenes = segment["scenes"]
+        self.assertEqual(sum(scene["duration_sec"] for scene in scenes), 19.375)
+        self.assertEqual([scene["start_sec"] for scene in scenes], [0.0, 9.688, 14.532])
+
+    def test_one_millisecond_scene_rounding_residual_is_reconciled(self):
+        """A one-millisecond rounding residual belongs to the final scene."""
+        candidate = json.loads(json.dumps(VALID_PLAN))
+        scene = candidate["segments"][2]["scenes"][0]
+        candidate["segments"][2]["scenes"] = [
+            {
+                **scene,
+                "scene_id": "scene-3a",
+                "start_sec": 0,
+                "duration_sec": 36,
+            },
+            {
+                **scene,
+                "scene_id": "scene-3b",
+                "start_sec": 36,
+                "duration_sec": 18,
+            },
+            {
+                **scene,
+                "scene_id": "scene-3c",
+                "start_sec": 54,
+                "duration_sec": 18.001,
+            },
+        ]
+
+        result = self._step(candidate, 0)
+
+        self.assertEqual(result["action"], "pass")
+        contract = json.loads(json.loads(result["result_json"])["segment_plan_v1_json"])
+        scenes = contract["segment_plan"]["segments"][2]["scenes"]
+        self.assertEqual([scene["duration_sec"] for scene in scenes], [36, 18, 18])
+        self.assertEqual([scene["start_sec"] for scene in scenes], [0, 36, 54])
+
     def _step(self, candidate, repair_count):
         return process_segment_plan_step(
             candidate,

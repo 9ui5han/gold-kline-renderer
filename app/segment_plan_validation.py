@@ -185,14 +185,24 @@ def _rescale_plan_segment(segment: dict[str, Any], new_duration: float) -> None:
         if scaled_durations:
             scaled_durations[-1] += new_duration - scaled_total
 
+        # Rounding each scene independently can make their displayed total drift
+        # by 0.001 seconds. Keep the rounded timeline exact by assigning the
+        # rounding remainder to the final scene.
+        rounded_durations = [round(max(0.0, value), 3) for value in scaled_durations]
+        if rounded_durations:
+            rounded_durations[-1] = round(
+                new_duration - sum(rounded_durations[:-1]),
+                3,
+            )
+
         cursor = 0.0
-        for scene, scaled_scene_duration in zip(scenes, scaled_durations):
+        for scene, scaled_scene_duration in zip(scenes, rounded_durations):
             if not isinstance(scene, dict):
                 continue
             old_scene_duration = float(scene.get("duration_sec") or 0.0)
             scene["start_sec"] = round(cursor, 3)
             scene_duration = max(0.0, scaled_scene_duration)
-            scene["duration_sec"] = round(scene_duration, 3)
+            scene["duration_sec"] = scene_duration
             scene_scale = (
                 scene_duration / old_scene_duration
                 if old_scene_duration > EPSILON else 1.0
@@ -218,6 +228,41 @@ def _rescale_plan_segment(segment: dict[str, Any], new_duration: float) -> None:
                 event["duration_sec"] = round(event_duration, 3)
             cursor += float(scene["duration_sec"])
     segment["duration_target_sec"] = round(new_duration, 3)
+
+
+def _reconcile_scene_rounding_residuals(candidate: dict[str, Any]) -> None:
+    """Assign a one-millisecond scene-rounding residual to the final scene."""
+    segments = candidate.get("segments")
+    if not isinstance(segments, list):
+        return
+
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        scenes = segment.get("scenes")
+        if not isinstance(scenes, list) or not scenes or not all(
+            isinstance(scene, dict) for scene in scenes
+        ):
+            continue
+        try:
+            segment_duration = float(segment["duration_target_sec"])
+            scene_durations = [float(scene["duration_sec"]) for scene in scenes]
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        residual = round(segment_duration - sum(scene_durations), 3)
+        if residual == 0 or abs(residual) > EPSILON:
+            continue
+
+        final_duration = round(scene_durations[-1] + residual, 3)
+        if final_duration <= 0:
+            continue
+
+        scenes[-1]["duration_sec"] = final_duration
+        cursor = 0.0
+        for scene in scenes:
+            scene["start_sec"] = round(cursor, 3)
+            cursor += float(scene["duration_sec"])
 
 
 def _reallocate_edge_duration(
@@ -844,6 +889,7 @@ def process_segment_plan_step(
     candidate, reallocation_errors = _reallocate_edge_duration(
         candidate, segment_budget
     )
+    _reconcile_scene_rounding_residuals(candidate)
     validation = validate_segment_plan(
         candidate, segment_budget, technical_facts, market_analysis,
         validated_levels, structure_paths, forecast_framework, macro_timing,
