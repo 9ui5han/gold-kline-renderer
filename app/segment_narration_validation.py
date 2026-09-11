@@ -1776,6 +1776,29 @@ def segment_render_success(item: dict[str, Any], confirm: dict[str, Any]) -> dic
         return segment_render_failure(item, str(exc))
 
 
+def _display_subtitle_json(segment_media_inputs: list[Any] | None) -> str:
+    subtitles: list[dict[str, str]] = []
+    for media in segment_media_inputs or []:
+        if not isinstance(media, dict):
+            continue
+        narration = media.get("narration")
+        if not isinstance(narration, dict):
+            narration = {}
+        text = str(
+            narration.get("display_text")
+            or narration.get("text")
+            or ""
+        ).strip()
+        segment_id = str(
+            media.get("segment_id")
+            or narration.get("segment_id")
+            or ""
+        ).strip()
+        if text and segment_id:
+            subtitles.append({"segment_id": segment_id, "text": text})
+    return _compact_json(subtitles)
+
+
 def complete_tool08(
     segment_media_inputs: list[Any],
     segment_plan_v1_json: str,
@@ -2010,6 +2033,7 @@ def complete_tool08(
         "segment_media_v1_json": _compact_json(payload),
         "segment_audio_valid": True,
         "bad_segment_ids_json": "[]",
+        "subtitle_text": _display_subtitle_json(ordered_media),
     }
 
 
@@ -2080,4 +2104,5 @@ def _complete_failure(
         "segment_media_v1_json": _compact_json(payload),
         "segment_audio_valid": False,
         "bad_segment_ids_json": _compact_json(bad_ids),
+        "subtitle_text": _display_subtitle_json(inputs),
     }

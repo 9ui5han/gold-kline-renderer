@@ -1616,6 +1616,7 @@ def test_complete_rejects_duplicate_iteration_output_ids():
 
 def test_finalize_preserves_master_request_id_and_success_contract():
     contracts, media = _primary_contracts_and_media()
+    media["narration"]["display_text"] = "EMA20 remains above EMA50."
     rendered = {
         "schema_version": "segment-render-result-v1",
         "segment_valid": True,
@@ -1634,6 +1635,12 @@ def test_finalize_preserves_master_request_id_and_success_contract():
     assert result["master_request_id"] == "master_01"
     assert result["segment_audio_valid"] is True
     assert result["bad_segment_ids_json"] == "[]"
+    assert json.loads(result["subtitle_text"]) == [
+        {
+            "segment_id": "seg_01",
+            "text": "EMA20 remains above EMA50.",
+        }
+    ]
 
 
 def test_finalize_propagates_iteration_failure_without_losing_master_id():
