@@ -252,7 +252,7 @@ def _text_font(
         try:
             font = ImageFont.truetype(str(MONTSERRAT_PATH), size=font_size)
             if hasattr(font, "set_variation_by_axes"):
-                font.set_variation_by_axes([650.0 if bold else 450.0])
+                font.set_variation_by_axes([720.0 if bold else 450.0])
             return font
         except (OSError, ValueError):
             pass
@@ -362,7 +362,10 @@ def _fit_title_font(
     max_height: float | None = None,
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Shrink a title until it fits its reference width and height."""
-    font = _text_font(overlay, canvas_width)
+    title_overlay = overlay.model_copy(
+        update={"font_size_ratio": min(0.2, overlay.font_size_ratio * 1.12)}
+    )
+    font = _text_font(title_overlay, canvas_width)
     bbox = draw.textbbox((0, 0), overlay.text, font=font)
     text_width = bbox[2] - bbox[0]
     text_height = bbox[3] - bbox[1]
@@ -373,7 +376,7 @@ def _fit_title_font(
     height_ratio = max_height / max(text_height, 1) if max_height else 1.0
     target_size = max(1, int(font.size * min(width_ratio, height_ratio)))
     fitted = _text_font(
-        overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
+        title_overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
         canvas_width,
         minimum_size=1,
     )
@@ -385,7 +388,7 @@ def _fit_title_font(
             break
         target_size -= 1
         fitted = _text_font(
-            overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
+            title_overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
             canvas_width,
             minimum_size=1,
         )
