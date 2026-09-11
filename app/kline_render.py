@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
