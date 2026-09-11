@@ -143,6 +143,7 @@ RENDER_SCALE = 4
 TEXT_RENDER_SCALE = RENDER_SCALE
 CANVAS_WIDTH = 1024
 CANVAS_HEIGHT = 1024
+MONTSERRAT_PATH = Path(__file__).resolve().parent.parent / "assets" / "photo" / "fonts" / "montserrat" / "Montserrat-VariableFont_wght.ttf"
 
 
 def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int]:
@@ -247,6 +248,14 @@ def _text_font(
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     font_size = max(minimum_size, round(canvas_width * overlay.font_size_ratio))
     bold = overlay.role in {"title", "label"}
+    if MONTSERRAT_PATH.exists():
+        try:
+            font = ImageFont.truetype(str(MONTSERRAT_PATH), size=font_size)
+            if hasattr(font, "set_variation_by_axes"):
+                font.set_variation_by_axes([650.0 if bold else 450.0])
+            return font
+        except (OSError, ValueError):
+            pass
     paths = (
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -265,25 +274,115 @@ def _text_overlay_box(overlay: TextOverlay) -> tuple[float, float, float, float]
     return (overlay.x, overlay.y, overlay.width, overlay.height)
 
 
+def _safe_text_box(box: NormalizedBox, chart_box: NormalizedBox) -> NormalizedBox:
+    """Keep a text box inside the canvas and outside the chart box."""
+    gap = 0.008
+    x = max(0.0, min(box.x, 1.0 - box.width))
+    y = max(0.0, min(box.y, 1.0 - box.height))
+    candidate = NormalizedBox(x=x, y=y, width=box.width, height=box.height)
+    if not _box_intersects(candidate, chart_box, 0.0):
+        return candidate
+
+    above_y = chart_box.y - gap - box.height
+    below_y = chart_box.y + chart_box.height + gap
+    choices = []
+    if above_y >= 0:
+        choices.append((abs(above_y - y), above_y))
+    if below_y + box.height <= 1:
+        choices.append((abs(below_y - y), below_y))
+    if choices:
+        return NormalizedBox(
+            x=x,
+            y=min(choices)[1],
+            width=box.width,
+            height=box.height,
+        )
+
+    # Last resort: use the largest visible area above the chart.
+    available_height = max(0.001, chart_box.y - gap)
+    return NormalizedBox(
+        x=x,
+        y=0.0,
+        width=box.width,
+        height=min(box.height, available_height),
+    )
+
+
+def _resolve_text_boxes(
+    overlays: list[TextOverlay], chart_box: NormalizedBox
+) -> list[TextOverlay]:
+    """Place text boxes without touching the chart or one another."""
+    placed: list[NormalizedBox] = []
+    resolved: list[TextOverlay] = []
+    gap = 0.008
+    for overlay in overlays:
+        original = _safe_text_box(
+            NormalizedBox(
+                x=overlay.x,
+                y=overlay.y,
+                width=overlay.width,
+                height=overlay.height,
+            ),
+            chart_box,
+        )
+        candidates = [original]
+        for other in placed:
+            candidates.extend([
+                original.model_copy(update={"y": other.y + other.height + gap}),
+                original.model_copy(update={"y": other.y - original.height - gap}),
+            ])
+        valid = [
+            candidate
+            for candidate in candidates
+            if candidate.y >= 0
+            and candidate.y + candidate.height <= 1
+            and not _box_intersects(candidate, chart_box, 0.0)
+            and all(not _box_intersects(candidate, other, 0.0) for other in placed)
+        ]
+        chosen = min(valid, key=lambda box: abs(box.y - original.y)) if valid else original
+        placed.append(chosen)
+        resolved.append(
+            overlay.model_copy(
+                update={
+                    "x": chosen.x,
+                    "y": chosen.y,
+                    "width": chosen.width,
+                    "height": chosen.height,
+                }
+            )
+        )
+    return resolved
+
+
 def _fit_title_font(
     draw: ImageDraw.ImageDraw,
     overlay: TextOverlay,
     canvas_width: int,
     max_width: float,
+    max_height: float | None = None,
 ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    """Shrink a title only when needed so its complete text stays on one line."""
+    """Shrink a title until it fits its reference width and height."""
     font = _text_font(overlay, canvas_width)
-    text_width = draw.textlength(overlay.text, font=font)
-    if text_width <= max_width:
+    bbox = draw.textbbox((0, 0), overlay.text, font=font)
+    text_width = bbox[2] - bbox[0]
+    text_height = bbox[3] - bbox[1]
+    if text_width <= max_width and (max_height is None or text_height <= max_height):
         return font
 
-    target_size = max(1, int(font.size * max_width / max(text_width, 1)))
+    width_ratio = max_width / max(text_width, 1)
+    height_ratio = max_height / max(text_height, 1) if max_height else 1.0
+    target_size = max(1, int(font.size * min(width_ratio, height_ratio)))
     fitted = _text_font(
         overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
         canvas_width,
         minimum_size=1,
     )
-    while fitted.size > 1 and draw.textlength(overlay.text, font=fitted) > max_width:
+    while fitted.size > 1:
+        fitted_box = draw.textbbox((0, 0), overlay.text, font=fitted)
+        fitted_width = fitted_box[2] - fitted_box[0]
+        fitted_height = fitted_box[3] - fitted_box[1]
+        if fitted_width <= max_width and (max_height is None or fitted_height <= max_height):
+            break
         target_size -= 1
         fitted = _text_font(
             overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
@@ -352,7 +451,11 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             padding_x = max(4, round(box_width * 0.06))
             padding_y = max(2, round(box_height * 0.12))
             font = _fit_title_font(
-                draw, overlay, width, max(1, box_width - padding_x * 2)
+                draw,
+                overlay,
+                width,
+                max(1, box_width - padding_x * 2),
+                max(1, box_height - padding_y * 2),
             )
             lines = [overlay.text]
             text_left = left + padding_x
@@ -371,7 +474,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         text_box = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=max(2, round(font.size * 0.22)))
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
-        if overlay.align == "center":
+        if overlay.role == "title" or overlay.align == "center":
             text_x = text_left + (available_width - text_width) / 2
         elif overlay.align == "right":
             text_x = text_left + available_width - text_width
@@ -383,7 +486,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             prefix_width = draw.textlength(prefix, font=font)
             accent = "PROPULSION BLOCK"
             accent_width = draw.textlength(accent, font=font)
-            draw.text((text_x, text_y), prefix, font=font, fill=BODY_TEXT)
+            draw.text((text_x, text_y), prefix, font=font, fill=TITLE_ACCENT)
             draw.text((text_x + prefix_width, text_y), "PROPULSION BLOCK", font=font, fill=TITLE_ACCENT)
             if suffix:
                 draw.text(
@@ -397,7 +500,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
                 (text_x, text_y),
                 wrapped_text,
                 font=font,
-                fill=BODY_TEXT,
+                fill=TITLE_ACCENT if overlay.role == "title" else BODY_TEXT,
                 spacing=max(2, round(font.size * 0.22)),
                 align=overlay.align if overlay.align != "unknown" else "left",
             )
@@ -868,6 +971,7 @@ def render_blank_page(
         )
         for item in request.text_blocks
     ]
+    overlays = _resolve_text_boxes(overlays, request.kline_image.box)
     _draw_text_overlays(image, overlays, scale)
 
     image = image.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)

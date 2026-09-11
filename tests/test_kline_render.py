@@ -18,11 +18,14 @@ from app.kline_render import (
     ZONE_LABEL,
     _body_width,
     _bar_layout,
+    _box_intersects,
     _draw_panel,
     _fit_overlay_font,
     _fit_title_font,
     _text_font,
     _text_overlay_box,
+    _safe_text_box,
+    _resolve_text_boxes,
     _zone_font,
     _panel_box,
 )
@@ -249,6 +252,37 @@ class KlineRenderTests(unittest.TestCase):
         self.assertGreaterEqual(len(lines), 2)
         self.assertLessEqual(bbox[2] - bbox[0], 1024 * 0.35)
         self.assertLessEqual(bbox[3] - bbox[1], 1024 * 0.06)
+
+    def test_text_box_is_moved_outside_chart_box(self):
+        text_box = NormalizedBox(x=0.2, y=0.45, width=0.6, height=0.12)
+        chart_box = NormalizedBox(x=0.05, y=0.35, width=0.9, height=0.5)
+        safe = _safe_text_box(text_box, chart_box)
+        self.assertFalse(_box_intersects(safe, chart_box, 0.0))
+        self.assertGreaterEqual(safe.x, 0.0)
+        self.assertGreaterEqual(safe.y, 0.0)
+        self.assertLessEqual(safe.x + safe.width, 1.0)
+        self.assertLessEqual(safe.y + safe.height, 1.0)
+
+    def test_text_boxes_do_not_overlap_each_other(self):
+        overlays = [
+            TextOverlay.model_validate({
+                "block_id": "one", "text": "One", "role": "body",
+                "x": 0.2, "y": 0.1, "width": 0.6, "height": 0.1,
+                "align": "center", "font_size_ratio": 0.04, "confidence": 1,
+            }),
+            TextOverlay.model_validate({
+                "block_id": "two", "text": "Two", "role": "body",
+                "x": 0.2, "y": 0.12, "width": 0.6, "height": 0.1,
+                "align": "center", "font_size_ratio": 0.04, "confidence": 1,
+            }),
+        ]
+        resolved = _resolve_text_boxes(
+            overlays,
+            NormalizedBox(x=0.05, y=0.4, width=0.9, height=0.4),
+        )
+        first = NormalizedBox(x=resolved[0].x, y=resolved[0].y, width=resolved[0].width, height=resolved[0].height)
+        second = NormalizedBox(x=resolved[1].x, y=resolved[1].y, width=resolved[1].width, height=resolved[1].height)
+        self.assertFalse(_box_intersects(first, second, 0.0))
 
     def test_long_title_is_reduced_until_it_fits_on_one_line(self):
         title = TextOverlay.model_validate({
