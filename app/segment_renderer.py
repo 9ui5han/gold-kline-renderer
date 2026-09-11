@@ -872,6 +872,8 @@ SUPPORTED_OVERLAY_EVENTS = {
     "caption",
     "hook_text",
     "technical_label",
+    "price_level",
+    "macro_marker",
     "risk_notice",
     "scenario_path",
     "closing_question",
@@ -1160,6 +1162,9 @@ def _render_dynamic_frame(
             resample=Image.Resampling.BILINEAR,
             fillcolor=(8, 13, 24),
         )
+        # The affine transform returns a new image.  Recreate the drawing
+        # surface so event overlays are attached to that new image.
+        draw = ImageDraw.Draw(image, "RGBA")
 
     for event in timeline.get("overlay_plan") or []:
         event_start = float(event.get("start_sec") or 0.0)
@@ -1198,11 +1203,96 @@ def _render_dynamic_frame(
                     else:
                         draw.line(coords, fill=(76, 166, 255, 255), width=line_width, joint="curve")
             continue
-        # A technical label is already represented by the chart's EMA and
-        # level layers.  Do not turn a raw number into a large blue banner at
-        # the top of the screen; it obscures the chart and has no narration
-        # context for the viewer.
-        if event_type in {"technical_label", "price_level"}:
+        if event_type == "price_level":
+            fact = next(
+                (
+                    item
+                    for item in facts
+                    if item.get("fact_type") in {"price_point", "price_zone"}
+                ),
+                None,
+            )
+            if not isinstance(fact, dict):
+                continue
+            try:
+                center_price = float(
+                    fact.get("center_price", fact.get("price"))
+                )
+            except (TypeError, ValueError):
+                continue
+            level_y = max(top, min(bottom, y_for(center_price)))
+            lower_price = fact.get("lower_price")
+            upper_price = fact.get("upper_price")
+            try:
+                lower_y = max(top, min(bottom, y_for(float(lower_price))))
+                upper_y = max(top, min(bottom, y_for(float(upper_price))))
+            except (TypeError, ValueError):
+                lower_y = upper_y = level_y
+            if lower_y != upper_y:
+                draw.rectangle(
+                    (margin_x, min(lower_y, upper_y), canvas_width - margin_x, max(lower_y, upper_y)),
+                    fill=(245, 194, 66, 46),
+                )
+            draw.line(
+                (margin_x, level_y, canvas_width - margin_x, level_y),
+                fill=(245, 194, 66, 240),
+                width=max(2, canvas_width // 240),
+            )
+            display = str(fact.get("display_text") or "Price level").replace("\n", " ")[:80]
+            label_top = max(top, min(bottom - 24, level_y - 24))
+            draw.rounded_rectangle(
+                (margin_x + 4, label_top, min(canvas_width - margin_x, margin_x + 190), label_top + 22),
+                radius=6,
+                fill=(52, 42, 14, 230),
+            )
+            draw.text((margin_x + 10, label_top + 5), display, fill=(255, 232, 153, 255), font=font)
+            continue
+        if event_type == "macro_marker":
+            fact = next((item for item in facts if item.get("fact_type") == "macro_event"), None)
+            scheduled_time = str(fact.get("scheduled_time_utc") or "") if isinstance(fact, dict) else ""
+            marker_index: int | None = None
+            if scheduled_time:
+                if "T" not in scheduled_time:
+                    target_date = scheduled_time[:10]
+                    marker_index = next(
+                        (
+                            index
+                            for index, candle in visible
+                            if str(candle.get("time") or "")[:10] == target_date
+                        ),
+                        None,
+                    )
+                else:
+                    try:
+                        target_timestamp = datetime.fromisoformat(
+                            scheduled_time.replace("Z", "+00:00")
+                        ).timestamp()
+                        timed_candles = [
+                            (
+                                index,
+                                datetime.fromisoformat(
+                                    str(candle.get("time") or "").replace("Z", "+00:00")
+                                ).timestamp(),
+                            )
+                            for index, candle in visible
+                        ]
+                        marker_index = min(
+                            timed_candles,
+                            key=lambda item: abs(item[1] - target_timestamp),
+                        )[0]
+                    except (TypeError, ValueError):
+                        marker_index = None
+            if marker_index is not None:
+                marker_x = margin_x + int((marker_index + 0.5) * slot - integer_chart_left_px)
+                draw.line((marker_x, top, marker_x, bottom), fill=(255, 150, 80, 235), width=max(2, canvas_width // 240))
+                display = str(fact.get("display_text") or "Macro event").replace("\n", " ")[:72]
+                label_left = max(margin_x, min(canvas_width - margin_x - 150, marker_x + 6))
+                draw.rounded_rectangle(
+                    (label_left, top + 6, label_left + 146, top + 28),
+                    radius=6,
+                    fill=(67, 35, 21, 235),
+                )
+                draw.text((label_left + 6, top + 11), display, fill=(255, 210, 165, 255), font=font)
             continue
         display = next((str(fact.get("display_text") or "") for fact in facts if fact.get("display_text")), event_type)
         display = display.replace("\n", " ")[:120]

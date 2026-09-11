@@ -415,6 +415,84 @@ class V72VideoJobsTests(unittest.TestCase):
         self.assertNotEqual(first, last)
         self.assertEqual(len(first), 160 * 160 * 3)
 
+    def test_documented_price_level_technical_label_and_macro_marker_render_when_active(self):
+        from app import segment_renderer
+
+        candles = [
+            {
+                "time": f"2026-09-08T{index:02d}:00:00Z",
+                "open": 100 + index,
+                "high": 102 + index,
+                "low": 98 + index,
+                "close": 101 + index,
+            }
+            for index in range(20)
+        ]
+        facts = [
+            {
+                "anchor_id": "level:R1",
+                "fact_type": "price_zone",
+                "lower_price": 105.0,
+                "upper_price": 107.0,
+                "center_price": 106.0,
+                "display_text": "R1 105-107",
+            },
+            {
+                "anchor_id": "technical:structure",
+                "fact_type": "text_fact",
+                "display_text": "Range structure",
+            },
+            {
+                "anchor_id": "macro:pce",
+                "fact_type": "macro_event",
+                "scheduled_time_utc": "2026-09-08T08:00:00Z",
+                "display_text": "PCE release",
+            },
+        ]
+        base_timeline = {
+            "base_duration_sec": 2.0,
+            "camera_plan": [
+                {"start_sec": 0.0, "end_sec": 2.0, "motion": "static_hold"}
+            ],
+            "continuous_chart": {
+                "global_start_sec": 0.0,
+                "global_duration_sec": 100.0,
+                "window_candles": 20,
+            },
+            "overlay_plan": [],
+        }
+        baseline = segment_renderer._render_dynamic_frame(
+            candles, 240, 320, base_timeline, facts, 1.0,
+        )
+
+        for event_type, anchor_id in (
+            ("price_level", "level:R1"),
+            ("technical_label", "technical:structure"),
+            ("macro_marker", "macro:pce"),
+        ):
+            with self.subTest(event_type=event_type):
+                timeline = {
+                    **base_timeline,
+                    "overlay_plan": [{
+                        "event_type": event_type,
+                        "start_sec": 0.0,
+                        "end_sec": 2.0,
+                        "fact_anchor_ids": [anchor_id],
+                    }],
+                }
+                frame = segment_renderer._render_dynamic_frame(
+                    candles, 240, 320, timeline, facts, 1.0,
+                )
+                _requested, records = segment_renderer._effect_degradations(
+                    {"visual_timeline": timeline},
+                )
+
+                self.assertTrue(
+                    frame != baseline,
+                    f"{event_type} did not change the rendered frame",
+                )
+                self.assertEqual(records, [])
+
     def test_wait_for_segment_render_job_reports_completed_and_timeout(self):
         from app import segment_renderer
 
