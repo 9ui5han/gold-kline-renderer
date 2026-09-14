@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from io import BytesIO
 from pathlib import Path
@@ -121,6 +122,8 @@ class BlankPageComposeRequest(BaseModel):
     schema_version: Literal["blank-page-compose-v1"]
     kline_image: ComposeKlineImage
     text_blocks: list[ComposeTextBlock] = Field(default_factory=list, max_length=40)
+    old_title: str = ""
+    new_title: str = ""
 
 
 UP_FILL = (242, 245, 248)
@@ -152,6 +155,20 @@ def _visible_zone_color(color: tuple[int, int, int, int]) -> tuple[int, int, int
         round(color[index] * alpha + BACKGROUND[index] * (1 - alpha))
         for index in range(3)
     )
+
+
+def _normalize_title(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _resolve_compose_title(text: str, old_title: str, new_title: str) -> str:
+    if (
+        old_title
+        and new_title
+        and _normalize_title(text) == _normalize_title(old_title)
+    ):
+        return new_title.strip()
+    return text
 
 
 # These are the colors visible after compositing the translucent zones on the
@@ -970,7 +987,11 @@ def render_blank_page(
     overlays = [
         TextOverlay(
             block_id=item.block_id,
-            text=item.text,
+            text=_resolve_compose_title(
+                item.text,
+                request.old_title,
+                request.new_title,
+            ),
             role=item.role,
             x=item.bbox.x,
             y=item.bbox.y,

@@ -26,6 +26,7 @@ from app.kline_render import (
     _text_overlay_box,
     _safe_text_box,
     _resolve_text_boxes,
+    _resolve_compose_title,
     _zone_font,
     _panel_box,
 )
@@ -283,6 +284,16 @@ class KlineRenderTests(unittest.TestCase):
         first = NormalizedBox(x=resolved[0].x, y=resolved[0].y, width=resolved[0].width, height=resolved[0].height)
         second = NormalizedBox(x=resolved[1].x, y=resolved[1].y, width=resolved[1].width, height=resolved[1].height)
         self.assertFalse(_box_intersects(first, second, 0.0))
+
+    def test_compose_title_is_replaced_only_when_both_titles_are_present(self):
+        self.assertEqual(
+            _resolve_compose_title("Old title", "Old title", "New title"),
+            "New title",
+        )
+        self.assertEqual(
+            _resolve_compose_title("Old title", "", "New title"),
+            "Old title",
+        )
 
     def test_long_title_is_reduced_until_it_fits_on_one_line(self):
         title = TextOverlay.model_validate({
