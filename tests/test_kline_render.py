@@ -69,6 +69,110 @@ class KlineRenderTests(unittest.TestCase):
         response = self.client.post("/v1/kline/render", json=kline_payload())
         self.assertEqual(response.status_code, 401, response.text)
 
+    def test_reference_layout_v2_rejects_overlapping_cards(self):
+        from app.kline_render import ReferenceLayoutRequest
+
+        with self.assertRaisesRegex(ValueError, "LAYOUT_COMPONENT_OVERLAP"):
+            ReferenceLayoutRequest.model_validate({
+                "schema_version": "reference-layout-v2",
+                "kline_image": {
+                    "source": "multipart",
+                    "box": {"x": .05, "y": .20, "width": .90, "height": .45},
+                },
+                "components": [
+                    {"component_id": "card_1", "kind": "card", "box": {"x": .05, "y": .70, "width": .30, "height": .20}},
+                    {"component_id": "card_2", "kind": "card", "box": {"x": .25, "y": .70, "width": .30, "height": .20}},
+                ],
+                "text_blocks": [],
+            })
+
+    def test_reference_layout_v2_keeps_original_when_rewrite_is_not_applied(self):
+        from app.kline_render import ReferenceLayoutTextBlock
+
+        block = ReferenceLayoutTextBlock.model_validate({
+            "block_id": "note_1",
+            "text_original": "Liquidity remains below",
+            "text_final": "Changed copy",
+            "rewrite_applied": False,
+            "locked": False,
+            "role": "body",
+            "bbox": {"x": .10, "y": .10, "width": .30, "height": .08},
+            "align": "left",
+            "font_size_ratio": .04,
+        })
+        self.assertEqual(block.render_text, "Liquidity remains below")
+
+    def test_reference_layout_v2_renders_card_labels_and_footer(self):
+        chart = Image.new("RGB", (400, 240), (20, 40, 80))
+        chart_bytes = BytesIO()
+        chart.save(chart_bytes, format="PNG")
+        payload = {
+            "schema_version": "reference-layout-v2",
+            "kline_image": {
+                "source": "multipart",
+                "box": {"x": .05, "y": .20, "width": .90, "height": .42},
+            },
+            "components": [
+                {"component_id": "card_1", "kind": "card", "box": {"x": .05, "y": .70, "width": .25, "height": .18}},
+                {"component_id": "card_2", "kind": "card", "box": {"x": .37, "y": .70, "width": .25, "height": .18}},
+                {"component_id": "card_3", "kind": "card", "box": {"x": .69, "y": .70, "width": .25, "height": .18}},
+                {"component_id": "footer_1", "kind": "footer", "box": {"x": .20, "y": .91, "width": .60, "height": .05}},
+            ],
+            "text_blocks": [
+                {
+                    "block_id": "card_1_title", "text_original": "Retail places stops", "text_final": "Changed",
+                    "rewrite_applied": False, "locked": False, "role": "label",
+                    "bbox": {"x": .07, "y": .76, "width": .21, "height": .04}, "align": "center", "font_size_ratio": .03,
+                },
+                {
+                    "block_id": "footer_text", "text_original": "Liquidity comes first", "text_final": "Changed",
+                    "rewrite_applied": False, "locked": False, "role": "label",
+                    "bbox": {"x": .25, "y": .915, "width": .50, "height": .04}, "align": "center", "font_size_ratio": .025,
+                },
+            ],
+        }
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            data={"compose_request_json": json.dumps(payload)},
+            files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        image_path = Path(main.MEDIA_DIR) / response.json()["image_url"].rsplit("/", 1)[-1]
+        self.addCleanup(image_path.unlink, missing_ok=True)
+        with Image.open(image_path) as image:
+            self.assertNotEqual(image.getpixel((52, 770)), (255, 255, 255))
+            self.assertNotEqual(image.getpixel((300, 950)), (255, 255, 255))
+            title_pixels = [
+                image.getpixel((x, y))
+                for x in range(70, 285)
+                for y in range(770, 810)
+            ]
+            self.assertTrue(any(max(pixel) < 100 for pixel in title_pixels))
+
+    def test_reference_layout_v2_rejects_text_that_cannot_fit(self):
+        chart = Image.new("RGB", (100, 100), "white")
+        chart_bytes = BytesIO()
+        chart.save(chart_bytes, format="PNG")
+        payload = {
+            "schema_version": "reference-layout-v2",
+            "kline_image": {"source": "multipart", "box": {"x": .1, "y": .2, "width": .8, "height": .4}},
+            "components": [{"component_id": "card_1", "kind": "card", "box": {"x": .1, "y": .7, "width": .8, "height": .2}}],
+            "text_blocks": [{
+                "block_id": "too_long", "text_original": "This copy cannot fit in the reserved area", "text_final": "Changed",
+                "rewrite_applied": False, "locked": False, "role": "body",
+                "bbox": {"x": .11, "y": .71, "width": .01, "height": .01}, "align": "left", "font_size_ratio": .2,
+            }],
+        }
+        response = self.client.post(
+            "/v1/kline/render", headers=AUTH,
+            data={"compose_request_json": json.dumps(payload)},
+            files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")},
+        )
+        self.assertEqual(response.status_code, 422, response.text)
+        self.assertIn("TEXT_OVERFLOW:too_long", response.text)
+
     def test_renders_generated_kline_payload_to_png(self):
         response = self.client.post(
             "/v1/kline/render",

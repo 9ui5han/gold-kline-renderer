@@ -126,6 +126,57 @@ class BlankPageComposeRequest(BaseModel):
     new_title: str = ""
 
 
+class LayoutComponent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str = Field(min_length=1, max_length=30)
+    kind: Literal["card", "badge", "icon", "arrow", "footer", "title_band"]
+    box: NormalizedBox
+    icon_kind: Literal["none", "group", "target", "trend", "eye", "warning"] = "none"
+
+
+class ReferenceLayoutTextBlock(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    block_id: str = Field(min_length=1, max_length=30)
+    text_original: str = Field(min_length=1, max_length=500)
+    text_final: str = Field(min_length=1, max_length=500)
+    rewrite_applied: bool = False
+    rewrite_reason: str = Field(default="", max_length=200)
+    locked: bool = False
+    role: Literal["title", "body", "label", "list", "unknown"] = "body"
+    bbox: NormalizedBox
+    align: Literal["left", "center", "right", "unknown"] = "left"
+    font_size_ratio: float = Field(gt=0, le=0.2)
+
+    @property
+    def render_text(self) -> str:
+        if self.locked or not self.rewrite_applied:
+            return self.text_original
+        return self.text_final
+
+
+class ReferenceLayoutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["reference-layout-v2"]
+    kline_image: ComposeKlineImage
+    components: list[LayoutComponent] = Field(min_length=1, max_length=40)
+    text_blocks: list[ReferenceLayoutTextBlock] = Field(default_factory=list, max_length=40)
+
+    @model_validator(mode="after")
+    def validate_structure_boxes(self) -> "ReferenceLayoutRequest":
+        structural = [
+            component for component in self.components
+            if component.kind in {"card", "footer", "title_band"}
+        ]
+        for index, component in enumerate(structural):
+            for other in structural[index + 1:]:
+                if _box_intersects(component.box, other.box, 0.0):
+                    raise ValueError("LAYOUT_COMPONENT_OVERLAP")
+        return self
+
+
 UP_FILL = (242, 245, 248)
 DOWN_FILL = (48, 70, 126)
 OUTLINE = (24, 30, 40)
@@ -418,10 +469,11 @@ def _fit_overlay_font(
     canvas_width: int,
     box_width: float,
     box_height: float,
+    minimum_size: int = 1,
 ) -> tuple[ImageFont.FreeTypeFont | ImageFont.ImageFont, list[str]]:
     """Fit every text block to its reference box, including wrapped lines."""
     target_size = max(1, round(canvas_width * overlay.font_size_ratio))
-    minimum_size = 1
+    minimum_size = max(1, minimum_size)
     while target_size >= minimum_size:
         candidate = _text_font(
             overlay.model_copy(update={"font_size_ratio": target_size / canvas_width}),
@@ -445,7 +497,15 @@ def _fit_overlay_font(
     return fallback, _wrap_text(draw, overlay.text, fallback, box_width)
 
 
-def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_scale: int) -> None:
+def _draw_text_overlays(
+    image: Image.Image,
+    overlays: list[TextOverlay],
+    render_scale: int,
+    *,
+    skip_labels: bool = True,
+    minimum_size: int = 1,
+    fail_on_overflow: bool = False,
+) -> None:
     if not overlays:
         return
     draw = ImageDraw.Draw(image)
@@ -454,7 +514,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         # OB/PB labels are rendered from the generated K-line annotations.
         # Drawing the reference labels again would duplicate them and could
         # leave labels floating away from the newly generated zones.
-        if overlay.role == "label":
+        if skip_labels and overlay.role == "label":
             continue
         box_x, box_y, box_width_ratio, box_height_ratio = _text_overlay_box(overlay)
         left = box_x * width
@@ -484,7 +544,7 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
             available_height = max(1, box_height - padding_y * 2)
         else:
             font, lines = _fit_overlay_font(
-                draw, overlay, width, box_width, box_height
+                draw, overlay, width, box_width, box_height, minimum_size
             )
             text_left = left
             text_top = top
@@ -494,6 +554,10 @@ def _draw_text_overlays(image: Image.Image, overlays: list[TextOverlay], render_
         text_box = draw.multiline_textbbox((0, 0), wrapped_text, font=font, spacing=max(2, round(font.size * 0.22)))
         text_width = text_box[2] - text_box[0]
         text_height = text_box[3] - text_box[1]
+        if fail_on_overflow and (
+            text_width > available_width or text_height > available_height
+        ):
+            raise ValueError(f"TEXT_OVERFLOW:{overlay.block_id}")
         if overlay.role == "title" or overlay.align == "center":
             text_x = (
                 text_left
@@ -1015,6 +1079,99 @@ def render_blank_page(
     flattened.save(output_path, format="PNG", optimize=True)
 
 
+def _component_pixels(component: LayoutComponent, image: Image.Image) -> tuple[int, int, int, int]:
+    width, height = image.size
+    left = round(component.box.x * width)
+    top = round(component.box.y * height)
+    right = round((component.box.x + component.box.width) * width)
+    bottom = round((component.box.y + component.box.height) * height)
+    return left, top, right, bottom
+
+
+def _draw_layout_component(image: Image.Image, component: LayoutComponent) -> None:
+    draw = ImageDraw.Draw(image)
+    left, top, right, bottom = _component_pixels(component, image)
+    outline_width = max(2, round(min(image.size) * 0.003))
+    if component.kind == "card":
+        draw.rounded_rectangle((left, top, right, bottom), radius=max(12, (right - left) // 12), fill=(255, 255, 255, 255), outline=(210, 222, 234, 255), width=outline_width)
+    elif component.kind == "badge":
+        draw.ellipse((left, top, right, bottom), fill=(82, 117, 155, 255))
+    elif component.kind == "footer":
+        draw.rounded_rectangle((left, top, right, bottom), radius=max(12, (right - left) // 18), fill=TITLE_BACKGROUND)
+    elif component.kind == "title_band":
+        draw.rounded_rectangle((left, top, right, bottom), radius=max(12, (right - left) // 20), fill=TITLE_BACKGROUND)
+    elif component.kind == "arrow":
+        mid_y = (top + bottom) // 2
+        draw.line((left, mid_y, right - outline_width * 3, mid_y), fill=(82, 117, 155, 255), width=outline_width)
+        draw.polygon(((right, mid_y), (right - outline_width * 5, mid_y - outline_width * 3), (right - outline_width * 5, mid_y + outline_width * 3)), fill=(82, 117, 155, 255))
+    elif component.kind == "icon":
+        cx, cy = (left + right) // 2, (top + bottom) // 2
+        radius = max(8, min(right - left, bottom - top) // 4)
+        color = (22, 52, 95, 255)
+        if component.icon_kind == "group":
+            for x, y, size in ((cx - radius, cy - radius // 2, radius), (cx + radius, cy - radius // 2, radius), (cx, cy + radius, radius + 3)):
+                draw.ellipse((x - size // 2, y - size // 2, x + size // 2, y + size // 2), fill=color)
+        elif component.icon_kind == "target":
+            for factor in (2, 1):
+                r = radius * factor
+                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=outline_width)
+            draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
+        elif component.icon_kind == "trend":
+            draw.line((left + radius, bottom - radius, right - radius, top + radius), fill=color, width=outline_width)
+            draw.polygon(((right - radius, top + radius), (right - radius * 2, top + radius), (right - radius, top + radius * 2)), fill=color)
+        elif component.icon_kind == "eye":
+            draw.ellipse((left + radius, cy - radius, right - radius, cy + radius), outline=color, width=outline_width)
+            draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
+        elif component.icon_kind == "warning":
+            draw.polygon(((cx, top + radius // 2), (right - radius // 2, bottom - radius // 2), (left + radius // 2, bottom - radius // 2)), outline=color)
+        else:
+            draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=color, width=outline_width)
+
+
+def render_reference_layout(
+    request: ReferenceLayoutRequest,
+    output_path: Path,
+    image_bytes: bytes | None = None,
+) -> None:
+    if image_bytes is None:
+        if not request.kline_image.url:
+            raise ValueError("KLINE_IMAGE_REQUIRED")
+        response = httpx.get(request.kline_image.url, timeout=30.0)
+        response.raise_for_status()
+        image_bytes = response.content
+    scale = RENDER_SCALE
+    image = Image.new("RGBA", (CANVAS_WIDTH * scale, CANVAS_HEIGHT * scale), BACKGROUND + (255,))
+    chart = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    box = request.kline_image.box
+    box_width = round(box.width * CANVAS_WIDTH * scale)
+    box_height = round(box.height * CANVAS_HEIGHT * scale)
+    fitted = ImageOps.contain(chart, (box_width, box_height), Image.Resampling.LANCZOS)
+    left = round(box.x * CANVAS_WIDTH * scale + (box_width - fitted.width) / 2)
+    top = round(box.y * CANVAS_HEIGHT * scale + (box_height - fitted.height) / 2)
+    image.alpha_composite(fitted, (left, top))
+    draw_order = {"title_band": 0, "footer": 1, "card": 2, "badge": 3, "arrow": 4, "icon": 5}
+    for component in sorted(request.components, key=lambda item: draw_order[item.kind]):
+        _draw_layout_component(image, component)
+    overlays = [
+        TextOverlay(
+            block_id=item.block_id,
+            text=item.render_text,
+            role=item.role,
+            x=item.bbox.x,
+            y=item.bbox.y,
+            width=item.bbox.width,
+            height=item.bbox.height,
+            align=item.align,
+            font_size_ratio=item.font_size_ratio,
+            confidence=1.0,
+        )
+        for item in request.text_blocks
+    ]
+    _draw_text_overlays(image, overlays, scale, skip_labels=False, minimum_size=8 * scale, fail_on_overflow=True)
+    image = image.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)
+    Image.alpha_composite(Image.new("RGBA", image.size, BACKGROUND + (255,)), image).convert("RGB").save(output_path, format="PNG", optimize=True)
+
+
 def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
     router = APIRouter(prefix="/v1/kline", tags=["kline"])
 
@@ -1029,15 +1186,22 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
             if not isinstance(raw_request, str) or upload is None or not hasattr(upload, "read"):
                 raise HTTPException(status_code=422, detail="MULTIPART_INPUT_REQUIRED")
             try:
-                parsed = BlankPageComposeRequest.model_validate(json.loads(raw_request))
+                payload = json.loads(raw_request)
+                parsed = (
+                    ReferenceLayoutRequest.model_validate(payload)
+                    if payload.get("schema_version") == "reference-layout-v2"
+                    else BlankPageComposeRequest.model_validate(payload)
+                )
                 upload_bytes = await upload.read()
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            request_model: KlineRenderRequest | BlankPageComposeRequest = parsed
+            request_model: KlineRenderRequest | BlankPageComposeRequest | ReferenceLayoutRequest = parsed
         else:
             try:
                 payload = await request.json()
-                if payload.get("schema_version") == "blank-page-compose-v1":
+                if payload.get("schema_version") == "reference-layout-v2":
+                    request_model = ReferenceLayoutRequest.model_validate(payload)
+                elif payload.get("schema_version") == "blank-page-compose-v1":
                     request_model = BlankPageComposeRequest.model_validate(payload)
                 else:
                     request_model = KlineRenderRequest.model_validate(payload)
@@ -1046,7 +1210,15 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
 
         file_name = f"kline-{uuid.uuid4().hex}.png"
         output_path = media_dir / file_name
-        if isinstance(request_model, BlankPageComposeRequest):
+        if isinstance(request_model, ReferenceLayoutRequest):
+            try:
+                render_reference_layout(request_model, output_path, image_bytes=upload_bytes)
+            except ValueError as exc:
+                output_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            panel_count = 0
+            bar_count = 0
+        elif isinstance(request_model, BlankPageComposeRequest):
             render_blank_page(request_model, output_path, image_bytes=upload_bytes)
             panel_count = 0
             bar_count = 0
