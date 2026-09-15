@@ -130,9 +130,31 @@ class LayoutComponent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     component_id: str = Field(min_length=1, max_length=30)
-    kind: Literal["card", "badge", "icon", "arrow", "footer", "title_band"]
+    kind: Literal["card", "badge", "icon", "arrow", "footer", "title_band"] | None = None
+    type: Literal["rect", "rounded_rect", "circle", "line", "arrow", "polygon", "callout", "icon"] | None = None
     box: NormalizedBox
     icon_kind: Literal["none", "group", "target", "trend", "eye", "warning"] = "none"
+    fill: str = "#FFFFFF"
+    stroke: str = "#D2DEEA"
+    stroke_width: float = Field(default=.002, ge=0, le=.05)
+    opacity: float = Field(default=1, ge=0, le=1)
+    radius: float = Field(default=.02, ge=0, le=.5)
+    z_index: int = Field(default=0, ge=0, le=100)
+
+    @property
+    def shape_type(self) -> str:
+        if self.type:
+            return self.type
+        return {
+            "card": "rounded_rect", "badge": "circle", "footer": "rounded_rect",
+            "title_band": "rounded_rect", "arrow": "arrow", "icon": "icon",
+        }.get(self.kind or "", "rect")
+
+    @model_validator(mode="after")
+    def validate_component(self) -> "LayoutComponent":
+        if not self.kind and not self.type:
+            raise ValueError("LAYOUT_COMPONENT_INVALID")
+        return self
 
 
 class ReferenceLayoutTextBlock(BaseModel):
@@ -148,6 +170,8 @@ class ReferenceLayoutTextBlock(BaseModel):
     bbox: NormalizedBox
     align: Literal["left", "center", "right", "unknown"] = "left"
     font_size_ratio: float = Field(gt=0, le=0.2)
+    parent_id: str | None = Field(default=None, max_length=30)
+    padding: float = Field(default=.08, ge=0, le=.3)
 
     @property
     def render_text(self) -> str:
@@ -174,6 +198,9 @@ class ReferenceLayoutRequest(BaseModel):
             for other in structural[index + 1:]:
                 if _box_intersects(component.box, other.box, 0.0):
                     raise ValueError("LAYOUT_COMPONENT_OVERLAP")
+        component_ids = {component.component_id for component in self.components}
+        if any(block.parent_id and block.parent_id not in component_ids for block in self.text_blocks):
+            raise ValueError("LAYOUT_PARENT_MISSING")
         return self
 
 
@@ -1322,6 +1349,22 @@ def _draw_component_icon(
 
 
 def _draw_layout_component(image: Image.Image, component: LayoutComponent) -> None:
+    if component.type:
+        _draw_scene_shape(
+            image,
+            SceneShape(
+                shape_id=component.component_id,
+                type=component.type,
+                box=component.box,
+                fill=component.fill,
+                stroke=component.stroke,
+                stroke_width=component.stroke_width,
+                opacity=component.opacity,
+                radius=component.radius,
+                z_index=component.z_index,
+            ),
+        )
+        return
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = _component_pixels(component, image)
     outline_width = max(2, round(min(image.size) * 0.003))
@@ -1358,6 +1401,21 @@ def render_reference_layout(
     output_path: Path,
     image_bytes: bytes | None = None,
 ) -> None:
+    if any(component.type for component in request.components):
+        scene = SceneGraphRequest(
+            schema_version="scene-graph-v1",
+            kline_image=request.kline_image,
+            shapes=[
+                SceneShape(shape_id=item.component_id, type=item.shape_type, box=item.box, fill=item.fill, stroke=item.stroke, stroke_width=item.stroke_width, opacity=item.opacity, radius=item.radius, z_index=item.z_index)
+                for item in request.components
+            ],
+            text_blocks=[
+                SceneTextBlock(block_id=item.block_id, parent_id=item.parent_id, text_original=item.text_original, text_final=item.text_final, rewrite_applied=item.rewrite_applied, rewrite_reason=item.rewrite_reason, locked=item.locked, role=item.role, bbox=item.bbox, align=item.align, font_size_ratio=item.font_size_ratio, padding=item.padding)
+                for item in request.text_blocks
+            ],
+        )
+        render_scene_graph(scene, output_path, image_bytes=image_bytes)
+        return
     if image_bytes is None:
         if not request.kline_image.url:
             raise ValueError("KLINE_IMAGE_REQUIRED")
@@ -1375,7 +1433,10 @@ def render_reference_layout(
     top = round(box.y * CANVAS_HEIGHT * scale + (box_height - fitted.height) / 2)
     image.alpha_composite(fitted, (left, top))
     draw_order = {"title_band": 0, "footer": 1, "card": 2, "badge": 3, "arrow": 4, "icon": 5}
-    for component in sorted(request.components, key=lambda item: draw_order[item.kind]):
+    for component in sorted(
+        request.components,
+        key=lambda item: (item.z_index, draw_order.get(item.kind or "", 3)),
+    ):
         _draw_layout_component(image, component)
     overlays = _resolve_reference_layout_overlays(
         request.text_blocks,
