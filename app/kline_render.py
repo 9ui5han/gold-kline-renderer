@@ -505,6 +505,7 @@ def _draw_text_overlays(
     skip_labels: bool = True,
     minimum_size: int = 1,
     fail_on_overflow: bool = False,
+    draw_title_background: bool = True,
 ) -> None:
     if not overlays:
         return
@@ -521,7 +522,7 @@ def _draw_text_overlays(
         top = box_y * height
         box_width = box_width_ratio * width
         box_height = box_height_ratio * height
-        if overlay.role == "title":
+        if overlay.role == "title" and draw_title_background:
             radius = max(8, round(min(box_width, box_height) * 0.22))
             draw.rounded_rectangle(
                 (left, top, left + box_width, top + box_height),
@@ -542,6 +543,14 @@ def _draw_text_overlays(
             text_top = top + padding_y
             available_width = max(1, box_width - padding_x * 2)
             available_height = max(1, box_height - padding_y * 2)
+        elif overlay.role == "title":
+            font, lines = _fit_overlay_font(
+                draw, overlay, width, box_width, box_height, minimum_size
+            )
+            text_left = left
+            text_top = top
+            available_width = box_width
+            available_height = box_height
         else:
             font, lines = _fit_overlay_font(
                 draw, overlay, width, box_width, box_height, minimum_size
@@ -1088,6 +1097,141 @@ def _component_pixels(component: LayoutComponent, image: Image.Image) -> tuple[i
     return left, top, right, bottom
 
 
+def _reference_inner_box(component: LayoutComponent) -> NormalizedBox:
+    """Return a component's usable text region with a proportional safe margin."""
+    box = component.box
+    if component.kind == "badge":
+        pad_x = min(box.width * 0.24, 0.025)
+        pad_y = min(box.height * 0.24, 0.025)
+    else:
+        pad_x = min(box.width * 0.10, 0.030)
+        pad_y = min(box.height * 0.14, 0.024)
+    return NormalizedBox(
+        x=box.x + pad_x,
+        y=box.y + pad_y,
+        width=max(0.01, box.width - pad_x * 2),
+        height=max(0.01, box.height - pad_y * 2),
+    )
+
+
+def _text_center(box: NormalizedBox) -> tuple[float, float]:
+    return (box.x + box.width / 2, box.y + box.height / 2)
+
+
+def _reference_text_component(
+    block: ReferenceLayoutTextBlock,
+    components: list[LayoutComponent],
+) -> LayoutComponent | None:
+    """Associate a text block with its containing decorative component."""
+    preferred = (
+        {"title_band"} if block.role == "title"
+        else {"card", "footer", "badge"}
+    )
+    box = block.bbox
+    center_x, center_y = _text_center(box)
+    candidates = [
+        component for component in components
+        if component.kind in preferred
+        and component.box.x <= center_x <= component.box.x + component.box.width
+        and component.box.y <= center_y <= component.box.y + component.box.height
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda component: component.box.width * component.box.height,
+    )
+
+
+def _resolve_reference_layout_overlays(
+    blocks: list[ReferenceLayoutTextBlock],
+    components: list[LayoutComponent],
+    chart_box: NormalizedBox,
+) -> list[TextOverlay]:
+    """Anchor copy to a parent component and reserve its internal padding."""
+    parents = [_reference_text_component(block, components) for block in blocks]
+    grouped: dict[str, list[int]] = {}
+    for index, component in enumerate(parents):
+        if component is not None:
+            grouped.setdefault(component.component_id, []).append(index)
+
+    resolved: list[TextOverlay | None] = [None] * len(blocks)
+    for component_id, indexes in grouped.items():
+        component = next(item for item in components if item.component_id == component_id)
+        inner = _reference_inner_box(component)
+        ordered = sorted(indexes, key=lambda index: blocks[index].bbox.y)
+        gap = min(0.008, inner.height * 0.12)
+        slot_height = max(0.008, (inner.height - gap * (len(ordered) - 1)) / len(ordered))
+        for slot, index in enumerate(ordered):
+            block = blocks[index]
+            resolved[index] = TextOverlay(
+                block_id=block.block_id,
+                text=block.render_text,
+                role=block.role,
+                x=inner.x,
+                y=inner.y + slot * (slot_height + gap),
+                width=inner.width,
+                height=slot_height,
+                align="center" if block.role == "title" else block.align,
+                font_size_ratio=block.font_size_ratio,
+                confidence=1.0,
+            )
+
+    unanchored = [
+        TextOverlay(
+            block_id=block.block_id,
+            text=block.render_text,
+            role=block.role,
+            x=block.bbox.x,
+            y=block.bbox.y,
+            width=block.bbox.width,
+            height=block.bbox.height,
+            align=block.align,
+            font_size_ratio=block.font_size_ratio,
+            confidence=1.0,
+        )
+        for index, block in enumerate(blocks)
+        if parents[index] is None
+    ]
+    safe_unanchored = iter(_resolve_text_boxes(unanchored, chart_box))
+    for index, component in enumerate(parents):
+        if component is None:
+            resolved[index] = next(safe_unanchored)
+    return [overlay for overlay in resolved if overlay is not None]
+
+
+def _fit_reference_chart_box(
+    chart_box: NormalizedBox,
+    components: list[LayoutComponent],
+) -> NormalizedBox:
+    """Shrink the chart into free canvas space when a solid panel overlaps it."""
+    current = chart_box
+    gap = 0.012
+    for component in components:
+        if component.kind not in {"card", "footer", "title_band"}:
+            continue
+        if not _box_intersects(current, component.box, gap):
+            continue
+        candidates: list[NormalizedBox] = []
+        top_height = component.box.y - gap - current.y
+        if top_height >= 0.10:
+            candidates.append(current.model_copy(update={"height": top_height}))
+        bottom_y = component.box.y + component.box.height + gap
+        bottom_height = current.y + current.height - bottom_y
+        if bottom_height >= 0.10:
+            candidates.append(current.model_copy(update={"y": bottom_y, "height": bottom_height}))
+        left_width = component.box.x - gap - current.x
+        if left_width >= 0.20:
+            candidates.append(current.model_copy(update={"width": left_width}))
+        right_x = component.box.x + component.box.width + gap
+        right_width = current.x + current.width - right_x
+        if right_width >= 0.20:
+            candidates.append(current.model_copy(update={"x": right_x, "width": right_width}))
+        if candidates:
+            current = max(candidates, key=lambda box: box.width * box.height)
+    return current
+
+
 def _draw_layout_component(image: Image.Image, component: LayoutComponent) -> None:
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = _component_pixels(component, image)
@@ -1142,7 +1286,7 @@ def render_reference_layout(
     scale = RENDER_SCALE
     image = Image.new("RGBA", (CANVAS_WIDTH * scale, CANVAS_HEIGHT * scale), BACKGROUND + (255,))
     chart = Image.open(BytesIO(image_bytes)).convert("RGBA")
-    box = request.kline_image.box
+    box = _fit_reference_chart_box(request.kline_image.box, request.components)
     box_width = round(box.width * CANVAS_WIDTH * scale)
     box_height = round(box.height * CANVAS_HEIGHT * scale)
     fitted = ImageOps.contain(chart, (box_width, box_height), Image.Resampling.LANCZOS)
@@ -1152,22 +1296,20 @@ def render_reference_layout(
     draw_order = {"title_band": 0, "footer": 1, "card": 2, "badge": 3, "arrow": 4, "icon": 5}
     for component in sorted(request.components, key=lambda item: draw_order[item.kind]):
         _draw_layout_component(image, component)
-    overlays = [
-        TextOverlay(
-            block_id=item.block_id,
-            text=item.render_text,
-            role=item.role,
-            x=item.bbox.x,
-            y=item.bbox.y,
-            width=item.bbox.width,
-            height=item.bbox.height,
-            align=item.align,
-            font_size_ratio=item.font_size_ratio,
-            confidence=1.0,
-        )
-        for item in request.text_blocks
-    ]
-    _draw_text_overlays(image, overlays, scale, skip_labels=False, minimum_size=8 * scale, fail_on_overflow=True)
+    overlays = _resolve_reference_layout_overlays(
+        request.text_blocks,
+        request.components,
+        box,
+    )
+    _draw_text_overlays(
+        image,
+        overlays,
+        scale,
+        skip_labels=False,
+        minimum_size=8 * scale,
+        fail_on_overflow=True,
+        draw_title_background=False,
+    )
     image = image.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)
     Image.alpha_composite(Image.new("RGBA", image.size, BACKGROUND + (255,)), image).convert("RGB").save(output_path, format="PNG", optimize=True)
 

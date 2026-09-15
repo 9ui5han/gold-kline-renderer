@@ -151,7 +151,7 @@ class KlineRenderTests(unittest.TestCase):
             ]
             self.assertTrue(any(max(pixel) < 100 for pixel in title_pixels))
 
-    def test_reference_layout_v2_rejects_text_that_cannot_fit(self):
+    def test_reference_layout_v2_expands_tiny_text_box_inside_a_card(self):
         chart = Image.new("RGB", (100, 100), "white")
         chart_bytes = BytesIO()
         chart.save(chart_bytes, format="PNG")
@@ -170,8 +170,68 @@ class KlineRenderTests(unittest.TestCase):
             data={"compose_request_json": json.dumps(payload)},
             files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")},
         )
-        self.assertEqual(response.status_code, 422, response.text)
-        self.assertIn("TEXT_OVERFLOW:too_long", response.text)
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_reference_layout_v2_uses_component_interior_for_title_and_card_copy(self):
+        from app.kline_render import (
+            LayoutComponent,
+            ReferenceLayoutTextBlock,
+            _resolve_reference_layout_overlays,
+        )
+
+        components = [
+            LayoutComponent.model_validate({
+                "component_id": "title_band", "kind": "title_band",
+                "box": {"x": .10, "y": .04, "width": .80, "height": .10},
+            }),
+            LayoutComponent.model_validate({
+                "component_id": "card_one", "kind": "card",
+                "box": {"x": .08, "y": .72, "width": .26, "height": .18},
+            }),
+        ]
+        text_blocks = [
+            ReferenceLayoutTextBlock.model_validate({
+                "block_id": "title", "text_original": "Why SMT Happens", "text_final": "Why SMT Happens",
+                "role": "title", "bbox": {"x": .13, "y": .05, "width": .10, "height": .02},
+                "align": "left", "font_size_ratio": .05,
+            }),
+            ReferenceLayoutTextBlock.model_validate({
+                "block_id": "card_copy", "text_original": "Retail places stops", "text_final": "Retail places stops",
+                "role": "label", "bbox": {"x": .081, "y": .721, "width": .02, "height": .01},
+                "align": "left", "font_size_ratio": .03,
+            }),
+        ]
+
+        overlays = _resolve_reference_layout_overlays(
+            text_blocks,
+            components,
+            NormalizedBox(x=.05, y=.22, width=.90, height=.42),
+        )
+
+        self.assertEqual(overlays[0].align, "center")
+        self.assertGreater(overlays[0].x, .10)
+        self.assertLess(overlays[0].x + overlays[0].width, .90)
+        self.assertGreater(overlays[1].x, .08)
+        self.assertLess(overlays[1].x + overlays[1].width, .34)
+
+    def test_reference_layout_v2_moves_chart_out_of_structural_backgrounds(self):
+        from app.kline_render import (
+            LayoutComponent,
+            _fit_reference_chart_box,
+        )
+
+        chart_box = NormalizedBox(x=.05, y=.20, width=.90, height=.62)
+        components = [
+            LayoutComponent.model_validate({
+                "component_id": "footer", "kind": "footer",
+                "box": {"x": .20, "y": .72, "width": .60, "height": .08},
+            }),
+        ]
+
+        resolved = _fit_reference_chart_box(chart_box, components)
+
+        self.assertFalse(_box_intersects(resolved, components[0].box, .01))
+        self.assertGreater(resolved.height, .10)
 
     def test_renders_generated_kline_payload_to_png(self):
         response = self.client.post(
