@@ -177,6 +177,59 @@ class ReferenceLayoutRequest(BaseModel):
         return self
 
 
+SCENE_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+class SceneShape(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    shape_id: str = Field(min_length=1, max_length=30)
+    type: Literal["rect", "rounded_rect", "circle", "line", "arrow", "polygon", "callout", "icon"]
+    box: NormalizedBox
+    fill: str = "#FFFFFF"
+    stroke: str = "#000000"
+    stroke_width: float = Field(default=0.002, ge=0, le=0.05)
+    opacity: float = Field(default=1.0, ge=0, le=1)
+    radius: float = Field(default=0.02, ge=0, le=0.5)
+    z_index: int = Field(default=0, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_colors(self) -> "SceneShape":
+        if not SCENE_COLOR.fullmatch(self.fill) or not SCENE_COLOR.fullmatch(self.stroke):
+            raise ValueError("SCENE_STYLE_INVALID")
+        return self
+
+
+class SceneTextBlock(ReferenceLayoutTextBlock):
+    parent_id: str | None = Field(default=None, max_length=30)
+    padding: float = Field(default=0.08, ge=0, le=0.3)
+
+
+class SceneGraphRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["scene-graph-v1"]
+    canvas: dict[str, str] = Field(default_factory=lambda: {"background": "#FFFFFF"})
+    kline_image: ComposeKlineImage
+    shapes: list[SceneShape] = Field(default_factory=list, max_length=80)
+    text_blocks: list[SceneTextBlock] = Field(default_factory=list, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> "SceneGraphRequest":
+        if not SCENE_COLOR.fullmatch(str(self.canvas.get("background", ""))):
+            raise ValueError("SCENE_STYLE_INVALID")
+        shape_ids = [shape.shape_id for shape in self.shapes]
+        if len(shape_ids) != len(set(shape_ids)):
+            raise ValueError("SCENE_SHAPE_INVALID")
+        block_ids = [block.block_id for block in self.text_blocks]
+        if len(block_ids) != len(set(block_ids)):
+            raise ValueError("SCENE_TEXT_INVALID")
+        shape_set = set(shape_ids)
+        if any(block.parent_id and block.parent_id not in shape_set for block in self.text_blocks):
+            raise ValueError("SCENE_PARENT_MISSING")
+        return self
+
+
 UP_FILL = (242, 245, 248)
 DOWN_FILL = (48, 70, 126)
 OUTLINE = (24, 30, 40)
@@ -1106,11 +1159,14 @@ def _reference_inner_box(component: LayoutComponent) -> NormalizedBox:
     else:
         pad_x = min(box.width * 0.10, 0.030)
         pad_y = min(box.height * 0.14, 0.024)
+    icon_reserve = box.height * 0.30 if (
+        component.kind == "card" and component.icon_kind != "none"
+    ) else 0.0
     return NormalizedBox(
         x=box.x + pad_x,
-        y=box.y + pad_y,
+        y=box.y + pad_y + icon_reserve,
         width=max(0.01, box.width - pad_x * 2),
-        height=max(0.01, box.height - pad_y * 2),
+        height=max(0.01, box.height - pad_y * 2 - icon_reserve),
     )
 
 
@@ -1232,12 +1288,55 @@ def _fit_reference_chart_box(
     return current
 
 
+def _draw_component_icon(
+    draw: ImageDraw.ImageDraw,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    icon_kind: str,
+    outline_width: int,
+) -> None:
+    """Draw a compact icon inside either an icon component or a card header."""
+    cx, cy = (left + right) // 2, (top + bottom) // 2
+    radius = max(8, min(right - left, bottom - top) // 4)
+    color = (22, 52, 95, 255)
+    if icon_kind == "group":
+        for x, y, size in ((cx - radius, cy - radius // 2, radius), (cx + radius, cy - radius // 2, radius), (cx, cy + radius, radius + 3)):
+            draw.ellipse((x - size // 2, y - size // 2, x + size // 2, y + size // 2), fill=color)
+    elif icon_kind == "target":
+        for factor in (2, 1):
+            r = radius * factor
+            draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=outline_width)
+        draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
+    elif icon_kind == "trend":
+        draw.line((left + radius, bottom - radius, right - radius, top + radius), fill=color, width=outline_width)
+        draw.polygon(((right - radius, top + radius), (right - radius * 2, top + radius), (right - radius, top + radius * 2)), fill=color)
+    elif icon_kind == "eye":
+        draw.ellipse((left + radius, cy - radius, right - radius, cy + radius), outline=color, width=outline_width)
+        draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
+    elif icon_kind == "warning":
+        draw.polygon(((cx, top + radius // 2), (right - radius // 2, bottom - radius // 2), (left + radius // 2, bottom - radius // 2)), outline=color)
+    else:
+        draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=color, width=outline_width)
+
+
 def _draw_layout_component(image: Image.Image, component: LayoutComponent) -> None:
     draw = ImageDraw.Draw(image)
     left, top, right, bottom = _component_pixels(component, image)
     outline_width = max(2, round(min(image.size) * 0.003))
     if component.kind == "card":
         draw.rounded_rectangle((left, top, right, bottom), radius=max(12, (right - left) // 12), fill=(255, 255, 255, 255), outline=(210, 222, 234, 255), width=outline_width)
+        if component.icon_kind != "none":
+            _draw_component_icon(
+                draw,
+                left + outline_width * 3,
+                top + outline_width * 3,
+                right - outline_width * 3,
+                top + max(outline_width * 6, round((bottom - top) * 0.36)),
+                component.icon_kind,
+                outline_width,
+            )
     elif component.kind == "badge":
         draw.ellipse((left, top, right, bottom), fill=(82, 117, 155, 255))
     elif component.kind == "footer":
@@ -1249,27 +1348,9 @@ def _draw_layout_component(image: Image.Image, component: LayoutComponent) -> No
         draw.line((left, mid_y, right - outline_width * 3, mid_y), fill=(82, 117, 155, 255), width=outline_width)
         draw.polygon(((right, mid_y), (right - outline_width * 5, mid_y - outline_width * 3), (right - outline_width * 5, mid_y + outline_width * 3)), fill=(82, 117, 155, 255))
     elif component.kind == "icon":
-        cx, cy = (left + right) // 2, (top + bottom) // 2
-        radius = max(8, min(right - left, bottom - top) // 4)
-        color = (22, 52, 95, 255)
-        if component.icon_kind == "group":
-            for x, y, size in ((cx - radius, cy - radius // 2, radius), (cx + radius, cy - radius // 2, radius), (cx, cy + radius, radius + 3)):
-                draw.ellipse((x - size // 2, y - size // 2, x + size // 2, y + size // 2), fill=color)
-        elif component.icon_kind == "target":
-            for factor in (2, 1):
-                r = radius * factor
-                draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=outline_width)
-            draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
-        elif component.icon_kind == "trend":
-            draw.line((left + radius, bottom - radius, right - radius, top + radius), fill=color, width=outline_width)
-            draw.polygon(((right - radius, top + radius), (right - radius * 2, top + radius), (right - radius, top + radius * 2)), fill=color)
-        elif component.icon_kind == "eye":
-            draw.ellipse((left + radius, cy - radius, right - radius, cy + radius), outline=color, width=outline_width)
-            draw.ellipse((cx - radius // 3, cy - radius // 3, cx + radius // 3, cy + radius // 3), fill=color)
-        elif component.icon_kind == "warning":
-            draw.polygon(((cx, top + radius // 2), (right - radius // 2, bottom - radius // 2), (left + radius // 2, bottom - radius // 2)), outline=color)
-        else:
-            draw.ellipse((cx - radius, cy - radius, cx + radius, cy + radius), outline=color, width=outline_width)
+        _draw_component_icon(
+            draw, left, top, right, bottom, component.icon_kind, outline_width
+        )
 
 
 def render_reference_layout(
@@ -1314,6 +1395,104 @@ def render_reference_layout(
     Image.alpha_composite(Image.new("RGBA", image.size, BACKGROUND + (255,)), image).convert("RGB").save(output_path, format="PNG", optimize=True)
 
 
+def _scene_rgba(value: str, opacity: float = 1.0) -> tuple[int, int, int, int]:
+    return tuple(int(value[index:index + 2], 16) for index in (1, 3, 5)) + (round(opacity * 255),)
+
+
+def _scene_pixels(box: NormalizedBox, image: Image.Image) -> tuple[int, int, int, int]:
+    width, height = image.size
+    return (
+        round(box.x * width), round(box.y * height),
+        round((box.x + box.width) * width), round((box.y + box.height) * height),
+    )
+
+
+def _draw_scene_shape(image: Image.Image, shape: SceneShape) -> None:
+    draw = ImageDraw.Draw(image)
+    left, top, right, bottom = _scene_pixels(shape.box, image)
+    fill = _scene_rgba(shape.fill, shape.opacity)
+    stroke = _scene_rgba(shape.stroke, shape.opacity)
+    width = max(1, round(shape.stroke_width * min(image.size)))
+    if shape.type == "rect":
+        draw.rectangle((left, top, right, bottom), fill=fill, outline=stroke, width=width)
+    elif shape.type in {"rounded_rect", "callout"}:
+        draw.rounded_rectangle((left, top, right, bottom), radius=max(1, round(shape.radius * min(image.size))), fill=fill, outline=stroke, width=width)
+        if shape.type == "callout":
+            draw.polygon(((left + (right-left)//3, bottom), (left + (right-left)//3 + width * 5, bottom), (left + (right-left)//3, bottom + width * 6)), fill=fill, outline=stroke)
+    elif shape.type in {"circle", "icon"}:
+        draw.ellipse((left, top, right, bottom), fill=fill, outline=stroke, width=width)
+    elif shape.type == "polygon":
+        draw.polygon(
+            [((left + right) // 2, top), (right, bottom), (left, bottom)],
+            fill=fill,
+            outline=stroke,
+        )
+    else:
+        mid_y = (top + bottom) // 2
+        draw.line((left, mid_y, right, mid_y), fill=stroke, width=width)
+        if shape.type == "arrow":
+            draw.polygon(((right, mid_y), (right - width * 5, mid_y - width * 3), (right - width * 5, mid_y + width * 3)), fill=stroke)
+
+
+def _scene_inner_box(shape: SceneShape, padding: float) -> NormalizedBox:
+    pad_x = min(shape.box.width * padding, 0.04)
+    pad_y = min(shape.box.height * padding, 0.04)
+    return NormalizedBox(x=shape.box.x + pad_x, y=shape.box.y + pad_y, width=max(.01, shape.box.width - 2 * pad_x), height=max(.01, shape.box.height - 2 * pad_y))
+
+
+def _fit_scene_chart_box(chart_box: NormalizedBox, shapes: list[SceneShape]) -> NormalizedBox:
+    current = chart_box
+    for shape in shapes:
+        if shape.opacity <= 0 or shape.type in {"line", "arrow", "icon"}:
+            continue
+        if not _box_intersects(current, shape.box, .012):
+            continue
+        candidates = []
+        above = shape.box.y - .012 - current.y
+        below_y = shape.box.y + shape.box.height + .012
+        below = current.y + current.height - below_y
+        if above >= .10:
+            candidates.append(current.model_copy(update={"height": above}))
+        if below >= .10:
+            candidates.append(current.model_copy(update={"y": below_y, "height": below}))
+        if candidates:
+            current = max(candidates, key=lambda item: item.width * item.height)
+    if current.height < .10:
+        raise ValueError("CHART_COLLISION")
+    return current
+
+
+def render_scene_graph(request: SceneGraphRequest, output_path: Path, image_bytes: bytes | None = None) -> None:
+    if image_bytes is None:
+        if not request.kline_image.url:
+            raise ValueError("KLINE_IMAGE_REQUIRED")
+        response = httpx.get(request.kline_image.url, timeout=30.0)
+        response.raise_for_status()
+        image_bytes = response.content
+    scale = RENDER_SCALE
+    canvas = Image.new("RGBA", (CANVAS_WIDTH * scale, CANVAS_HEIGHT * scale), _scene_rgba(request.canvas["background"]))
+    chart_box = _fit_scene_chart_box(request.kline_image.box, request.shapes)
+    background_shapes = sorted((shape for shape in request.shapes if shape.z_index < 50), key=lambda shape: shape.z_index)
+    for shape in background_shapes:
+        _draw_scene_shape(canvas, shape)
+    chart = Image.open(BytesIO(image_bytes)).convert("RGBA")
+    left, top, right, bottom = _scene_pixels(chart_box, canvas)
+    fitted = ImageOps.contain(chart, (right - left, bottom - top), Image.Resampling.LANCZOS)
+    canvas.alpha_composite(fitted, (left + ((right-left)-fitted.width)//2, top + ((bottom-top)-fitted.height)//2))
+    for shape in sorted((shape for shape in request.shapes if shape.z_index >= 50), key=lambda shape: shape.z_index):
+        _draw_scene_shape(canvas, shape)
+    shape_map = {shape.shape_id: shape for shape in request.shapes}
+    anchored = []
+    free = []
+    for block in request.text_blocks:
+        box = _scene_inner_box(shape_map[block.parent_id], block.padding) if block.parent_id else block.bbox
+        overlay = TextOverlay(block_id=block.block_id, text=block.render_text, role=block.role, x=box.x, y=box.y, width=box.width, height=box.height, align="center" if block.role == "title" else block.align, font_size_ratio=block.font_size_ratio, confidence=1.0)
+        (anchored if block.parent_id else free).append(overlay)
+    overlays = anchored + _resolve_text_boxes(free, chart_box)
+    _draw_text_overlays(canvas, overlays, scale, skip_labels=False, minimum_size=8 * scale, fail_on_overflow=True, draw_title_background=False)
+    canvas.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS).convert("RGB").save(output_path, format="PNG", optimize=True)
+
+
 def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
     router = APIRouter(prefix="/v1/kline", tags=["kline"])
 
@@ -1330,18 +1509,22 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
             try:
                 payload = json.loads(raw_request)
                 parsed = (
-                    ReferenceLayoutRequest.model_validate(payload)
+                    SceneGraphRequest.model_validate(payload)
+                    if payload.get("schema_version") == "scene-graph-v1"
+                    else ReferenceLayoutRequest.model_validate(payload)
                     if payload.get("schema_version") == "reference-layout-v2"
                     else BlankPageComposeRequest.model_validate(payload)
                 )
                 upload_bytes = await upload.read()
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            request_model: KlineRenderRequest | BlankPageComposeRequest | ReferenceLayoutRequest = parsed
+            request_model: KlineRenderRequest | BlankPageComposeRequest | ReferenceLayoutRequest | SceneGraphRequest = parsed
         else:
             try:
                 payload = await request.json()
-                if payload.get("schema_version") == "reference-layout-v2":
+                if payload.get("schema_version") == "scene-graph-v1":
+                    request_model = SceneGraphRequest.model_validate(payload)
+                elif payload.get("schema_version") == "reference-layout-v2":
                     request_model = ReferenceLayoutRequest.model_validate(payload)
                 elif payload.get("schema_version") == "blank-page-compose-v1":
                     request_model = BlankPageComposeRequest.model_validate(payload)
@@ -1352,7 +1535,15 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
 
         file_name = f"kline-{uuid.uuid4().hex}.png"
         output_path = media_dir / file_name
-        if isinstance(request_model, ReferenceLayoutRequest):
+        if isinstance(request_model, SceneGraphRequest):
+            try:
+                render_scene_graph(request_model, output_path, image_bytes=upload_bytes)
+            except ValueError as exc:
+                output_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            panel_count = 0
+            bar_count = 0
+        elif isinstance(request_model, ReferenceLayoutRequest):
             try:
                 render_reference_layout(request_model, output_path, image_bytes=upload_bytes)
             except ValueError as exc:

@@ -69,6 +69,34 @@ class KlineRenderTests(unittest.TestCase):
         response = self.client.post("/v1/kline/render", json=kline_payload())
         self.assertEqual(response.status_code, 401, response.text)
 
+    def test_scene_graph_renders_generic_shapes_and_parent_text(self):
+        chart = Image.new("RGB", (300, 200), (20, 40, 80))
+        chart_bytes = BytesIO()
+        chart.save(chart_bytes, format="PNG")
+        payload = {
+            "schema_version": "scene-graph-v1",
+            "canvas": {"background": "#FFFFFF"},
+            "kline_image": {"source": "multipart", "box": {"x": .05, "y": .22, "width": .90, "height": .38}},
+            "shapes": [
+                {"shape_id": "title", "type": "rounded_rect", "box": {"x": .10, "y": .04, "width": .80, "height": .10}, "fill": "#DCE6EF", "stroke": "#DCE6EF", "z_index": 1},
+                {"shape_id": "circle", "type": "circle", "box": {"x": .10, "y": .72, "width": .10, "height": .10}, "fill": "#52759B", "stroke": "#52759B", "z_index": 60},
+                {"shape_id": "arrow", "type": "arrow", "box": {"x": .30, "y": .75, "width": .20, "height": .03}, "fill": "#FFFFFF", "stroke": "#12345F", "z_index": 60},
+            ],
+            "text_blocks": [{"block_id": "heading", "parent_id": "title", "text_original": "Why SMT Happens", "text_final": "Changed", "locked": True, "rewrite_applied": False, "role": "title", "bbox": {"x": .1, "y": .04, "width": .8, "height": .1}, "align": "left", "font_size_ratio": .05}],
+        }
+        response = self.client.post("/v1/kline/render", headers=AUTH, data={"compose_request_json": json.dumps(payload)}, files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")})
+        self.assertEqual(response.status_code, 200, response.text)
+        image_path = Path(main.MEDIA_DIR) / response.json()["image_url"].rsplit("/", 1)[-1]
+        self.addCleanup(image_path.unlink, missing_ok=True)
+        with Image.open(image_path) as image:
+            self.assertNotEqual(image.getpixel((150, 80)), (255, 255, 255))
+            self.assertNotEqual(image.getpixel((150, 770)), (255, 255, 255))
+
+    def test_scene_graph_rejects_unknown_text_parent(self):
+        from app.kline_render import SceneGraphRequest
+        with self.assertRaisesRegex(ValueError, "SCENE_PARENT_MISSING"):
+            SceneGraphRequest.model_validate({"schema_version": "scene-graph-v1", "kline_image": {"source": "multipart", "box": {"x": .1, "y": .2, "width": .8, "height": .4}}, "shapes": [], "text_blocks": [{"block_id": "copy", "parent_id": "missing", "text_original": "Copy", "text_final": "Copy", "role": "body", "bbox": {"x": .1, "y": .1, "width": .2, "height": .1}, "align": "center", "font_size_ratio": .03}]})
+
     def test_reference_layout_v2_rejects_overlapping_cards(self):
         from app.kline_render import ReferenceLayoutRequest
 
@@ -150,6 +178,44 @@ class KlineRenderTests(unittest.TestCase):
                 for y in range(770, 810)
             ]
             self.assertTrue(any(max(pixel) < 100 for pixel in title_pixels))
+
+    def test_reference_layout_v2_draws_an_icon_declared_on_a_card(self):
+        chart = Image.new("RGB", (300, 200), "white")
+        chart_bytes = BytesIO()
+        chart.save(chart_bytes, format="PNG")
+        payload = {
+            "schema_version": "reference-layout-v2",
+            "kline_image": {
+                "source": "multipart",
+                "box": {"x": .05, "y": .22, "width": .90, "height": .35},
+            },
+            "components": [
+                {
+                    "component_id": "card_1",
+                    "kind": "card",
+                    "icon_kind": "group",
+                    "box": {"x": .10, "y": .68, "width": .25, "height": .20},
+                },
+            ],
+            "text_blocks": [],
+        }
+        response = self.client.post(
+            "/v1/kline/render",
+            headers=AUTH,
+            data={"compose_request_json": json.dumps(payload)},
+            files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        image_path = Path(main.MEDIA_DIR) / response.json()["image_url"].rsplit("/", 1)[-1]
+        self.addCleanup(image_path.unlink, missing_ok=True)
+        with Image.open(image_path) as image:
+            icon_pixels = [
+                image.getpixel((x, y))
+                for x in range(145, 315)
+                for y in range(700, 790)
+            ]
+        self.assertTrue(any(max(pixel) < 110 for pixel in icon_pixels))
 
     def test_reference_layout_v2_expands_tiny_text_box_inside_a_card(self):
         chart = Image.new("RGB", (100, 100), "white")
