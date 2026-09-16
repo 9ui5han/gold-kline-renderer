@@ -5,6 +5,7 @@ const overallText = document.querySelector("#overall-text");
 const languageSelect = document.querySelector("#language-select");
 
 const LANGUAGE_KEY = "macro-status-language";
+let currentLanguage = "zh";
 const LANGUAGE_TEXT = {
   zh: {
     title: "宏观事件服务状态",
@@ -26,9 +27,84 @@ const LANGUAGE_TEXT = {
   },
 };
 
+const TEXT_TRANSLATIONS = [
+  ["等待检查", "Waiting for check"],
+  ["Render 服务", "Render Service"],
+  ["有效来源", "Valid sources"],
+  ["检查时间（北京时间）", "Check time (Beijing)"],
+  ["官方数据源", "Official Sources"],
+  ["已接入的宏观事件", "Tracked Macro Events"],
+  ["状态", "Status"],
+  ["内容类型", "Content type"],
+  ["错误代码", "Error code"],
+  ["未检查", "Not checked"],
+  ["正常", "Healthy"],
+  ["响应异常", "Response issue"],
+  ["不可访问", "Unreachable"],
+  ["来源异常", "Source error"],
+  ["等待缓存", "Waiting for cache"],
+  ["未识别到事件", "No events found"],
+  ["已接入", "Connected"],
+  ["缓存事件", "Cached events"],
+  ["最近一次", "Previous"],
+  ["下一次", "Next"],
+  ["来源：", "Source: "],
+  ["北京", "Beijing"],
+  ["当地", "Local"],
+  ["精确时间", "Exact time"],
+  ["仅日期", "Date only"],
+  ["无", "None"],
+  ["日期未知", "Unknown date"],
+  ["绿色表示可访问且结构正确；黄色表示只能部分使用；红色表示不可用。", "Green means reachable with a valid structure; yellow means partially usable; red means unavailable."],
+  ["按下一次触发时间排列；同一时刻按英文事件名 A–Z 排列。事件时间同时显示北京时间和美国东部时间。", "Sorted by the next trigger time, then by English event name. Event times show Beijing and U.S. Eastern time."],
+  ["Federal Reserve", "Federal Reserve"],
+  ["美国联邦储备委员会", "U.S. Federal Reserve"],
+  ["美国劳工统计局", "U.S. Bureau of Labor Statistics"],
+  ["美国经济分析局", "U.S. Bureau of Economic Analysis"],
+  ["美联储讲话与证词 RSS", "Federal Reserve speeches and testimony RSS"],
+  ["纽约联储 John Williams 官方讲话页", "New York Fed John Williams official speeches"],
+  ["总统 Donald Trump 官方讲话页", "President Donald Trump official remarks"],
+  ["国务院官方外交新闻接口", "State Department official diplomacy feed"],
+  ["财政部国债发行与拍卖", "Treasury debt issuance and auctions"],
+  ["财政部国债回购日程", "Treasury buyback schedule"],
+  ["财政部债务管理公告", "Treasury debt management notices"],
+  ["CPI 消费者物价指数", "CPI Consumer Price Index"],
+  ["PPI 生产者物价指数", "PPI Producer Price Index"],
+  ["非农与就业报告", "Nonfarm payrolls and employment report"],
+  ["PCE 个人消费支出物价", "PCE Personal Consumption Expenditures"],
+  ["FOMC 美联储议息会议", "FOMC Federal Reserve meeting"],
+  ["美国外交官员讲话与声明", "U.S. diplomatic officials' remarks and statements"],
+  ["美国国债发行与拍卖", "U.S. Treasury issuance and auctions"],
+  ["美国国债回购", "U.S. Treasury buybacks"],
+  ["美国财政部债务公告", "U.S. Treasury debt notices"],
+  ["Scott Bessent 财政部长讲话", "Treasury Secretary Scott Bessent remarks"],
+  ["来源未提供详细简介。", "No detailed description was provided by the source."],
+];
+
+function translatePageText(language) {
+  if (!document.body || !document.createTreeWalker || typeof NodeFilter === "undefined") {
+    return;
+  }
+  const replacements = language === "en"
+    ? TEXT_TRANSLATIONS
+    : TEXT_TRANSLATIONS.map(([zh, en]) => [en, zh]);
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  nodes.forEach((textNode) => {
+    let value = textNode.nodeValue;
+    replacements.forEach(([from, to]) => {
+      value = value.split(from).join(to);
+    });
+    textNode.nodeValue = value;
+  });
+}
+
 function applyLanguage(language) {
   const selected = LANGUAGE_TEXT[language] ? language : "zh";
   const copy = LANGUAGE_TEXT[selected];
+  currentLanguage = selected;
   if (document.documentElement) {
     document.documentElement.lang = selected === "en" ? "en" : "zh-CN";
   }
@@ -44,6 +120,7 @@ function applyLanguage(language) {
   if (typeof localStorage !== "undefined") {
     localStorage.setItem(LANGUAGE_KEY, selected);
   }
+  translatePageText(selected);
 }
 
 function text(value, fallback = "—") {
@@ -85,7 +162,9 @@ function formatDualEventTime(value, localTimezone = "America/New_York") {
   if (!value) return "—";
   const beijing = formatTimeInZone(value, "Asia/Shanghai");
   const local = formatTimeInZone(value, localTimezone);
-  return `北京 ${beijing} ｜ 当地 ${local}`;
+  return currentLanguage === "en"
+    ? `Beijing ${beijing} ｜ Local ${local}`
+    : `北京 ${beijing} ｜ 当地 ${local}`;
 }
 
 function formatEventDetail(event, localTimezone = "America/New_York") {
@@ -292,13 +371,14 @@ async function runCheck() {
       message.className = "message error";
       message.textContent = "宏观数据源当前不可用，请查看错误代码。";
     }
+    applyLanguage(currentLanguage);
   } catch (error) {
     setOverall("bad", "检查失败");
     message.className = "message error";
     message.textContent = `检查失败：${error.message}`;
   } finally {
     checkButton.disabled = false;
-    checkButton.textContent = "立即检查";
+    checkButton.textContent = LANGUAGE_TEXT[currentLanguage].check;
   }
 }
 

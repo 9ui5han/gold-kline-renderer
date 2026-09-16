@@ -23,7 +23,7 @@ class MacroStatusPageTests(unittest.TestCase):
         stylesheet = (main.MACRO_STATUS_DIR / "status.css").read_text(encoding="utf-8")
 
         self.assertIn("宏观事件服务状态", page)
-        self.assertIn('status.js?v=20260916', page)
+        self.assertIn('status.js?v=20260916-2', page)
         self.assertIn('id="language-select"', page)
         self.assertNotIn('class="history-section"', page)
         self.assertNotIn('此页面不会读取密钥', page)
@@ -46,6 +46,8 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("sortEventTypes", script)
         self.assertIn("localStorage", script)
         self.assertIn("Macro Event Service Status", script)
+        self.assertIn("translatePageText", script)
+        self.assertIn("Valid sources", script)
         self.assertIn("Asia/Shanghai", script)
         self.assertIn("America/New_York", script)
         self.assertIn("北京", script)
