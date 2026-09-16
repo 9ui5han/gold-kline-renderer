@@ -23,16 +23,16 @@ class MacroStatusPageTests(unittest.TestCase):
         stylesheet = (main.MACRO_STATUS_DIR / "status.css").read_text(encoding="utf-8")
 
         self.assertIn("宏观事件服务状态", page)
+        self.assertIn('status.js?v=20260916', page)
+        self.assertIn('id="language-select"', page)
+        self.assertNotIn('class="history-section"', page)
+        self.assertNotIn('此页面不会读取密钥', page)
         self.assertNotIn(main.TOKEN, page)
         self.assertIn("/v1/macro-events/status-summary", script)
-        self.assertIn("/v1/macro-events/history", script)
-        self.assertIn("history-list", page)
+        self.assertNotIn("/v1/macro-events/history", script)
+        self.assertNotIn("history-list", page)
         self.assertNotIn("查看原始 JSON", page)
         self.assertNotIn("raw-json", script)
-        self.assertIn("official_url", script)
-        self.assertIn('target = "_blank"', script)
-        self.assertIn('rel = "noopener noreferrer"', script)
-        self.assertIn("formatHistoryEvent", script)
         for event_name in (
             "CPI", "PPI", "非农", "PCE", "FOMC", "Kevin Warsh", "Philip Jefferson",
             "Michelle Bowman", "Christopher Waller", "Jerome Powell", "John Williams",
@@ -44,6 +44,8 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("event_types", script)
         self.assertIn("按下一次触发时间排列", page)
         self.assertIn("sortEventTypes", script)
+        self.assertIn("localStorage", script)
+        self.assertIn("Macro Event Service Status", script)
         self.assertIn("Asia/Shanghai", script)
         self.assertIn("America/New_York", script)
         self.assertIn("北京", script)

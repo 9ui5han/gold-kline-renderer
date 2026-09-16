@@ -59,6 +59,8 @@ dd { margin: 0; color: #d5e0dc; font-size: 13px; overflow-wrap: anywhere; }
 .history-card h3 { margin: 0 0 6px; color: #e4eeea; font-size: 14px; }
 .history-card h3 a { color: inherit; text-decoration: none; }
 .history-card h3 a:hover { color: #7ee2bd; text-decoration: underline; }
+.language-control { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: #9ab0a8; font-size: 13px; }
+.language-control select { padding: 7px 10px; border: 1px solid #2b5147; border-radius: 8px; background: #0d211c; color: #e4eeea; font: inherit; }
 .history-card p { margin: 0; color: #8fa39c; font-size: 12px; line-height: 1.45; }
 .history-card .history-description { margin-top: 7px; color: #c4d2cd; }
 .event-grid { display: grid; grid-template-columns: 1fr; gap: 7px; }

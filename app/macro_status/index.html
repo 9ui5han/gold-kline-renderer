@@ -12,8 +12,8 @@
     <header class="hero">
       <div>
         <p class="eyebrow">GOLD K-LINE RENDERER</p>
-        <h1>宏观事件服务状态</h1>
-        <p class="subtitle">检查 Render 服务以及美联储、纽约联储、白宫、国务院、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。</p>
+        <h1 id="page-title">宏观事件服务状态</h1>
+        <p id="page-subtitle" class="subtitle">检查 Render 服务以及美联储、纽约联储、白宫、国务院、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。</p>
       </div>
       <div id="overall-badge" class="overall-badge idle" role="status" aria-live="polite">
         <span class="status-dot"></span>
@@ -24,10 +24,17 @@
     <section class="control-panel" aria-labelledby="control-title">
       <div>
         <h2 id="control-title">开始检查</h2>
-        <p>页面只读取脱敏状态摘要，不需要输入、保存或传输 Render Token。</p>
+        <p id="control-description">页面只读取脱敏状态摘要，不需要输入、保存或传输 Render Token。</p>
       </div>
       <button id="check-button" class="primary-button" type="button">立即检查</button>
       <p id="message" class="message" aria-live="polite">点击“立即检查”查看服务状态。</p>
+      <label class="language-control" for="language-select">
+        <span id="language-label">语言</span>
+        <select id="language-select" aria-label="选择语言">
+          <option value="zh">中文</option>
+          <option value="en">English</option>
+        </select>
+      </label>
     </section>
 
     <section class="summary-grid" aria-label="服务概览">
@@ -126,20 +133,7 @@
       </div>
     </section>
 
-    <section class="history-section">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">LOCAL HISTORY</p>
-          <h2>近 30 天事件历史</h2>
-        </div>
-        <p>事件按日期从新到旧排列；简介来自官方日历，未提供简介时会明确标注。</p>
-      </div>
-      <p id="history-message" class="history-message">点击“立即检查”后加载本地历史。</p>
-      <div id="history-list" class="history-list" aria-live="polite"></div>
-    </section>
-
-    <footer>此页面不会读取密钥、生成宏观方向，也不会触发 TTS 或视频渲染。</footer>
   </main>
-  <script src="./status.js"></script>
+  <script src="./status.js?v=20260916"></script>
 </body>
 </html>

@@ -2,8 +2,49 @@ const checkButton = document.querySelector("#check-button");
 const message = document.querySelector("#message");
 const overallBadge = document.querySelector("#overall-badge");
 const overallText = document.querySelector("#overall-text");
-const historyList = document.querySelector("#history-list");
-const historyMessage = document.querySelector("#history-message");
+const languageSelect = document.querySelector("#language-select");
+
+const LANGUAGE_KEY = "macro-status-language";
+const LANGUAGE_TEXT = {
+  zh: {
+    title: "宏观事件服务状态",
+    subtitle: "检查 Render 服务以及美联储、纽约联储、白宫、国务院、BLS、BEA、Fiscal Data 和美国财政部官方来源。这里只检查服务状态，不判断黄金涨跌。",
+    control: "开始检查",
+    controlDescription: "页面只读取脱敏状态摘要，不需要输入、保存或传输 Render Token。",
+    check: "立即检查",
+    message: "点击“立即检查”查看服务状态。",
+    language: "语言",
+  },
+  en: {
+    title: "Macro Event Service Status",
+    subtitle: "Check the Render service and official sources from the Federal Reserve, New York Fed, White House, State Department, BLS, BEA, Fiscal Data, and the U.S. Treasury. This page checks availability only and does not predict gold prices.",
+    control: "Run Check",
+    controlDescription: "This page reads only sanitized status data and never asks for or transmits the Render token.",
+    check: "Run Check",
+    message: "Click “Run Check” to view service status.",
+    language: "Language",
+  },
+};
+
+function applyLanguage(language) {
+  const selected = LANGUAGE_TEXT[language] ? language : "zh";
+  const copy = LANGUAGE_TEXT[selected];
+  if (document.documentElement) {
+    document.documentElement.lang = selected === "en" ? "en" : "zh-CN";
+  }
+  document.title = copy.title;
+  document.querySelector("#page-title").textContent = copy.title;
+  document.querySelector("#page-subtitle").textContent = copy.subtitle;
+  document.querySelector("#control-title").textContent = copy.control;
+  document.querySelector("#control-description").textContent = copy.controlDescription;
+  document.querySelector("#check-button").textContent = copy.check;
+  document.querySelector("#message").textContent = copy.message;
+  document.querySelector("#language-label").textContent = copy.language;
+  languageSelect.value = selected;
+  if (typeof localStorage !== "undefined") {
+    localStorage.setItem(LANGUAGE_KEY, selected);
+  }
+}
 
 function text(value, fallback = "—") {
   if (value === null || value === undefined || value === "") return fallback;
@@ -60,61 +101,6 @@ function formatEventDetail(event, localTimezone = "America/New_York") {
     return `${title}｜精确时间：${formatDualEventTime(scheduledTime, localTimezone)}`;
   }
   return `${title}｜仅日期：${scheduledDate || "—"}`;
-}
-
-function formatHistoryEvent(event) {
-  if (!event || typeof event !== "object") return "—";
-  const scheduled = event.scheduled_time_utc
-    ? formatTimeInZone(event.scheduled_time_utc, "Asia/Shanghai")
-    : text(event.scheduled_date, "日期未知");
-  const precision = event.time_precision === "exact" ? "精确时间" : "仅日期";
-  return `${scheduled}｜${precision}`;
-}
-
-function renderHistory(events) {
-  if (!historyList) return;
-  historyList.replaceChildren();
-  if (!events.length) {
-    if (historyMessage) historyMessage.textContent = "暂无已保存的近 30 天事件。";
-    return;
-  }
-  if (historyMessage) historyMessage.textContent = `共 ${events.length} 条事件记录`;
-  events.forEach((event) => {
-    const card = document.createElement("article");
-    card.className = "history-card";
-    const title = document.createElement("h3");
-    const titleText = text(event.title, event.event_code || "未命名事件");
-    const officialUrl = text(event.official_url, "");
-    if (/^https?:\/\//i.test(officialUrl)) {
-      const link = document.createElement("a");
-      link.href = officialUrl;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = titleText;
-      title.append(link);
-    } else {
-      title.textContent = titleText;
-    }
-    const meta = document.createElement("p");
-    meta.textContent = `${formatHistoryEvent(event)}｜来源：${text(event.source)}`;
-    const description = document.createElement("p");
-    description.className = "history-description";
-    description.textContent = text(event.description, "官方日历未提供详细简介。");
-    card.append(title, meta, description);
-    historyList.append(card);
-  });
-}
-
-async function loadHistory() {
-  if (!historyList) return;
-  try {
-    const response = await fetch("/v1/macro-events/history?days=30", { cache: "no-store" });
-    const data = await readJson(response);
-    if (!response.ok) throw new Error(text(data.detail, `HTTP ${response.status}`));
-    renderHistory(Array.isArray(data.events) ? data.events : []);
-  } catch (error) {
-    if (historyMessage) historyMessage.textContent = `历史加载失败：${error.message}`;
-  }
 }
 
 function setOverall(kind, label) {
@@ -285,7 +271,6 @@ async function runCheck() {
     const sortedEventTypes = sortEventTypes(eventTypes);
     sortedEventTypes.forEach(updateEventType);
     reorderEventCards(sortedEventTypes);
-    loadHistory();
     document.querySelector("#valid-count").textContent =
       `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 10)}`;
     document.querySelector("#checked-time").textContent = formatBeijingTime(
@@ -318,6 +303,11 @@ async function runCheck() {
 }
 
 checkButton.addEventListener("click", runCheck);
+languageSelect.addEventListener("change", (event) => applyLanguage(event.target.value));
+const savedLanguage = typeof localStorage !== "undefined"
+  ? localStorage.getItem(LANGUAGE_KEY)
+  : "zh";
+applyLanguage(savedLanguage || "zh");
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {
@@ -326,7 +316,6 @@ if (typeof module !== "undefined" && module.exports) {
     formatBeijingTime,
     formatDualEventTime,
     formatEventDetail,
-    formatHistoryEvent,
     formatRecentWorkflowUsage,
     formatTimeInZone,
     sortEventTypes,
