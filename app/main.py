@@ -491,13 +491,23 @@ PUBLIC_MACRO_EVENT_CODES = {
     str(item["event_code"])
     for item in PUBLIC_MACRO_EVENT_TYPES
 }
+
+
+def _build_macro_history_store() -> MacroHistoryStore | None:
+    try:
+        return MacroHistoryStore(MACRO_HISTORY_PATH)
+    except Exception:
+        logger.warning("Unable to initialize macro history store", exc_info=True)
+        return None
+
+
+MACRO_HISTORY_STORE = _build_macro_history_store()
 MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
     max_stale_sec=MACRO_CACHE_MAX_STALE_SEC,
-    history_store=MacroHistoryStore(MACRO_HISTORY_PATH),
+    history_store=MACRO_HISTORY_STORE,
 )
-MACRO_HISTORY_STORE = MACRO_CONTEXT_SERVICE.history_store
 
 
 def _usage_utc_now() -> datetime:
@@ -816,6 +826,27 @@ def _public_macro_status() -> dict[str, Any]:
 def macro_event_status_summary() -> dict[str, Any]:
     """Public, sanitized and rate-cached source health for the status page."""
     return _public_macro_status()
+
+
+@app.get("/v1/macro-events/history")
+def macro_event_history(days: int = 30) -> dict[str, Any]:
+    """Return sanitized rolling macro event history for the local status page."""
+    if MACRO_HISTORY_STORE is None:
+        raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE")
+    try:
+        events = MACRO_HISTORY_STORE.list_events(days=days)
+    except Exception as exc:
+        logger.warning("Unable to read macro event history", exc_info=True)
+        raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE") from exc
+    allowed = (
+        "source", "event_id", "event_code", "title", "description",
+        "scheduled_time_utc", "scheduled_date", "time_precision", "status",
+    )
+    return {
+        "schema_version": "macro-event-history-v1",
+        "retention_days": max(1, min(30, int(days))),
+        "events": [{key: item.get(key, "") for key in allowed} for item in events],
+    }
 
 
 @app.get(

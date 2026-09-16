@@ -25,7 +25,6 @@ class MacroHistoryStoreTests(unittest.TestCase):
                 "title": "New CPI",
                 "scheduled_time_utc": "2026-09-15T12:30:00Z",
             }], now=now)
-
             with closing(sqlite3.connect(store.path)) as connection:
                 with connection:
                     events = connection.execute(
@@ -72,6 +71,36 @@ class MacroHistoryStoreTests(unittest.TestCase):
         self.assertNotIn("url", columns)
         self.assertNotIn("response_sample", columns)
         self.assertNotIn("error_message", columns)
+
+    def test_lists_recent_events_newest_first_with_description(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MacroHistoryStore(Path(directory) / "macro-history.sqlite3")
+            now = datetime(2026, 9, 16, tzinfo=timezone.utc)
+            store.record_events("fed", [{
+                "event_id": "fomc-1",
+                "event_code": "fomc",
+                "title": "FOMC Meeting",
+                "description": "Federal Reserve policy meeting",
+                "scheduled_date": "2026-09-16",
+            }], now=now)
+            store.record_events("bls", [{
+                "event_id": "cpi-1",
+                "event_code": "cpi",
+                "title": "CPI Release",
+                "description": "Consumer inflation release",
+                "scheduled_time_utc": "2026-09-15T12:30:00Z",
+            }], now=now)
+            store.record_events("bea", [{
+                "event_id": "pce-future",
+                "event_code": "pce",
+                "title": "Future PCE Release",
+                "scheduled_date": "2026-09-20",
+            }], now=now)
+
+            events = store.list_events(now=now)
+
+        self.assertEqual([item["event_id"] for item in events], ["fomc-1", "cpi-1"])
+        self.assertEqual(events[0]["description"], "Federal Reserve policy meeting")
 
 
 if __name__ == "__main__":

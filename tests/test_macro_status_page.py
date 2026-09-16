@@ -13,6 +13,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MacroStatusPageTests(unittest.TestCase):
+    def test_macro_history_initialization_failure_does_not_block_service(self):
+        with patch.object(main, "MacroHistoryStore", side_effect=OSError("disk unavailable")):
+            self.assertIsNone(main._build_macro_history_store())
+
     def test_page_and_assets_are_available_without_embedding_token(self):
         page = (main.MACRO_STATUS_DIR / "index.html").read_text(encoding="utf-8")
         script = (main.MACRO_STATUS_DIR / "status.js").read_text(encoding="utf-8")
@@ -21,6 +25,9 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("宏观事件服务状态", page)
         self.assertNotIn(main.TOKEN, page)
         self.assertIn("/v1/macro-events/status-summary", script)
+        self.assertIn("/v1/macro-events/history", script)
+        self.assertIn("history-list", page)
+        self.assertIn("formatHistoryEvent", script)
         for event_name in (
             "CPI", "PPI", "非农", "PCE", "FOMC", "Kevin Warsh", "Philip Jefferson",
             "Michelle Bowman", "Christopher Waller", "Jerome Powell", "John Williams",
@@ -132,6 +139,27 @@ class MacroStatusPageTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), expected)
+
+    def test_public_history_route_returns_sanitized_date_sorted_events(self):
+        events = [{
+            "source": "fed",
+            "event_id": "fomc-1",
+            "event_code": "fomc",
+            "title": "FOMC Meeting",
+            "description": "Federal Reserve policy meeting",
+            "scheduled_time_utc": "",
+            "scheduled_date": "2026-09-16",
+            "time_precision": "date_only",
+            "status": "scheduled",
+            "official_url": "https://private.example.test",
+        }]
+        with patch.object(main.MACRO_HISTORY_STORE, "list_events", return_value=events):
+            with TestClient(main.app) as api:
+                response = api.get("/v1/macro-events/history?days=30")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["events"][0]["title"], "FOMC Meeting")
+        self.assertNotIn("official_url", response.text)
 
     def test_status_cache_expires_when_the_24_hour_usage_marker_expires(self):
         private = {

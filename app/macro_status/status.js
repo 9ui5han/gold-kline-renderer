@@ -3,6 +3,8 @@ const message = document.querySelector("#message");
 const rawJson = document.querySelector("#raw-json");
 const overallBadge = document.querySelector("#overall-badge");
 const overallText = document.querySelector("#overall-text");
+const historyList = document.querySelector("#history-list");
+const historyMessage = document.querySelector("#history-message");
 
 function text(value, fallback = "—") {
   if (value === null || value === undefined || value === "") return fallback;
@@ -59,6 +61,50 @@ function formatEventDetail(event, localTimezone = "America/New_York") {
     return `${title}｜精确时间：${formatDualEventTime(scheduledTime, localTimezone)}`;
   }
   return `${title}｜仅日期：${scheduledDate || "—"}`;
+}
+
+function formatHistoryEvent(event) {
+  if (!event || typeof event !== "object") return "—";
+  const scheduled = event.scheduled_time_utc
+    ? formatTimeInZone(event.scheduled_time_utc, "Asia/Shanghai")
+    : text(event.scheduled_date, "日期未知");
+  const precision = event.time_precision === "exact" ? "精确时间" : "仅日期";
+  return `${scheduled}｜${precision}`;
+}
+
+function renderHistory(events) {
+  if (!historyList) return;
+  historyList.replaceChildren();
+  if (!events.length) {
+    if (historyMessage) historyMessage.textContent = "暂无已保存的近 30 天事件。";
+    return;
+  }
+  if (historyMessage) historyMessage.textContent = `共 ${events.length} 条事件记录`;
+  events.forEach((event) => {
+    const card = document.createElement("article");
+    card.className = "history-card";
+    const title = document.createElement("h3");
+    title.textContent = text(event.title, event.event_code || "未命名事件");
+    const meta = document.createElement("p");
+    meta.textContent = `${formatHistoryEvent(event)}｜来源：${text(event.source)}`;
+    const description = document.createElement("p");
+    description.className = "history-description";
+    description.textContent = text(event.description, "官方日历未提供详细简介。");
+    card.append(title, meta, description);
+    historyList.append(card);
+  });
+}
+
+async function loadHistory() {
+  if (!historyList) return;
+  try {
+    const response = await fetch("/v1/macro-events/history?days=30", { cache: "no-store" });
+    const data = await readJson(response);
+    if (!response.ok) throw new Error(text(data.detail, `HTTP ${response.status}`));
+    renderHistory(Array.isArray(data.events) ? data.events : []);
+  } catch (error) {
+    if (historyMessage) historyMessage.textContent = `历史加载失败：${error.message}`;
+  }
 }
 
 function setOverall(kind, label) {
@@ -229,6 +275,7 @@ async function runCheck() {
     const sortedEventTypes = sortEventTypes(eventTypes);
     sortedEventTypes.forEach(updateEventType);
     reorderEventCards(sortedEventTypes);
+    loadHistory();
     document.querySelector("#valid-count").textContent =
       `${text(sourceData.valid_source_count, 0)} / ${text(sourceData.source_count, 10)}`;
     document.querySelector("#checked-time").textContent = formatBeijingTime(
@@ -272,6 +319,7 @@ if (typeof module !== "undefined" && module.exports) {
     formatBeijingTime,
     formatDualEventTime,
     formatEventDetail,
+    formatHistoryEvent,
     formatRecentWorkflowUsage,
     formatTimeInZone,
     sortEventTypes,

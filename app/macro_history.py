@@ -31,6 +31,7 @@ class MacroHistoryStore:
                     event_id TEXT NOT NULL,
                     event_code TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    description TEXT NOT NULL,
                     scheduled_time_utc TEXT NOT NULL,
                     scheduled_date TEXT NOT NULL,
                     time_precision TEXT NOT NULL,
@@ -67,6 +68,14 @@ class MacroHistoryStore:
                     ON source_checks(checked_at_utc);
                 """
             )
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(macro_events)")
+                }
+                if "description" not in columns:
+                    connection.execute(
+                        "ALTER TABLE macro_events ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+                    )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -124,13 +133,14 @@ class MacroHistoryStore:
                     scheduled_date = str(event.get("scheduled_date") or "").strip()
                     connection.execute(
                     """INSERT INTO macro_events(
-                        source,event_id,event_code,title,scheduled_time_utc,
+                        source,event_id,event_code,title,description,scheduled_time_utc,
                         scheduled_date,time_precision,official_url,status,
                         first_seen_at_utc,last_seen_at_utc
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(source,event_id) DO UPDATE SET
                         event_code=excluded.event_code,
                         title=excluded.title,
+                        description=excluded.description,
                         scheduled_time_utc=excluded.scheduled_time_utc,
                         scheduled_date=excluded.scheduled_date,
                         time_precision=excluded.time_precision,
@@ -143,6 +153,11 @@ class MacroHistoryStore:
                         self._event_id(event),
                         str(event.get("event_code") or "").strip(),
                         str(event.get("title") or "").strip()[:500],
+                        str(
+                            event.get("description")
+                            or event.get("summary")
+                            or "官方日历事件，来源未提供详细简介。"
+                        ).strip()[:1000],
                         scheduled_time,
                         scheduled_date,
                         "exact" if scheduled_time else "date_only",
@@ -153,6 +168,38 @@ class MacroHistoryStore:
                         ),
                     )
                 self._prune(connection, checked_at)
+
+    def list_events(
+        self,
+        *,
+        now: datetime | None = None,
+        days: int = RETENTION_DAYS,
+    ) -> list[dict[str, Any]]:
+        checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        days = max(1, min(RETENTION_DAYS, int(days)))
+        cutoff = _utc_text(checked_at - timedelta(days=days))
+        cutoff_date = (checked_at - timedelta(days=days)).date().isoformat()
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                """SELECT source,event_id,event_code,title,description,
+                   scheduled_time_utc,scheduled_date,time_precision,status,
+                   first_seen_at_utc,last_seen_at_utc
+                   FROM macro_events
+                   WHERE (scheduled_time_utc <> '' AND scheduled_time_utc >= ?
+                          AND scheduled_time_utc <= ?)
+                      OR (scheduled_time_utc = '' AND scheduled_date >= ?
+                          AND scheduled_date <= ?)
+                   ORDER BY CASE WHEN scheduled_time_utc <> ''
+                                 THEN scheduled_time_utc ELSE scheduled_date END DESC,
+                            event_id ASC""",
+                (cutoff, _utc_text(checked_at), cutoff_date, checked_at.date().isoformat()),
+            ).fetchall()
+        fields = (
+            "source", "event_id", "event_code", "title", "description",
+            "scheduled_time_utc", "scheduled_date", "time_precision", "status",
+            "first_seen_at_utc", "last_seen_at_utc",
+        )
+        return [dict(zip(fields, row)) for row in rows]
 
     def record_source_check(
         self,
