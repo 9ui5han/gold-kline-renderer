@@ -46,6 +46,21 @@ function formatDualEventTime(value, localTimezone = "America/New_York") {
   return `北京 ${beijing} ｜ 当地 ${local}`;
 }
 
+function formatEventDetail(event, localTimezone = "America/New_York") {
+  if (!event || typeof event !== "object") return "—";
+  const title = text(event.title, "");
+  const precision = text(event.time_precision, "");
+  const scheduledTime = text(event.scheduled_time_utc, "");
+  const scheduledDate = text(event.scheduled_date, "");
+  if (!title) return scheduledTime
+    ? formatDualEventTime(scheduledTime, localTimezone)
+    : (scheduledDate || "—");
+  if (precision === "exact" && scheduledTime) {
+    return `${title}｜精确时间：${formatDualEventTime(scheduledTime, localTimezone)}`;
+  }
+  return `${title}｜仅日期：${scheduledDate || "—"}`;
+}
+
 function setOverall(kind, label) {
   overallBadge.className = `overall-badge ${kind}`;
   overallText.textContent = label;
@@ -119,13 +134,21 @@ function updateEventType(eventType) {
   card.querySelector('[data-field="count"]').textContent = text(eventType.event_count, 0);
   const localTimezone = text(eventType.local_timezone, "America/New_York");
   card.querySelector('[data-field="previous"]').textContent = formatDualEventTime(
-    eventType.previous_event_at_utc,
+    eventType.previous_event?.scheduled_time_utc || eventType.previous_event_at_utc,
     localTimezone,
   );
   card.querySelector('[data-field="next"]').textContent = formatDualEventTime(
-    eventType.next_event_at_utc,
+    eventType.next_event?.scheduled_time_utc || eventType.next_event_at_utc,
     localTimezone,
   );
+  const previousDetail = formatEventDetail(eventType.previous_event, localTimezone);
+  const nextDetail = formatEventDetail(eventType.next_event, localTimezone);
+  if (previousDetail !== "—") {
+    card.querySelector('[data-field="previous"]').textContent = previousDetail;
+  }
+  if (nextDetail !== "—") {
+    card.querySelector('[data-field="next"]').textContent = nextDetail;
+  }
   const recentUsage = formatRecentWorkflowUsage(eventType.last_used_at_utc);
   let usageMarker = card.querySelector(".workflow-usage");
   if (recentUsage) {
@@ -248,6 +271,7 @@ if (typeof module !== "undefined" && module.exports) {
     eventState,
     formatBeijingTime,
     formatDualEventTime,
+    formatEventDetail,
     formatRecentWorkflowUsage,
     formatTimeInZone,
     sortEventTypes,

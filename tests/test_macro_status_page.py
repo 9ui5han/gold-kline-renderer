@@ -200,6 +200,18 @@ class MacroStatusPageTests(unittest.TestCase):
                                 "event_code": "cpi",
                                 "title": "Consumer Price Index News Release",
                                 "scheduled_time_utc": "2026-08-12T12:30:00Z",
+                                "source_url": "https://private.example.test/cpi",
+                                "response_body": "private upstream body",
+                                "authorization": "Bearer secret-token",
+                            },
+                            {
+                                "event_id": "cpi-20260830",
+                                "event_code": "cpi",
+                                "title": "Consumer Price Index Release Date",
+                                "scheduled_date": "2026-08-30",
+                                "source_url": "https://private.example.test/cpi-next",
+                                "response_body": "another private upstream body",
+                                "authorization": "Bearer another-secret-token",
                             },
                             {"event_code": "ppi", "scheduled_time_utc": "2026-09-10T12:30:00Z"},
                             {"event_code": "employment", "scheduled_date": "2026-09-04"},
@@ -253,7 +265,7 @@ class MacroStatusPageTests(unittest.TestCase):
         )
         self.assertTrue(all(item["configured"] for item in summaries))
         cpi = next(item for item in summaries if item["event_code"] == "cpi")
-        self.assertEqual(cpi["event_count"], 1)
+        self.assertEqual(cpi["event_count"], 2)
         self.assertEqual(
             cpi["previous_event"],
             {
@@ -263,7 +275,18 @@ class MacroStatusPageTests(unittest.TestCase):
                 "time_precision": "exact",
             },
         )
-        self.assertEqual(cpi["next_event"], {})
+        self.assertEqual(
+            cpi["next_event"],
+            {
+                "title": "Consumer Price Index Release Date",
+                "scheduled_time_utc": "",
+                "scheduled_date": "2026-08-30",
+                "time_precision": "date_only",
+            },
+        )
+        self.assertNotIn("private.example", str(cpi))
+        self.assertNotIn("private upstream body", str(cpi))
+        self.assertNotIn("secret-token", str(cpi))
 
     def test_event_types_sort_by_next_trigger_then_english_event_name(self):
         definitions = [
@@ -347,6 +370,57 @@ process.stdout.write(formatBeijingTime('2026-08-24T09:38:04Z'));
         )
 
         self.assertEqual(completed.stdout, "2026-08-24 17:38:04")
+
+    def test_event_detail_displays_title_and_time_precision(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { formatEventDetail } = require('./app/macro_status/status.js');
+process.stdout.write(formatEventDetail({
+  title: 'Consumer Price Index News Release',
+  scheduled_time_utc: '2026-08-24T09:38:04Z',
+  scheduled_date: '2026-08-24',
+  time_precision: 'exact',
+}, 'America/New_York'));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(
+            completed.stdout,
+            "Consumer Price Index News Release｜精确时间：北京 2026-08-24 17:38 ｜ 当地 2026-08-24 05:38",
+        )
+
+    def test_event_detail_displays_date_only_event_without_inventing_a_time(self):
+        script = """
+global.document = {
+  querySelector: () => ({ addEventListener: () => {} }),
+  querySelectorAll: () => []
+};
+const { formatEventDetail } = require('./app/macro_status/status.js');
+process.stdout.write(formatEventDetail({
+  title: 'FOMC Meeting',
+  scheduled_time_utc: '',
+  scheduled_date: '2026-09-16',
+  time_precision: 'date_only',
+}));
+"""
+        completed = subprocess.run(
+            ["node", "-e", script],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        self.assertEqual(completed.stdout, "FOMC Meeting｜仅日期：2026-09-16")
 
     def test_recent_workflow_usage_marker_shows_exact_beijing_time(self):
         script = """

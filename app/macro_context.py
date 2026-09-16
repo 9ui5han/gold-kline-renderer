@@ -371,7 +371,7 @@ class MacroContextService:
                     if isinstance(event, dict)
                     and str(event.get("event_code") or "") == event_code
                 ]
-                dated_events: list[tuple[datetime, bool]] = []
+                dated_events: list[tuple[datetime, bool, dict[str, Any]]] = []
                 for event in events:
                     scheduled_time = str(
                         event.get("scheduled_time_utc") or ""
@@ -381,6 +381,7 @@ class MacroContextService:
                             dated_events.append((
                                 _parse_iso_time(scheduled_time, "EVENT_TIME"),
                                 True,
+                                event,
                             ))
                         except MacroContextError:
                             continue
@@ -395,6 +396,7 @@ class MacroContextService:
                                     tzinfo=timezone.utc
                                 ),
                                 False,
+                                event,
                             ))
                         except ValueError:
                             continue
@@ -402,6 +404,24 @@ class MacroContextService:
                 dated_events.sort(key=lambda item: item[0])
                 previous = [item for item in dated_events if item[0] <= checked_at]
                 upcoming = [item for item in dated_events if item[0] > checked_at]
+
+                def event_detail(
+                    item: tuple[datetime, bool, dict[str, Any]] | None,
+                ) -> dict[str, str]:
+                    if item is None:
+                        return {}
+                    _, exact, event = item
+                    return {
+                        "title": str(event.get("title") or "").strip()[:240],
+                        "scheduled_time_utc": str(
+                            event.get("scheduled_time_utc") or ""
+                        ).strip() if exact else "",
+                        "scheduled_date": str(
+                            event.get("scheduled_date") or ""
+                        ).strip(),
+                        "time_precision": "exact" if exact else "date_only",
+                    }
+
                 summaries.append({
                     "event_code": event_code,
                     "label_zh": str(definition.get("label_zh") or event_code),
@@ -416,14 +436,20 @@ class MacroContextService:
                         entry.get("fetched_at_utc") if entry else ""
                     ),
                     "event_count": len(events),
-                    "exact_time_count": sum(exact for _, exact in dated_events),
-                    "date_only_count": sum(not exact for _, exact in dated_events),
+                    "exact_time_count": sum(
+                        exact for _, exact, _ in dated_events
+                    ),
+                    "date_only_count": sum(
+                        not exact for _, exact, _ in dated_events
+                    ),
                     "previous_event_at_utc": (
                         _iso_utc(previous[-1][0]) if previous else ""
                     ),
                     "next_event_at_utc": (
                         _iso_utc(upcoming[0][0]) if upcoming else ""
                     ),
+                    "previous_event": event_detail(previous[-1] if previous else None),
+                    "next_event": event_detail(upcoming[0] if upcoming else None),
                 })
         # 状态页展示的是“下一次会先触发什么”。有下一次精确/日期事件的
         # 类型排在前面；同一触发时刻按英文事件名的首字母排序。没有下一次
