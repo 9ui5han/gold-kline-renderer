@@ -417,7 +417,7 @@ class MacroContextService:
                     if item is None:
                         return {}
                     _, exact, event = item
-                    return {
+                    detail = {
                         "title": str(event.get("title") or "").strip()[:240],
                         "scheduled_time_utc": str(
                             event.get("scheduled_time_utc") or ""
@@ -427,6 +427,10 @@ class MacroContextService:
                         ).strip(),
                         "time_precision": "exact" if exact else "date_only",
                     }
+                    official_url = str(event.get("official_url") or "").strip()[:1000]
+                    if official_url.startswith(("http://", "https://")):
+                        detail["official_url"] = official_url
+                    return detail
 
                 summaries.append({
                     "event_code": event_code,

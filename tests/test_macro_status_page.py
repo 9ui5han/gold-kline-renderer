@@ -23,7 +23,7 @@ class MacroStatusPageTests(unittest.TestCase):
         stylesheet = (main.MACRO_STATUS_DIR / "status.css").read_text(encoding="utf-8")
 
         self.assertIn("宏观事件服务状态", page)
-        self.assertIn('status.js?v=20260916-2', page)
+        self.assertIn('status.js?v=20260916-5', page)
         self.assertIn('id="language-select"', page)
         self.assertNotIn('class="history-section"', page)
         self.assertNotIn('此页面不会读取密钥', page)
@@ -48,6 +48,13 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("Macro Event Service Status", script)
         self.assertIn("translatePageText", script)
         self.assertIn("Valid sources", script)
+        self.assertIn("All healthy", script)
+        self.assertIn("Christopher Waller Fed Governor remarks", script)
+        self.assertIn("official_url", script)
+        self.assertIn("recently-updated", script)
+        self.assertIn('applyLanguage(savedLanguage || "en")', script)
+        self.assertIn("runCheck();", script)
+        self.assertIn("window.setInterval(runCheck, 300000)", script)
         self.assertIn("Asia/Shanghai", script)
         self.assertIn("America/New_York", script)
         self.assertIn("北京", script)
@@ -435,7 +442,7 @@ process.stdout.write(formatEventDetail({
 
         self.assertEqual(
             completed.stdout,
-            "Consumer Price Index News Release｜精确时间：北京 2026-08-24 17:38 ｜ 当地 2026-08-24 05:38",
+        "Consumer Price Index News Release｜精确时间：Beijing 2026-08-24 17:38 ｜ Local 2026-08-24 05:38",
         )
 
     def test_event_detail_displays_date_only_event_without_inventing_a_time(self):
@@ -506,7 +513,7 @@ process.stdout.write(formatDualEventTime(
 
         self.assertEqual(
             completed.stdout,
-            "北京 2026-08-19 20:30 ｜ 当地 2026-08-19 08:30",
+        "Beijing 2026-08-19 20:30 ｜ Local 2026-08-19 08:30",
         )
 
     def test_browser_sort_matches_server_order_for_equal_trigger_times(self):

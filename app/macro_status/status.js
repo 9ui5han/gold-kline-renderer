@@ -4,7 +4,7 @@ const overallBadge = document.querySelector("#overall-badge");
 const overallText = document.querySelector("#overall-text");
 const languageSelect = document.querySelector("#language-select");
 
-const LANGUAGE_KEY = "macro-status-language";
+const LANGUAGE_KEY = "macro-status-language-v2";
 let currentLanguage = "zh";
 const LANGUAGE_TEXT = {
   zh: {
@@ -29,6 +29,11 @@ const LANGUAGE_TEXT = {
 
 const TEXT_TRANSLATIONS = [
   ["等待检查", "Waiting for check"],
+  ["全部正常", "All healthy"],
+  ["检查中", "Checking"],
+  ["检查失败", "Check failed"],
+  ["在线", "Online"],
+  ["异常", "Error"],
   ["Render 服务", "Render Service"],
   ["有效来源", "Valid sources"],
   ["检查时间（北京时间）", "Check time (Beijing)"],
@@ -78,6 +83,13 @@ const TEXT_TRANSLATIONS = [
   ["美国国债回购", "U.S. Treasury buybacks"],
   ["美国财政部债务公告", "U.S. Treasury debt notices"],
   ["Scott Bessent 财政部长讲话", "Treasury Secretary Scott Bessent remarks"],
+  ["Christopher Waller 美联储理事讲话", "Christopher Waller Fed Governor remarks"],
+  ["Donald Trump 总统讲话", "President Donald Trump remarks"],
+  ["Jerome Powell 美联储讲话", "Jerome Powell Fed Chair remarks"],
+  ["John Williams 纽约联储主席讲话", "New York Fed President John Williams remarks"],
+  ["Kevin Warsh 美联储主席讲话", "Fed Chair Kevin Warsh remarks"],
+  ["Michelle Bowman 美联储理事讲话", "Michelle Bowman Fed Governor remarks"],
+  ["Philip Jefferson 美联储副主席讲话", "Fed Vice Chair Philip Jefferson remarks"],
   ["来源未提供详细简介。", "No detailed description was provided by the source."],
 ];
 
@@ -85,9 +97,10 @@ function translatePageText(language) {
   if (!document.body || !document.createTreeWalker || typeof NodeFilter === "undefined") {
     return;
   }
-  const replacements = language === "en"
+  const replacements = (language === "en"
     ? TEXT_TRANSLATIONS
-    : TEXT_TRANSLATIONS.map(([zh, en]) => [en, zh]);
+    : TEXT_TRANSLATIONS.map(([zh, en]) => [en, zh]))
+    .sort(([left], [right]) => right.length - left.length);
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
   const nodes = [];
   let node;
@@ -182,6 +195,33 @@ function formatEventDetail(event, localTimezone = "America/New_York") {
   return `${title}｜仅日期：${scheduledDate || "—"}`;
 }
 
+function isRecentUpdate(value) {
+  if (!value) return false;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && Date.now() - timestamp >= 0 && Date.now() - timestamp <= 24 * 60 * 60 * 1000;
+}
+
+function setEventOfficialLink(card, eventType) {
+  const heading = card.querySelector("h3");
+  if (!heading) return;
+  const event = eventType.previous_event?.official_url
+    ? eventType.previous_event
+    : eventType.next_event;
+  const url = text(event?.official_url, "");
+  const title = heading.textContent;
+  heading.replaceChildren();
+  if (/^https?:\/\//i.test(url)) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = title;
+    heading.append(link);
+  } else {
+    heading.textContent = title;
+  }
+}
+
 function setOverall(kind, label) {
   overallBadge.className = `overall-badge ${kind}`;
   overallText.textContent = label;
@@ -251,6 +291,8 @@ function updateEventType(eventType) {
   if (!card) return;
   const [kind, label] = eventState(eventType);
   card.className = `event-card ${kind}`;
+  setEventOfficialLink(card, eventType);
+  card.classList.toggle("recently-updated", isRecentUpdate(eventType.cached_at_utc));
   card.querySelector('[data-field="state"]').textContent = label;
   card.querySelector('[data-field="count"]').textContent = text(eventType.event_count, 0);
   const localTimezone = text(eventType.local_timezone, "America/New_York");
@@ -386,8 +428,12 @@ checkButton.addEventListener("click", runCheck);
 languageSelect.addEventListener("change", (event) => applyLanguage(event.target.value));
 const savedLanguage = typeof localStorage !== "undefined"
   ? localStorage.getItem(LANGUAGE_KEY)
-  : "zh";
-applyLanguage(savedLanguage || "zh");
+  : "en";
+applyLanguage(savedLanguage || "en");
+if (typeof window !== "undefined") {
+  runCheck();
+  window.setInterval(runCheck, 300000);
+}
 
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {

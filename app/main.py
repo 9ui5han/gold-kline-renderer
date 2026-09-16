@@ -26,6 +26,7 @@ from .segment_renderer import router as segment_render_router
 from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
 from .macro_history import MacroHistoryStore
+from .macro_auto_refresh import MacroAutoRefresh
 from .macro_source_probe import probe_all_sources
 from .photo.routes import build_photo_router
 from .carousel.routes import build_carousel_router
@@ -131,6 +132,13 @@ MAX_TTS_AUDIO_SECONDS = float(
 TTS_IDEMPOTENCY_PATH = DATA_DIR / "tts-idempotency.json"
 MACRO_WORKFLOW_USAGE_PATH = DATA_DIR / "macro-last-workflow-usage.json"
 MACRO_HISTORY_PATH = DATA_DIR / "macro-history.sqlite3"
+MACRO_AUTO_REFRESH_ENABLED = os.getenv("MACRO_AUTO_REFRESH_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+MACRO_AUTO_REFRESH_INTERVAL_SEC = max(
+    60.0,
+    float(os.getenv("MACRO_AUTO_REFRESH_INTERVAL_SEC", "300")),
+)
 MACRO_WORKFLOW_USAGE_TTL_SEC = 24 * 60 * 60
 MAX_TTS_TARGET_DRIFT_SECONDS = max(
     0.0,
@@ -605,6 +613,29 @@ def _probe_and_record_macro_sources(trigger: str) -> dict[str, Any]:
         except Exception:
             logger.warning("Unable to save macro source check history", exc_info=True)
     return status
+
+
+def _background_macro_refresh() -> None:
+    _probe_and_record_macro_sources("background")
+    with MACRO_STATUS_LOCK:
+        MACRO_STATUS_CACHE.update({"expires_at": 0.0, "payload": None})
+
+
+MACRO_AUTO_REFRESHER = MacroAutoRefresh(
+    _background_macro_refresh,
+    interval_seconds=MACRO_AUTO_REFRESH_INTERVAL_SEC,
+)
+
+
+@app.on_event("startup")
+def start_macro_auto_refresh() -> None:
+    if MACRO_AUTO_REFRESH_ENABLED:
+        MACRO_AUTO_REFRESHER.start()
+
+
+@app.on_event("shutdown")
+def stop_macro_auto_refresh() -> None:
+    MACRO_AUTO_REFRESHER.stop()
 
 
 @app.middleware("http")
