@@ -25,6 +25,7 @@ from .chart_renderer import render_tradingview_scene
 from .segment_renderer import router as segment_render_router
 from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
+from .macro_history import MacroHistoryStore
 from .macro_source_probe import probe_all_sources
 from .photo.routes import build_photo_router
 from .carousel.routes import build_carousel_router
@@ -129,6 +130,7 @@ MAX_TTS_AUDIO_SECONDS = float(
 )
 TTS_IDEMPOTENCY_PATH = DATA_DIR / "tts-idempotency.json"
 MACRO_WORKFLOW_USAGE_PATH = DATA_DIR / "macro-last-workflow-usage.json"
+MACRO_HISTORY_PATH = DATA_DIR / "macro-history.sqlite3"
 MACRO_WORKFLOW_USAGE_TTL_SEC = 24 * 60 * 60
 MAX_TTS_TARGET_DRIFT_SECONDS = max(
     0.0,
@@ -493,7 +495,9 @@ MACRO_CONTEXT_SERVICE = MacroContextService(
     DATA_DIR / "macro-events-cache.json",
     cache_ttl_sec=MACRO_CACHE_TTL_SEC,
     max_stale_sec=MACRO_CACHE_MAX_STALE_SEC,
+    history_store=MacroHistoryStore(MACRO_HISTORY_PATH),
 )
+MACRO_HISTORY_STORE = MACRO_CONTEXT_SERVICE.history_store
 
 
 def _usage_utc_now() -> datetime:
@@ -581,6 +585,16 @@ def _macro_usage_cache_ttl_sec(usage: dict[str, str] | None) -> float:
         return 0.0
     remaining = MACRO_WORKFLOW_USAGE_TTL_SEC - (_usage_utc_now() - used_at).total_seconds()
     return max(0.0, min(float(MACRO_STATUS_CACHE_TTL_SEC), remaining))
+
+
+def _probe_and_record_macro_sources(trigger: str) -> dict[str, Any]:
+    status = probe_all_sources()
+    if MACRO_HISTORY_STORE is not None:
+        try:
+            MACRO_HISTORY_STORE.record_source_check(status, trigger=trigger)
+        except Exception:
+            logger.warning("Unable to save macro source check history", exc_info=True)
+    return status
 
 
 @app.middleware("http")
@@ -744,7 +758,7 @@ def _public_macro_status() -> dict[str, Any]:
         ):
             return cached
 
-        private_status = probe_all_sources()
+        private_status = _probe_and_record_macro_sources("public_summary")
         public_sources = []
         for source in private_status.get("sources") or []:
             public_sources.append({
@@ -810,7 +824,7 @@ def macro_event_status_summary() -> dict[str, Any]:
 )
 def macro_event_source_health() -> dict[str, Any]:
     """Check official calendar reachability without interpreting direction."""
-    return probe_all_sources()
+    return _probe_and_record_macro_sources("source_health")
 
 
 class MacroForecastHorizonRequest(BaseModel):

@@ -7,6 +7,7 @@ reports event timing and source health; it never calculates a directional bias.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,6 +29,7 @@ from .macro_source_probe import (
     SourceSpec,
     treasury_press_url,
 )
+from .macro_history import MacroHistoryStore
 from .treasury_calendar import (
     parse_treasury_auctions,
     parse_treasury_buybacks,
@@ -68,6 +70,8 @@ _EVENT_SOURCES_ALLOW_EMPTY = {
     "whitehouse_remarks",
     "state_diplomacy",
 }
+
+logger = logging.getLogger("gold_kline_renderer.macro_context")
 
 
 class MacroContextError(ValueError):
@@ -323,10 +327,12 @@ class MacroContextService:
         cache_path: Path,
         cache_ttl_sec: int = DEFAULT_CACHE_TTL_SEC,
         max_stale_sec: int = DEFAULT_MAX_STALE_SEC,
+        history_store: MacroHistoryStore | None = None,
     ) -> None:
         self.cache_path = Path(cache_path)
         self.cache_ttl_sec = max(0, int(cache_ttl_sec))
         self.max_stale_sec = max(self.cache_ttl_sec, int(max_stale_sec))
+        self.history_store = history_store
         self._lock = threading.Lock()
 
     def _load_cache(self) -> dict[str, Any]:
@@ -673,6 +679,14 @@ class MacroContextService:
                 item.get("event_id") or "",
             )
         )
+        if self.history_store is not None:
+            try:
+                for source, events in source_events.items():
+                    self.history_store.record_events(
+                        source, events, now=checked_at
+                    )
+            except Exception:
+                logger.warning("Unable to save macro event history", exc_info=True)
 
         return {
             "schema_version": CONTEXT_SCHEMA_VERSION,
