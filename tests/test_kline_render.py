@@ -92,10 +92,84 @@ class KlineRenderTests(unittest.TestCase):
             self.assertNotEqual(image.getpixel((150, 80)), (255, 255, 255))
             self.assertNotEqual(image.getpixel((150, 770)), (255, 255, 255))
 
+    def test_scene_graph_v2_renders_multipart_chart_box(self):
+        chart = Image.new("RGB", (300, 200), (20, 40, 80))
+        chart_bytes = BytesIO()
+        chart.save(chart_bytes, format="PNG")
+        payload = {
+            "schema_version": "scene-graph-v2",
+            "canvas": {"background": "#FFFFFF"},
+            "chart_box": {"x": .10, "y": .25, "width": .80, "height": .35},
+            "shapes": [{
+                "shape_id": "card", "type": "rounded_rect",
+                "box": {"x": .10, "y": .70, "width": .25, "height": .15},
+                "fill": "#FFFFFF", "stroke": "#123B5D",
+                "stroke_width": .002, "opacity": 1, "radius": .02, "z_index": 60,
+            }],
+            "text_blocks": [],
+        }
+        response = self.client.post(
+            "/v1/kline/render", headers=AUTH,
+            data={"compose_request_json": json.dumps(payload)},
+            files={"existing_kline_image": ("chart.png", chart_bytes.getvalue(), "image/png")},
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        image_path = Path(main.MEDIA_DIR) / response.json()["image_url"].rsplit("/", 1)[-1]
+        self.addCleanup(image_path.unlink, missing_ok=True)
+        with Image.open(image_path) as image:
+            self.assertEqual(image.getpixel((512, 420)), (20, 40, 80))
+
     def test_scene_graph_rejects_unknown_text_parent(self):
         from app.kline_render import SceneGraphRequest
         with self.assertRaisesRegex(ValueError, "SCENE_PARENT_MISSING"):
             SceneGraphRequest.model_validate({"schema_version": "scene-graph-v1", "kline_image": {"source": "multipart", "box": {"x": .1, "y": .2, "width": .8, "height": .4}}, "shapes": [], "text_blocks": [{"block_id": "copy", "parent_id": "missing", "text_original": "Copy", "text_final": "Copy", "role": "body", "bbox": {"x": .1, "y": .1, "width": .2, "height": .1}, "align": "center", "font_size_ratio": .03}]})
+
+    def test_scene_graph_keeps_separate_text_boxes_inside_one_card(self):
+        """A card title and its description must not be collapsed to one box."""
+        from app.kline_render import SceneShape, SceneTextBlock, _scene_text_box
+
+        card = SceneShape.model_validate({
+            "shape_id": "card", "type": "rounded_rect",
+            "box": {"x": .10, "y": .70, "width": .25, "height": .15},
+        })
+        title = SceneTextBlock.model_validate({
+            "block_id": "title", "parent_id": "card",
+            "text_original": "Retail places stops", "text_final": "Retail places stops",
+            "role": "body",
+            "bbox": {"x": .12, "y": .72, "width": .21, "height": .03},
+            "align": "center", "font_size_ratio": .02, "padding": .01,
+        })
+        description = SceneTextBlock.model_validate({
+            "block_id": "description", "parent_id": "card",
+            "text_original": "Above highs and below lows in obvious areas.",
+            "text_final": "Above highs and below lows in obvious areas.",
+            "role": "body",
+            "bbox": {"x": .12, "y": .76, "width": .21, "height": .03},
+            "align": "center", "font_size_ratio": .02, "padding": .01,
+        })
+
+        title_box = _scene_text_box(title, card)
+        description_box = _scene_text_box(description, card)
+
+        self.assertLess(title_box.y + title_box.height, description_box.y)
+        self.assertEqual(title_box.x, .12)
+        self.assertEqual(description_box.x, .12)
+
+    def test_scene_graph_honors_explicit_radius_on_rect(self):
+        """A source rect with a positive radius must render rounded corners."""
+        from app.kline_render import SceneShape, _draw_scene_shape
+
+        image = Image.new("RGBA", (100, 100), (255, 255, 255, 255))
+        shape = SceneShape.model_validate({
+            "shape_id": "card", "type": "rect",
+            "box": {"x": .10, "y": .10, "width": .50, "height": .40},
+            "fill": "#123B5D", "stroke": "#123B5D", "radius": .08,
+        })
+        _draw_scene_shape(image, shape)
+
+        self.assertEqual(image.getpixel((10, 10)), (255, 255, 255, 255))
+        self.assertEqual(image.getpixel((50, 10)), (18, 59, 93, 255))
 
     def test_reference_layout_v2_rejects_overlapping_cards(self):
         from app.kline_render import ReferenceLayoutRequest

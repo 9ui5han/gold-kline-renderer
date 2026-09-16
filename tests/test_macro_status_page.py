@@ -195,7 +195,12 @@ class MacroStatusPageTests(unittest.TestCase):
                     "bls": {
                         "fetched_at_utc": "2026-08-24T00:00:00Z",
                         "events": [
-                            {"event_code": "cpi", "scheduled_time_utc": "2026-08-12T12:30:00Z"},
+                            {
+                                "event_id": "cpi-20260812",
+                                "event_code": "cpi",
+                                "title": "Consumer Price Index News Release",
+                                "scheduled_time_utc": "2026-08-12T12:30:00Z",
+                            },
                             {"event_code": "ppi", "scheduled_time_utc": "2026-09-10T12:30:00Z"},
                             {"event_code": "employment", "scheduled_date": "2026-09-04"},
                         ],
@@ -247,10 +252,18 @@ class MacroStatusPageTests(unittest.TestCase):
             },
         )
         self.assertTrue(all(item["configured"] for item in summaries))
+        cpi = next(item for item in summaries if item["event_code"] == "cpi")
+        self.assertEqual(cpi["event_count"], 1)
         self.assertEqual(
-            next(item for item in summaries if item["event_code"] == "cpi")["event_count"],
-            1,
+            cpi["previous_event"],
+            {
+                "title": "Consumer Price Index News Release",
+                "scheduled_time_utc": "2026-08-12T12:30:00Z",
+                "scheduled_date": "",
+                "time_precision": "exact",
+            },
         )
+        self.assertEqual(cpi["next_event"], {})
 
     def test_event_types_sort_by_next_trigger_then_english_event_name(self):
         definitions = [

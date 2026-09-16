@@ -257,6 +257,42 @@ class SceneGraphRequest(BaseModel):
         return self
 
 
+class SceneGraphV2Request(BaseModel):
+    """Dify-facing scene contract that names the multipart image area chart_box."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["scene-graph-v2"]
+    canvas: dict[str, str] = Field(default_factory=lambda: {"background": "#FFFFFF"})
+    chart_box: NormalizedBox
+    shapes: list[SceneShape] = Field(default_factory=list, max_length=80)
+    text_blocks: list[SceneTextBlock] = Field(default_factory=list, max_length=80)
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> "SceneGraphV2Request":
+        if not SCENE_COLOR.fullmatch(str(self.canvas.get("background", ""))):
+            raise ValueError("SCENE_STYLE_INVALID")
+        shape_ids = [shape.shape_id for shape in self.shapes]
+        if len(shape_ids) != len(set(shape_ids)):
+            raise ValueError("SCENE_SHAPE_INVALID")
+        block_ids = [block.block_id for block in self.text_blocks]
+        if len(block_ids) != len(set(block_ids)):
+            raise ValueError("SCENE_TEXT_INVALID")
+        shape_set = set(shape_ids)
+        if any(block.parent_id and block.parent_id not in shape_set for block in self.text_blocks):
+            raise ValueError("SCENE_PARENT_MISSING")
+        return self
+
+    def as_v1(self) -> SceneGraphRequest:
+        return SceneGraphRequest(
+            schema_version="scene-graph-v1",
+            canvas=self.canvas,
+            kline_image=ComposeKlineImage(source="multipart", box=self.chart_box),
+            shapes=self.shapes,
+            text_blocks=self.text_blocks,
+        )
+
+
 UP_FILL = (242, 245, 248)
 DOWN_FILL = (48, 70, 126)
 OUTLINE = (24, 30, 40)
@@ -1474,9 +1510,9 @@ def _draw_scene_shape(image: Image.Image, shape: SceneShape) -> None:
     fill = _scene_rgba(shape.fill, shape.opacity)
     stroke = _scene_rgba(shape.stroke, shape.opacity)
     width = max(1, round(shape.stroke_width * min(image.size)))
-    if shape.type == "rect":
+    if shape.type == "rect" and shape.radius <= 0:
         draw.rectangle((left, top, right, bottom), fill=fill, outline=stroke, width=width)
-    elif shape.type in {"rounded_rect", "callout"}:
+    elif shape.type in {"rect", "rounded_rect", "callout"}:
         draw.rounded_rectangle((left, top, right, bottom), radius=max(1, round(shape.radius * min(image.size))), fill=fill, outline=stroke, width=width)
         if shape.type == "callout":
             draw.polygon(((left + (right-left)//3, bottom), (left + (right-left)//3 + width * 5, bottom), (left + (right-left)//3, bottom + width * 6)), fill=fill, outline=stroke)
@@ -1499,6 +1535,18 @@ def _scene_inner_box(shape: SceneShape, padding: float) -> NormalizedBox:
     pad_x = min(shape.box.width * padding, 0.04)
     pad_y = min(shape.box.height * padding, 0.04)
     return NormalizedBox(x=shape.box.x + pad_x, y=shape.box.y + pad_y, width=max(.01, shape.box.width - 2 * pad_x), height=max(.01, shape.box.height - 2 * pad_y))
+
+
+def _scene_text_box(block: SceneTextBlock, parent: SceneShape) -> NormalizedBox:
+    """Keep a child text block in its declared slot, constrained to its parent."""
+    interior = _scene_inner_box(parent, block.padding)
+    left = max(block.bbox.x, interior.x)
+    top = max(block.bbox.y, interior.y)
+    right = min(block.bbox.x + block.bbox.width, interior.x + interior.width)
+    bottom = min(block.bbox.y + block.bbox.height, interior.y + interior.height)
+    if right <= left or bottom <= top:
+        raise ValueError("SCENE_TEXT_OUTSIDE_PARENT")
+    return NormalizedBox(x=left, y=top, width=right - left, height=bottom - top)
 
 
 def _fit_scene_chart_box(chart_box: NormalizedBox, shapes: list[SceneShape]) -> NormalizedBox:
@@ -1546,7 +1594,7 @@ def render_scene_graph(request: SceneGraphRequest, output_path: Path, image_byte
     anchored = []
     free = []
     for block in request.text_blocks:
-        box = _scene_inner_box(shape_map[block.parent_id], block.padding) if block.parent_id else block.bbox
+        box = _scene_text_box(block, shape_map[block.parent_id]) if block.parent_id else block.bbox
         overlay = TextOverlay(block_id=block.block_id, text=block.render_text, role=block.role, x=box.x, y=box.y, width=box.width, height=box.height, align="center" if block.role == "title" else block.align, font_size_ratio=block.font_size_ratio, confidence=1.0)
         (anchored if block.parent_id else free).append(overlay)
     overlays = anchored + _resolve_text_boxes(free, chart_box)
@@ -1570,7 +1618,9 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
             try:
                 payload = json.loads(raw_request)
                 parsed = (
-                    SceneGraphRequest.model_validate(payload)
+                    SceneGraphV2Request.model_validate(payload)
+                    if payload.get("schema_version") == "scene-graph-v2"
+                    else SceneGraphRequest.model_validate(payload)
                     if payload.get("schema_version") == "scene-graph-v1"
                     else ReferenceLayoutRequest.model_validate(payload)
                     if payload.get("schema_version") == "reference-layout-v2"
@@ -1579,11 +1629,13 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
                 upload_bytes = await upload.read()
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            request_model: KlineRenderRequest | BlankPageComposeRequest | ReferenceLayoutRequest | SceneGraphRequest = parsed
+            request_model: KlineRenderRequest | BlankPageComposeRequest | ReferenceLayoutRequest | SceneGraphRequest | SceneGraphV2Request = parsed
         else:
             try:
                 payload = await request.json()
-                if payload.get("schema_version") == "scene-graph-v1":
+                if payload.get("schema_version") == "scene-graph-v2":
+                    request_model = SceneGraphV2Request.model_validate(payload)
+                elif payload.get("schema_version") == "scene-graph-v1":
                     request_model = SceneGraphRequest.model_validate(payload)
                 elif payload.get("schema_version") == "reference-layout-v2":
                     request_model = ReferenceLayoutRequest.model_validate(payload)
@@ -1596,9 +1648,10 @@ def build_kline_router(media_dir: Path, public_base_url: str) -> APIRouter:
 
         file_name = f"kline-{uuid.uuid4().hex}.png"
         output_path = media_dir / file_name
-        if isinstance(request_model, SceneGraphRequest):
+        if isinstance(request_model, (SceneGraphRequest, SceneGraphV2Request)):
             try:
-                render_scene_graph(request_model, output_path, image_bytes=upload_bytes)
+                scene = request_model.as_v1() if isinstance(request_model, SceneGraphV2Request) else request_model
+                render_scene_graph(scene, output_path, image_bytes=upload_bytes)
             except ValueError as exc:
                 output_path.unlink(missing_ok=True)
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
