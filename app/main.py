@@ -840,12 +840,22 @@ def macro_event_history(days: int = 30) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE") from exc
     allowed = (
         "source", "event_id", "event_code", "title", "description",
-        "scheduled_time_utc", "scheduled_date", "time_precision", "status",
+        "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
     )
     return {
         "schema_version": "macro-event-history-v1",
         "retention_days": max(1, min(30, int(days))),
-        "events": [{key: item.get(key, "") for key in allowed} for item in events],
+        "events": [
+            {
+                **{key: item.get(key, "") for key in allowed},
+                "official_url": (
+                    item.get("official_url", "")
+                    if str(item.get("official_url", "")).lower().startswith(("https://", "http://"))
+                    else ""
+                ),
+            }
+            for item in events
+        ],
     }
 
 

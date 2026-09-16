@@ -27,6 +27,11 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("/v1/macro-events/status-summary", script)
         self.assertIn("/v1/macro-events/history", script)
         self.assertIn("history-list", page)
+        self.assertNotIn("查看原始 JSON", page)
+        self.assertNotIn("raw-json", script)
+        self.assertIn("official_url", script)
+        self.assertIn('target = "_blank"', script)
+        self.assertIn('rel = "noopener noreferrer"', script)
         self.assertIn("formatHistoryEvent", script)
         for event_name in (
             "CPI", "PPI", "非农", "PCE", "FOMC", "Kevin Warsh", "Philip Jefferson",
@@ -159,7 +164,10 @@ class MacroStatusPageTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["events"][0]["title"], "FOMC Meeting")
-        self.assertNotIn("official_url", response.text)
+        self.assertEqual(
+            response.json()["events"][0]["official_url"],
+            "https://private.example.test",
+        )
 
     def test_status_cache_expires_when_the_24_hour_usage_marker_expires(self):
         private = {

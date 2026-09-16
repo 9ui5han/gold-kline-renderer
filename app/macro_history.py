@@ -182,7 +182,7 @@ class MacroHistoryStore:
         with closing(self._connect()) as connection:
             rows = connection.execute(
                 """SELECT source,event_id,event_code,title,description,
-                   scheduled_time_utc,scheduled_date,time_precision,status,
+                   scheduled_time_utc,scheduled_date,time_precision,official_url,status,
                    first_seen_at_utc,last_seen_at_utc
                    FROM macro_events
                    WHERE (scheduled_time_utc <> '' AND scheduled_time_utc >= ?
@@ -196,7 +196,7 @@ class MacroHistoryStore:
             ).fetchall()
         fields = (
             "source", "event_id", "event_code", "title", "description",
-            "scheduled_time_utc", "scheduled_date", "time_precision", "status",
+            "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
             "first_seen_at_utc", "last_seen_at_utc",
         )
         return [dict(zip(fields, row)) for row in rows]

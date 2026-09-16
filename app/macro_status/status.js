@@ -1,6 +1,5 @@
 const checkButton = document.querySelector("#check-button");
 const message = document.querySelector("#message");
-const rawJson = document.querySelector("#raw-json");
 const overallBadge = document.querySelector("#overall-badge");
 const overallText = document.querySelector("#overall-text");
 const historyList = document.querySelector("#history-list");
@@ -84,7 +83,18 @@ function renderHistory(events) {
     const card = document.createElement("article");
     card.className = "history-card";
     const title = document.createElement("h3");
-    title.textContent = text(event.title, event.event_code || "未命名事件");
+    const titleText = text(event.title, event.event_code || "未命名事件");
+    const officialUrl = text(event.official_url, "");
+    if (/^https?:\/\//i.test(officialUrl)) {
+      const link = document.createElement("a");
+      link.href = officialUrl;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = titleText;
+      title.append(link);
+    } else {
+      title.textContent = titleText;
+    }
     const meta = document.createElement("p");
     meta.textContent = `${formatHistoryEvent(event)}｜来源：${text(event.source)}`;
     const description = document.createElement("p");
@@ -281,8 +291,6 @@ async function runCheck() {
     document.querySelector("#checked-time").textContent = formatBeijingTime(
       sourceData.checked_at_utc,
     );
-    rawJson.textContent = JSON.stringify(sourceData, null, 2);
-
     const status = sourceData.data_status;
     if (!serviceHealthy) {
       setOverall("bad", "Render异常");
@@ -303,7 +311,6 @@ async function runCheck() {
     setOverall("bad", "检查失败");
     message.className = "message error";
     message.textContent = `检查失败：${error.message}`;
-    rawJson.textContent = JSON.stringify({ error: error.message }, null, 2);
   } finally {
     checkButton.disabled = false;
     checkButton.textContent = "立即检查";
