@@ -457,7 +457,7 @@ const savedLanguage = typeof localStorage !== "undefined"
 applyLanguage(savedLanguage || "en");
 if (typeof window !== "undefined") {
   runCheck();
-  window.setInterval(runCheck, 300000);
+  window.setInterval(runCheck, 600000);
 }
 
 if (typeof module !== "undefined" && module.exports) {

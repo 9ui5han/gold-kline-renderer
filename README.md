@@ -52,7 +52,7 @@ http://127.0.0.1:8000/docs
 | `MACRO_CACHE_TTL_SEC` | `21600`（6小时） | 否 |
 | `MACRO_CACHE_MAX_STALE_SEC` | `172800`（48小时） | 否 |
 | `MACRO_AUTO_REFRESH_ENABLED` | `true` | 否；后台自动监听官方宏观来源并保存新事件 |
-| `MACRO_AUTO_REFRESH_INTERVAL_SEC` | `300`（5分钟） | 否；后台监听间隔，最小60秒 |
+| `MACRO_AUTO_REFRESH_INTERVAL_SEC` | `600`（10分钟） | 否；后台读取官方 RSS/事件源的间隔，最小60秒 |
 | `INDEXTTS2_SPEAKER_AUDIO_URL` | 已获授权的参考人声公网URL | 是 |
 | `INDEXTTS2_MAX_POLLS` | `150` | 否 |
 | `INDEXTTS2_POLL_INTERVAL_SEC` | `2` | 否 |

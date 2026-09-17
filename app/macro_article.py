@@ -56,4 +56,18 @@ def fetch_article_text(url: str, *, timeout: float = 15.0) -> str:
         "Back to Home", "Stay Connected",
     }
     cleaned = [part for part in parser.parts if part not in boilerplate]
+    if host.endswith("federalreserve.gov"):
+        # Fed pages wrap the speech in a site-wide government banner and
+        # navigation. Keep the speech heading/location, then the actual body.
+        start = next(
+            (index for index, part in enumerate(cleaned)
+             if part.startswith("At ") and index + 1 < len(cleaned)),
+            None,
+        )
+        if start is not None:
+            cleaned = cleaned[start:]
+        cleaned = [
+            part for part in cleaned
+            if not part.startswith(("Please enable JavaScript", "Last Update:", "Board of Governors of the Federal Reserve System"))
+        ]
     return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()[:30000]

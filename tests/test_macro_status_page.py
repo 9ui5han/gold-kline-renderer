@@ -61,7 +61,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("event-detail", detail_page)
         self.assertIn('applyLanguage(savedLanguage || "en")', script)
         self.assertIn("runCheck();", script)
-        self.assertIn("window.setInterval(runCheck, 300000)", script)
+        self.assertIn("window.setInterval(runCheck, 600000)", script)
         self.assertIn("Asia/Shanghai", script)
         self.assertIn("America/New_York", script)
         self.assertIn("北京", script)
