@@ -209,8 +209,22 @@ function setEventOfficialLink(card, eventType) {
     : eventType.next_event;
   const url = text(event?.official_url, "");
   const title = heading.textContent;
+  const hasUrl = /^https?:\/\//i.test(url);
+  card.dataset.officialUrl = hasUrl ? url : "";
+  card.classList.toggle("has-official-link", hasUrl);
+  card.tabIndex = hasUrl ? 0 : -1;
+  card.onclick = (clickEvent) => {
+    if (!hasUrl || clickEvent.target.closest("a")) return;
+    window.open(url, "_blank", "noopener,noreferrer");
+  };
+  card.onkeydown = (keyboardEvent) => {
+    if (hasUrl && (keyboardEvent.key === "Enter" || keyboardEvent.key === " ")) {
+      keyboardEvent.preventDefault();
+      window.open(url, "_blank", "noopener,noreferrer");
+    }
+  };
   heading.replaceChildren();
-  if (/^https?:\/\//i.test(url)) {
+  if (hasUrl) {
     const link = document.createElement("a");
     link.href = url;
     link.target = "_blank";

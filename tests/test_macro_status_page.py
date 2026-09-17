@@ -23,7 +23,7 @@ class MacroStatusPageTests(unittest.TestCase):
         stylesheet = (main.MACRO_STATUS_DIR / "status.css").read_text(encoding="utf-8")
 
         self.assertIn("宏观事件服务状态", page)
-        self.assertIn('status.js?v=20260916-5', page)
+        self.assertIn('status.js?v=20260917-1', page)
         self.assertIn('id="language-select"', page)
         self.assertNotIn('class="history-section"', page)
         self.assertNotIn('此页面不会读取密钥', page)
@@ -52,6 +52,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("Christopher Waller Fed Governor remarks", script)
         self.assertIn("official_url", script)
         self.assertIn("recently-updated", script)
+        self.assertIn("window.open", script)
         self.assertIn('applyLanguage(savedLanguage || "en")', script)
         self.assertIn("runCheck();", script)
         self.assertIn("window.setInterval(runCheck, 300000)", script)
