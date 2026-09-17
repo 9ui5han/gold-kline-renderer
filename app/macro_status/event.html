@@ -9,19 +9,26 @@
 <body>
   <main class="page-shell event-detail" id="event-detail">
     <p class="eyebrow">MACRO EVENT</p>
+    <label class="language-control event-language" for="language-select">
+      <span id="language-label">Language</span>
+      <select id="language-select">
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+      </select>
+    </label>
     <h1 id="event-title">Loading event…</h1>
     <p id="event-meta" class="subtitle">Loading details…</p>
     <section class="control-panel">
-      <h2>Event details</h2>
+      <h2 id="details-heading">Event details</h2>
       <p id="event-content-kind" class="event-content-kind">Schedule event</p>
       <p id="event-description">—</p>
       <article id="event-article" hidden>
-        <h3>Article text</h3>
+        <h3 id="article-heading">Article text</h3>
         <div id="event-article-body"></div>
       </article>
       <a id="official-link" class="primary-button" href="#" target="_blank" rel="noopener noreferrer" hidden>Open official article</a>
     </section>
-    <p><a href="./">← Back to macro status</a></p>
+    <p><a id="back-link" href="./">← Back to macro status</a></p>
   </main>
   <script src="./event.js?v=20260917-1"></script>
 </body>
