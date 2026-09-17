@@ -533,6 +533,7 @@ class MacroContextService:
         *,
         client: httpx.Client | None = None,
         now: datetime | None = None,
+        force_refresh: bool = False,
     ) -> dict[str, Any]:
         request = _validate_request(payload)
         checked_at = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -558,6 +559,8 @@ class MacroContextService:
                     })
                 ) if entry is not None else False
                 if (
+                    not force_refresh
+                    and
                     entry is not None
                     and age is not None
                     and age <= self.cache_ttl_sec

@@ -10,7 +10,7 @@ import subprocess
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -616,7 +616,30 @@ def _probe_and_record_macro_sources(trigger: str) -> dict[str, Any]:
 
 
 def _background_macro_refresh() -> None:
-    _probe_and_record_macro_sources("background")
+    checked_at = datetime.now(timezone.utc)
+    horizon_end = checked_at + timedelta(days=7)
+    try:
+        # The status probe only checks reachability.  This forced context
+        # refresh also downloads and stores the parsed event records, so a
+        # newly published article appears in the detail page automatically.
+        MACRO_CONTEXT_SERVICE.get_context(
+            {
+                "request_id": "macro-auto-refresh",
+                "symbol": "XAUUSD",
+                "data_as_of": _usage_time_text(checked_at),
+                "forecast_horizon": {
+                    "schema_version": "forecast-horizon-v1",
+                    "timeframe": "1d",
+                    "start_time": _usage_time_text(checked_at),
+                    "end_time": _usage_time_text(horizon_end),
+                    "duration_minutes": 10080,
+                },
+            },
+            now=checked_at,
+            force_refresh=True,
+        )
+    except Exception:
+        logger.warning("Unable to refresh macro event records", exc_info=True)
     with MACRO_STATUS_LOCK:
         MACRO_STATUS_CACHE.update({"expires_at": 0.0, "payload": None})
 
