@@ -161,7 +161,11 @@ class MacroHistoryStore:
                         scheduled_time,
                         scheduled_date,
                         "exact" if scheduled_time else "date_only",
-                        str(event.get("official_url") or "").strip()[:1000],
+                        str(
+                            event.get("official_url")
+                            or event.get("source_url")
+                            or ""
+                        ).strip()[:1000],
                         str(event.get("status") or "scheduled").strip()[:40],
                         checked_text,
                         checked_text,

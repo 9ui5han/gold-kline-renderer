@@ -16,7 +16,7 @@ class OfficialSpeechSourceTests(unittest.TestCase):
     def test_fed_all_speeches_rss_tracks_only_requested_fomc_speakers(self):
         events = parse_fed_fomc_speeches_rss(
             """<rss><channel>
-            <item><title>Warsh, Economic Outlook</title><link>https://www.federalreserve.gov/newsevents/speech/warsh.htm</link><pubDate>Mon, 24 Aug 2026 14:00:00 GMT</pubDate></item>
+            <item><title>Warsh, Economic Outlook</title><description>Remarks on inflation and growth.</description><link>https://www.federalreserve.gov/newsevents/speech/warsh.htm</link><pubDate>Mon, 24 Aug 2026 14:00:00 GMT</pubDate></item>
             <item><title>Jefferson, Monetary Policy and Inflation</title><link>https://www.federalreserve.gov/newsevents/speech/jefferson.htm</link><pubDate>Mon, 24 Aug 2026 15:00:00 GMT</pubDate></item>
             <item><title>Waller, Financial Stability</title><link>https://www.federalreserve.gov/newsevents/speech/waller.htm</link><pubDate>Mon, 24 Aug 2026 16:00:00 GMT</pubDate></item>
             <item><title>Bowman, Monetary Policy and Financial Stability</title><link>https://www.federalreserve.gov/newsevents/speech/bowman.htm</link><pubDate>Mon, 24 Aug 2026 17:00:00 GMT</pubDate></item>
@@ -40,6 +40,7 @@ class OfficialSpeechSourceTests(unittest.TestCase):
         self.assertEqual(events[0]["speaker"], "Kevin Warsh")
         self.assertEqual(events[0]["status"], "published")
         self.assertEqual(events[0]["time_basis"], "publication_time")
+        self.assertEqual(events[0]["description"], "Remarks on inflation and growth.")
 
     def test_fed_source_rejects_external_links_and_changed_tracked_title_format(self):
         with self.assertRaisesRegex(FedSpeechParseError, "URL_INVALID"):

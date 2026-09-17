@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import html
+import re
 from datetime import timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -44,6 +46,10 @@ class FedSpeechParseError(ValueError):
 def _text(element: ElementTree.Element, name: str) -> str:
     child = element.find(name)
     return str(child.text or "").strip() if child is not None else ""
+
+
+def _clean_text(value: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>", " ", html.unescape(value or "")).split())
 
 
 def _is_fed_url(value: str) -> bool:
@@ -117,6 +123,7 @@ def parse_fed_fomc_speeches_rss(
             "event_code": event_code,
             "event_subtype": event_subtype,
             "title": title,
+            "description": _clean_text(description),
             "speaker": speaker,
             "country": "US",
             "currency": "USD",

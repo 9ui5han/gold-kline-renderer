@@ -120,6 +120,23 @@ class MacroHistoryStoreTests(unittest.TestCase):
         self.assertEqual(event["title"], "FOMC Meeting")
         self.assertEqual(event["official_url"], "https://www.federalreserve.gov/fomc.htm")
 
+    def test_record_events_uses_source_url_as_official_article_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MacroHistoryStore(Path(directory) / "macro-history.sqlite3")
+            store.record_events("fed_speeches", [{
+                "event_id": "waller-1",
+                "event_code": "fed_waller_speech",
+                "title": "Waller, Economic Outlook",
+                "source_url": "https://www.federalreserve.gov/newsevents/speech/waller.htm",
+                "scheduled_time_utc": "2026-09-16T18:00:00Z",
+            }])
+            event = store.get_event("fed_speeches", "waller-1")
+
+        self.assertEqual(
+            event["official_url"],
+            "https://www.federalreserve.gov/newsevents/speech/waller.htm",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
