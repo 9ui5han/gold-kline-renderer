@@ -25,6 +25,7 @@ from .chart_renderer import render_tradingview_scene
 from .segment_renderer import router as segment_render_router
 from .video_composer import router as video_composer_router
 from .macro_context import MacroContextError, MacroContextService
+from .macro_article import fetch_article_text
 from .macro_history import MacroHistoryStore
 from .macro_auto_refresh import MacroAutoRefresh
 from .macro_source_probe import probe_all_sources
@@ -929,9 +930,19 @@ def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
         event = MACRO_CONTEXT_SERVICE.get_cached_event(source, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
+    article_body = str(event.get("article_body") or "").strip()
+    article_url = str(event.get("official_url") or event.get("source_url") or "").strip()
+    if not article_body and article_url:
+        article_body = fetch_article_text(article_url)
+        if article_body and MACRO_HISTORY_STORE is not None:
+            try:
+                MACRO_HISTORY_STORE.save_article(source, event_id, article_body)
+            except Exception:
+                logger.warning("Unable to save macro article body", exc_info=True)
     description = str(event.get("description") or "").strip()
     has_article_summary = bool(
-        description and description != "官方日历事件，来源未提供详细简介。"
+        article_body
+        or (description and description != "官方日历事件，来源未提供详细简介。")
     )
     allowed = (
         "source", "event_id", "event_code", "title", "description",
@@ -942,6 +953,8 @@ def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
         "schema_version": "macro-event-detail-v1",
         "event": {
             **{key: event.get(key, "") for key in allowed},
+            "article_body": article_body,
+            "article_available": bool(article_body),
             "content_kind": "article" if has_article_summary else "schedule",
             "content_available": has_article_summary,
             "official_url": (

@@ -5,6 +5,8 @@ const title = document.querySelector("#event-title");
 const meta = document.querySelector("#event-meta");
 const description = document.querySelector("#event-description");
 const contentKind = document.querySelector("#event-content-kind");
+const article = document.querySelector("#event-article");
+const articleBody = document.querySelector("#event-article-body");
 const officialLink = document.querySelector("#official-link");
 
 function value(input, fallback = "—") {
@@ -36,6 +38,10 @@ async function loadEvent() {
     contentKind.textContent = "Schedule event — no article body is provided by this source";
     description.textContent = "This source provides the release or publication schedule only. The full article may appear after the event is officially released.";
     officialLink.textContent = "Open source schedule";
+  }
+  if (event.article_available === true && event.article_body) {
+    article.hidden = false;
+    articleBody.textContent = event.article_body;
   }
   if (/^https?:\/\//i.test(event.official_url || "")) {
     officialLink.href = event.official_url;

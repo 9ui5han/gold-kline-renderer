@@ -39,6 +39,8 @@ class MacroHistoryStore:
                     status TEXT NOT NULL,
                     first_seen_at_utc TEXT NOT NULL,
                     last_seen_at_utc TEXT NOT NULL,
+                    article_body TEXT NOT NULL DEFAULT '',
+                    article_fetched_at_utc TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (source, event_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_macro_events_schedule
@@ -76,6 +78,10 @@ class MacroHistoryStore:
                     connection.execute(
                         "ALTER TABLE macro_events ADD COLUMN description TEXT NOT NULL DEFAULT ''"
                     )
+                if "article_body" not in columns:
+                    connection.execute("ALTER TABLE macro_events ADD COLUMN article_body TEXT NOT NULL DEFAULT ''")
+                if "article_fetched_at_utc" not in columns:
+                    connection.execute("ALTER TABLE macro_events ADD COLUMN article_fetched_at_utc TEXT NOT NULL DEFAULT ''")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)
@@ -187,7 +193,7 @@ class MacroHistoryStore:
             rows = connection.execute(
                 """SELECT source,event_id,event_code,title,description,
                    scheduled_time_utc,scheduled_date,time_precision,official_url,status,
-                   first_seen_at_utc,last_seen_at_utc
+                   first_seen_at_utc,last_seen_at_utc,article_body,article_fetched_at_utc
                    FROM macro_events
                    WHERE (scheduled_time_utc <> '' AND scheduled_time_utc >= ?
                           AND scheduled_time_utc <= ?)
@@ -219,9 +225,17 @@ class MacroHistoryStore:
         fields = (
             "source", "event_id", "event_code", "title", "description",
             "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
-            "first_seen_at_utc", "last_seen_at_utc",
+            "first_seen_at_utc", "last_seen_at_utc", "article_body", "article_fetched_at_utc",
         )
         return dict(zip(fields, row))
+
+    def save_article(self, source: str, event_id: str, body: str, *, fetched_at: datetime | None = None) -> None:
+        with closing(self._connect()) as connection:
+            with connection:
+                connection.execute(
+                    "UPDATE macro_events SET article_body = ?, article_fetched_at_utc = ? WHERE source = ? AND event_id = ?",
+                    (str(body or "")[:30000], _utc_text(fetched_at or datetime.now(timezone.utc)), str(source).strip(), str(event_id).strip()),
+                )
 
     def record_source_check(
         self,
