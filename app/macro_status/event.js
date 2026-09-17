@@ -31,9 +31,11 @@ async function loadEvent() {
   if (event.content_kind === "article" && event.content_available === true) {
     contentKind.textContent = "Article summary available";
     description.textContent = value(event.description);
+    officialLink.textContent = "Open official article";
   } else {
     contentKind.textContent = "Schedule event — no article body is provided by this source";
     description.textContent = "This source provides the release or publication schedule only. The full article may appear after the event is officially released.";
+    officialLink.textContent = "Open source schedule";
   }
   if (/^https?:\/\//i.test(event.official_url || "")) {
     officialLink.href = event.official_url;

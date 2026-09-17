@@ -916,7 +916,7 @@ def macro_event_history(days: int = 30) -> dict[str, Any]:
 @app.get("/v1/macro-events/event/{source}/{event_id}")
 def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
     """Return one sanitized locally stored macro event for the detail page."""
-    if MACRO_HISTORY_STORE is None:
+    if MACRO_HISTORY_STORE is None and MACRO_CONTEXT_SERVICE is None:
         raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE")
     if not source or not event_id or len(source) > 80 or len(event_id) > 240:
         raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")

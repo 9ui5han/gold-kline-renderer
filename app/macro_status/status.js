@@ -39,6 +39,8 @@ const TEXT_TRANSLATIONS = [
   ["检查时间（北京时间）", "Check time (Beijing)"],
   ["官方数据源", "Official Sources"],
   ["已接入的宏观事件", "Tracked Macro Events"],
+  ["文章事件 — 可点击查看详情", "Article events — clickable details"],
+  ["日程事件 — 无新闻正文", "Schedule events — no article body"],
   ["状态", "Status"],
   ["内容类型", "Content type"],
   ["错误代码", "Error code"],
@@ -301,6 +303,13 @@ function sortEventTypes(eventTypes) {
   return [...eventTypes].sort(compareEventTypes);
 }
 
+const ARTICLE_EVENT_CODES = new Set([
+  "fed_warsh_speech", "fed_jefferson_speech", "fed_bowman_speech",
+  "fed_speech", "fed_waller_speech", "nyfed_williams_speech",
+  "whitehouse_trump_remarks", "state_diplomatic_official_statement",
+  "treasury_announcement", "treasury_secretary_speech",
+]);
+
 function updateEventType(eventType) {
   const card = document.querySelector(`[data-event-code="${eventType.event_code}"]`);
   if (!card) return;
@@ -356,13 +365,14 @@ function resetEventTypes() {
 }
 
 function reorderEventCards(eventTypes) {
-  const grid = document.querySelector("#event-grid");
-  if (!grid) return;
+  const articleGrid = document.querySelector("#article-event-grid");
+  const scheduleGrid = document.querySelector("#schedule-event-grid");
+  if (!articleGrid || !scheduleGrid) return;
   sortEventTypes(eventTypes).forEach((eventType) => {
     const card = document.querySelector(
       `[data-event-code="${eventType.event_code}"]`,
     );
-    if (card) grid.append(card);
+    if (card) (ARTICLE_EVENT_CODES.has(eventType.event_code) ? articleGrid : scheduleGrid).append(card);
   });
 }
 

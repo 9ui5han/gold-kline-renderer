@@ -53,6 +53,8 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("All healthy", script)
         self.assertIn("Christopher Waller Fed Governor remarks", script)
         self.assertIn("official_url", detail_script)
+        self.assertIn("Open source schedule", detail_script)
+        self.assertIn("Open official article", detail_script)
         self.assertIn("recently-updated", script)
         self.assertIn("window.location.href", script)
         self.assertIn("event.html", script)

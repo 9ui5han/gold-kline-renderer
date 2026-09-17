@@ -112,7 +112,8 @@
         </div>
         <p>按下一次触发时间排列；同一时刻按英文事件名 A–Z 排列。事件时间同时显示北京时间和美国东部时间。</p>
       </div>
-      <div id="event-grid" class="event-grid" aria-live="polite">
+      <h3 class="event-layer-title">Article events — clickable details</h3>
+      <div id="article-event-grid" class="event-grid" aria-live="polite">
         <article class="event-card idle" data-event-code="cpi"><div class="event-card-head"><span class="event-code">CPI</span><span data-field="state">未检查</span></div><h3>CPI 消费者物价指数</h3><p>来源：BLS 美国劳工统计局</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="ppi"><div class="event-card-head"><span class="event-code">PPI</span><span data-field="state">未检查</span></div><h3>PPI 生产者物价指数</h3><p>来源：BLS 美国劳工统计局</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="employment"><div class="event-card-head"><span class="event-code">NFP</span><span data-field="state">未检查</span></div><h3>非农与就业报告</h3><p>来源：BLS Employment Situation</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
@@ -131,6 +132,8 @@
         <article class="event-card idle" data-event-code="treasury_announcement"><div class="event-card-head"><span class="event-code">NOTICE</span><span data-field="state">未检查</span></div><h3>美国财政部债务公告</h3><p>来源：Treasury Press Releases</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
         <article class="event-card idle" data-event-code="treasury_secretary_speech"><div class="event-card-head"><span class="event-code">BESSENT</span><span data-field="state">未检查</span></div><h3>Scott Bessent 财政部长讲话</h3><p>来源：U.S. Treasury Statements &amp; Remarks</p><dl><div><dt>缓存事件</dt><dd data-field="count">—</dd></div><div><dt>最近一次</dt><dd data-field="previous">—</dd></div><div><dt>下一次</dt><dd data-field="next">—</dd></div></dl></article>
       </div>
+      <h3 class="event-layer-title">Schedule events — no article正文</h3>
+      <div id="schedule-event-grid" class="event-grid" aria-live="polite"></div>
     </section>
 
   </main>
