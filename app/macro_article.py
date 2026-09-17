@@ -15,14 +15,20 @@ class _TextParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.skip = 0
+        self.depth = 0
+        self.content_depth: int | None = None
     def handle_starttag(self, tag: str, attrs) -> None:
+        self.depth += 1
+        if tag in {"article", "main"} and self.content_depth is None:
+            self.content_depth = self.depth
         if tag in {"script", "style", "noscript", "nav", "header", "footer", "aside", "form"}:
             self.skip += 1
     def handle_endtag(self, tag: str) -> None:
         if tag in {"script", "style", "noscript", "nav", "header", "footer", "aside", "form"}:
             self.skip = max(0, self.skip - 1)
+        self.depth = max(0, self.depth - 1)
     def handle_data(self, data: str) -> None:
-        if not self.skip:
+        if not self.skip and (self.content_depth is None or self.depth >= self.content_depth):
             text = " ".join(data.split())
             if text:
                 self.parts.append(text)
@@ -44,4 +50,10 @@ def fetch_article_text(url: str, *, timeout: float = 15.0) -> str:
         parser.feed(response.text)
     except Exception:
         return ""
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(parser.parts)).strip()[:30000]
+    boilerplate = {
+        "Skip to main content", "An official website of the United States Government",
+        "Here's how you know", "Official websites use .gov", "Secure .gov websites use HTTPS",
+        "Back to Home", "Stay Connected",
+    }
+    cleaned = [part for part in parser.parts if part not in boilerplate]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(cleaned)).strip()[:30000]

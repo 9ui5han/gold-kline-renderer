@@ -932,7 +932,11 @@ def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
     article_body = str(event.get("article_body") or "").strip()
     article_url = str(event.get("official_url") or event.get("source_url") or "").strip()
-    if not article_body and article_url:
+    needs_clean_refetch = any(
+        marker in article_body
+        for marker in ("Skip to main content", "An official website of the United States Government", "Stay Connected")
+    )
+    if (not article_body or needs_clean_refetch) and article_url:
         article_body = fetch_article_text(article_url)
         if article_body and MACRO_HISTORY_STORE is not None:
             try:
