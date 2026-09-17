@@ -207,6 +207,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["schema_version"], "macro-event-detail-v1")
         self.assertEqual(response.json()["event"]["description"], "Federal Reserve policy meeting")
+        self.assertEqual(response.json()["event"]["content_kind"], "article")
         self.assertEqual(response.json()["event"]["official_url"], event["official_url"])
 
     def test_public_event_detail_route_returns_404_for_unknown_event(self):
@@ -215,6 +216,34 @@ class MacroStatusPageTests(unittest.TestCase):
                 response = api.get("/v1/macro-events/event/fed/missing")
 
         self.assertEqual(response.status_code, 404)
+
+    def test_public_event_detail_route_falls_back_to_event_cache(self):
+        event = {
+            "source": "bls",
+            "event_id": "bls-cpi-95c035e588575a612288",
+            "event_code": "cpi",
+            "title": "Consumer Price Index",
+            "scheduled_time_utc": "2026-09-16T12:30:00Z",
+            "scheduled_date": "2026-09-16",
+            "status": "scheduled",
+            "source_url": "https://www.bls.gov/schedule/news_release/cpi.htm",
+        }
+        with (
+            patch.object(main.MACRO_HISTORY_STORE, "get_event", return_value=None),
+            patch.object(main.MACRO_CONTEXT_SERVICE, "get_cached_event", return_value=event),
+            TestClient(main.app) as api,
+        ):
+            response = api.get(
+                "/v1/macro-events/event/bls/bls-cpi-95c035e588575a612288"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["event"]["title"], "Consumer Price Index")
+        self.assertEqual(
+            response.json()["event"]["official_url"],
+            "https://www.bls.gov/schedule/news_release/cpi.htm",
+        )
+        self.assertEqual(response.json()["event"]["content_kind"], "schedule")
 
     def test_status_cache_expires_when_the_24_hour_usage_marker_expires(self):
         private = {

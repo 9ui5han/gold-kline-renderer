@@ -477,6 +477,21 @@ class MacroContextService:
             ),
         )
 
+    def get_cached_event(self, source: str, event_id: str) -> dict[str, Any] | None:
+        """Find one event in the parsed JSON cache when SQLite is unavailable."""
+        source_key = str(source or "").strip()
+        event_key = str(event_id or "").strip()
+        if not source_key or not event_key:
+            return None
+        cache = self._load_cache()
+        entry = cache.get("sources", {}).get(source_key)
+        if not isinstance(entry, dict):
+            return None
+        for event in entry.get("events") or []:
+            if isinstance(event, dict) and str(event.get("event_id") or "") == event_key:
+                return dict(event)
+        return None
+
     def _fetch_sources(
         self,
         specs: list[SourceSpec],

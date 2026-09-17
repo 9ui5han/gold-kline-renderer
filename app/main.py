@@ -885,7 +885,7 @@ def macro_event_status_summary() -> dict[str, Any]:
 @app.get("/v1/macro-events/history")
 def macro_event_history(days: int = 30) -> dict[str, Any]:
     """Return sanitized rolling macro event history for the local status page."""
-    if MACRO_HISTORY_STORE is None:
+    if MACRO_HISTORY_STORE is None and MACRO_CONTEXT_SERVICE is None:
         raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE")
     try:
         events = MACRO_HISTORY_STORE.list_events(days=days)
@@ -920,9 +920,19 @@ def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE")
     if not source or not event_id or len(source) > 80 or len(event_id) > 240:
         raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
-    event = MACRO_HISTORY_STORE.get_event(source, event_id)
+    event = (
+        MACRO_HISTORY_STORE.get_event(source, event_id)
+        if MACRO_HISTORY_STORE is not None
+        else None
+    )
+    if event is None:
+        event = MACRO_CONTEXT_SERVICE.get_cached_event(source, event_id)
     if event is None:
         raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
+    description = str(event.get("description") or "").strip()
+    has_article_summary = bool(
+        description and description != "官方日历事件，来源未提供详细简介。"
+    )
     allowed = (
         "source", "event_id", "event_code", "title", "description",
         "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
@@ -932,9 +942,11 @@ def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
         "schema_version": "macro-event-detail-v1",
         "event": {
             **{key: event.get(key, "") for key in allowed},
+            "content_kind": "article" if has_article_summary else "schedule",
+            "content_available": has_article_summary,
             "official_url": (
-                event.get("official_url", "")
-                if str(event.get("official_url", "")).lower().startswith(("https://", "http://"))
+                event.get("official_url") or event.get("source_url") or ""
+                if str(event.get("official_url") or event.get("source_url") or "").lower().startswith(("https://", "http://"))
                 else ""
             ),
         },

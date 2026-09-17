@@ -4,6 +4,7 @@ const eventId = params.get("event_id") || "";
 const title = document.querySelector("#event-title");
 const meta = document.querySelector("#event-meta");
 const description = document.querySelector("#event-description");
+const contentKind = document.querySelector("#event-content-kind");
 const officialLink = document.querySelector("#official-link");
 
 function value(input, fallback = "—") {
@@ -27,7 +28,13 @@ async function loadEvent() {
   const event = data.event || {};
   title.textContent = value(event.title, event.event_code);
   meta.textContent = `${formatTime(event)} · ${value(event.source)} · ${value(event.status)}`;
-  description.textContent = value(event.description, "No detailed description was provided by the source.");
+  if (event.content_kind === "article" && event.content_available === true) {
+    contentKind.textContent = "Article summary available";
+    description.textContent = value(event.description);
+  } else {
+    contentKind.textContent = "Schedule event — no article body is provided by this source";
+    description.textContent = "This source provides the release or publication schedule only. The full article may appear after the event is officially released.";
+  }
   if (/^https?:\/\//i.test(event.official_url || "")) {
     officialLink.href = event.official_url;
     officialLink.hidden = false;
@@ -38,4 +45,5 @@ loadEvent().catch((error) => {
   title.textContent = "Event unavailable";
   meta.textContent = error.message;
   description.textContent = "This event is not available in the local 30-day store.";
+  contentKind.textContent = "Event unavailable";
 });

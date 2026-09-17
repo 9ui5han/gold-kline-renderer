@@ -102,6 +102,7 @@ def _published_event(
     source: str,
     source_url: str,
     source_fetched_at_utc: str,
+    description: str = "",
     published: datetime | None = None,
     published_date: str = "",
 ) -> dict[str, Any]:
@@ -123,6 +124,7 @@ def _published_event(
         "event_code": event_code,
         "event_subtype": event_subtype,
         "title": title,
+        "description": _clean_text(description),
         "speaker": speaker,
         "country": "US",
         "currency": "USD",
@@ -403,6 +405,7 @@ def parse_state_diplomatic_releases(
             source="state_diplomacy",
             source_url=source_url,
             source_fetched_at_utc=source_fetched_at_utc,
+            description=content,
             published=published,
         ))
     return sorted(events, key=lambda event: event["scheduled_time_utc"])
