@@ -204,31 +204,32 @@ function isRecentUpdate(value) {
 function setEventOfficialLink(card, eventType) {
   const heading = card.querySelector("h3");
   if (!heading) return;
-  const event = eventType.previous_event?.official_url
+  const event = eventType.previous_event?.event_id
     ? eventType.previous_event
     : eventType.next_event;
-  const url = text(event?.official_url, "");
+  const eventId = text(event?.event_id, "");
+  const detailUrl = eventId
+    ? `/macro-status/event.html?source=${encodeURIComponent(eventType.source || "")}&event_id=${encodeURIComponent(eventId)}`
+    : "";
   const title = heading.textContent;
-  const hasUrl = /^https?:\/\//i.test(url);
-  card.dataset.officialUrl = hasUrl ? url : "";
-  card.classList.toggle("has-official-link", hasUrl);
-  card.tabIndex = hasUrl ? 0 : -1;
+  const hasDetail = Boolean(detailUrl);
+  card.dataset.eventDetailUrl = detailUrl;
+  card.classList.toggle("has-official-link", hasDetail);
+  card.tabIndex = hasDetail ? 0 : -1;
   card.onclick = (clickEvent) => {
-    if (!hasUrl || clickEvent.target.closest("a")) return;
-    window.open(url, "_blank", "noopener,noreferrer");
+    if (!hasDetail || clickEvent.target.closest("a")) return;
+    window.location.href = detailUrl;
   };
   card.onkeydown = (keyboardEvent) => {
-    if (hasUrl && (keyboardEvent.key === "Enter" || keyboardEvent.key === " ")) {
+    if (hasDetail && (keyboardEvent.key === "Enter" || keyboardEvent.key === " ")) {
       keyboardEvent.preventDefault();
-      window.open(url, "_blank", "noopener,noreferrer");
+      window.location.href = detailUrl;
     }
   };
   heading.replaceChildren();
-  if (hasUrl) {
+  if (hasDetail) {
     const link = document.createElement("a");
-    link.href = url;
-    link.target = "_blank";
-    link.rel = "noopener noreferrer";
+    link.href = detailUrl;
     link.textContent = title;
     heading.append(link);
   } else {

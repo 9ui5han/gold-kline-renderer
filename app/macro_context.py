@@ -427,6 +427,9 @@ class MacroContextService:
                         ).strip(),
                         "time_precision": "exact" if exact else "date_only",
                     }
+                    event_id = str(event.get("event_id") or "").strip()[:240]
+                    if event_id:
+                        detail["event_id"] = event_id
                     official_url = str(event.get("official_url") or "").strip()[:1000]
                     if official_url.startswith(("http://", "https://")):
                         detail["official_url"] = official_url

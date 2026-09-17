@@ -102,6 +102,24 @@ class MacroHistoryStoreTests(unittest.TestCase):
         self.assertEqual([item["event_id"] for item in events], ["fomc-1", "cpi-1"])
         self.assertEqual(events[0]["description"], "Federal Reserve policy meeting")
 
+    def test_get_event_returns_saved_detail_by_source_and_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = MacroHistoryStore(Path(directory) / "macro-history.sqlite3")
+            store.record_events("fed", [{
+                "event_id": "fomc-1",
+                "event_code": "fomc",
+                "title": "FOMC Meeting",
+                "description": "Policy meeting",
+                "scheduled_time_utc": "2026-09-16T18:00:00Z",
+                "scheduled_date": "2026-09-16",
+                "official_url": "https://www.federalreserve.gov/fomc.htm",
+                "status": "scheduled",
+            }], now=datetime(2026, 9, 16, tzinfo=timezone.utc))
+            event = store.get_event("fed", "fomc-1")
+
+        self.assertEqual(event["title"], "FOMC Meeting")
+        self.assertEqual(event["official_url"], "https://www.federalreserve.gov/fomc.htm")
+
 
 if __name__ == "__main__":
     unittest.main()

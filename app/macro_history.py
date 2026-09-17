@@ -201,6 +201,24 @@ class MacroHistoryStore:
         )
         return [dict(zip(fields, row)) for row in rows]
 
+    def get_event(self, source: str, event_id: str) -> dict[str, Any] | None:
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                """SELECT source,event_id,event_code,title,description,
+                   scheduled_time_utc,scheduled_date,time_precision,official_url,status,
+                   first_seen_at_utc,last_seen_at_utc
+                   FROM macro_events WHERE source = ? AND event_id = ?""",
+                (str(source).strip(), str(event_id).strip()),
+            ).fetchone()
+        if row is None:
+            return None
+        fields = (
+            "source", "event_id", "event_code", "title", "description",
+            "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
+            "first_seen_at_utc", "last_seen_at_utc",
+        )
+        return dict(zip(fields, row))
+
     def record_source_check(
         self,
         status: dict[str, Any],

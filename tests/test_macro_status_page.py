@@ -20,10 +20,12 @@ class MacroStatusPageTests(unittest.TestCase):
     def test_page_and_assets_are_available_without_embedding_token(self):
         page = (main.MACRO_STATUS_DIR / "index.html").read_text(encoding="utf-8")
         script = (main.MACRO_STATUS_DIR / "status.js").read_text(encoding="utf-8")
+        detail_script = (main.MACRO_STATUS_DIR / "event.js").read_text(encoding="utf-8")
+        detail_page = (main.MACRO_STATUS_DIR / "event.html").read_text(encoding="utf-8")
         stylesheet = (main.MACRO_STATUS_DIR / "status.css").read_text(encoding="utf-8")
 
         self.assertIn("宏观事件服务状态", page)
-        self.assertIn('status.js?v=20260917-1', page)
+        self.assertIn('status.js?v=20260917-2', page)
         self.assertIn('id="language-select"', page)
         self.assertNotIn('class="history-section"', page)
         self.assertNotIn('此页面不会读取密钥', page)
@@ -50,9 +52,11 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertIn("Valid sources", script)
         self.assertIn("All healthy", script)
         self.assertIn("Christopher Waller Fed Governor remarks", script)
-        self.assertIn("official_url", script)
+        self.assertIn("official_url", detail_script)
         self.assertIn("recently-updated", script)
-        self.assertIn("window.open", script)
+        self.assertIn("window.location.href", script)
+        self.assertIn("event.html", script)
+        self.assertIn("event-detail", detail_page)
         self.assertIn('applyLanguage(savedLanguage || "en")', script)
         self.assertIn("runCheck();", script)
         self.assertIn("window.setInterval(runCheck, 300000)", script)
@@ -181,6 +185,37 @@ class MacroStatusPageTests(unittest.TestCase):
             "https://private.example.test",
         )
 
+    def test_public_event_detail_route_returns_one_local_event(self):
+        event = {
+            "source": "fed",
+            "event_id": "fomc-1",
+            "event_code": "fomc",
+            "title": "FOMC Meeting",
+            "description": "Federal Reserve policy meeting",
+            "scheduled_time_utc": "2026-09-16T18:00:00Z",
+            "scheduled_date": "2026-09-16",
+            "time_precision": "exact",
+            "official_url": "https://www.federalreserve.gov/fomc.htm",
+            "status": "scheduled",
+            "first_seen_at_utc": "2026-09-01T00:00:00Z",
+            "last_seen_at_utc": "2026-09-16T00:00:00Z",
+        }
+        with patch.object(main.MACRO_HISTORY_STORE, "get_event", return_value=event):
+            with TestClient(main.app) as api:
+                response = api.get("/v1/macro-events/event/fed/fomc-1")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["schema_version"], "macro-event-detail-v1")
+        self.assertEqual(response.json()["event"]["description"], "Federal Reserve policy meeting")
+        self.assertEqual(response.json()["event"]["official_url"], event["official_url"])
+
+    def test_public_event_detail_route_returns_404_for_unknown_event(self):
+        with patch.object(main.MACRO_HISTORY_STORE, "get_event", return_value=None):
+            with TestClient(main.app) as api:
+                response = api.get("/v1/macro-events/event/fed/missing")
+
+        self.assertEqual(response.status_code, 404)
+
     def test_status_cache_expires_when_the_24_hour_usage_marker_expires(self):
         private = {
             "checked_at_utc": "2026-08-25T00:00:00Z",
@@ -229,7 +264,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertEqual(route.name, "macro-status")
 
     def test_status_assets_exist_in_packaged_app(self):
-        expected = {"index.html", "status.css", "status.js"}
+        expected = {"index.html", "status.css", "status.js", "event.html", "event.js"}
         found = {path.name for path in Path(main.MACRO_STATUS_DIR).iterdir()}
         self.assertTrue(expected.issubset(found))
 
@@ -317,6 +352,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertEqual(
             cpi["previous_event"],
             {
+                "event_id": "cpi-20260812",
                 "title": "Consumer Price Index News Release",
                 "scheduled_time_utc": "2026-08-12T12:30:00Z",
                 "scheduled_date": "",
@@ -326,6 +362,7 @@ class MacroStatusPageTests(unittest.TestCase):
         self.assertEqual(
             cpi["next_event"],
             {
+                "event_id": "cpi-20260830",
                 "title": "Consumer Price Index Release Date",
                 "scheduled_time_utc": "",
                 "scheduled_date": "2026-08-30",

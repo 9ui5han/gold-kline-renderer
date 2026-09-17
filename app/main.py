@@ -890,6 +890,34 @@ def macro_event_history(days: int = 30) -> dict[str, Any]:
     }
 
 
+@app.get("/v1/macro-events/event/{source}/{event_id}")
+def macro_event_detail(source: str, event_id: str) -> dict[str, Any]:
+    """Return one sanitized locally stored macro event for the detail page."""
+    if MACRO_HISTORY_STORE is None:
+        raise HTTPException(status_code=503, detail="MACRO_HISTORY_UNAVAILABLE")
+    if not source or not event_id or len(source) > 80 or len(event_id) > 240:
+        raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
+    event = MACRO_HISTORY_STORE.get_event(source, event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="MACRO_EVENT_NOT_FOUND")
+    allowed = (
+        "source", "event_id", "event_code", "title", "description",
+        "scheduled_time_utc", "scheduled_date", "time_precision", "official_url", "status",
+        "first_seen_at_utc", "last_seen_at_utc",
+    )
+    return {
+        "schema_version": "macro-event-detail-v1",
+        "event": {
+            **{key: event.get(key, "") for key in allowed},
+            "official_url": (
+                event.get("official_url", "")
+                if str(event.get("official_url", "")).lower().startswith(("https://", "http://"))
+                else ""
+            ),
+        },
+    }
+
+
 @app.get(
     "/v1/macro-events/source-health",
     dependencies=[Depends(require_token)],
